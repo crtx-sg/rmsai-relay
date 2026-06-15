@@ -15,6 +15,9 @@ external/ecgtranscnn/*
 # Generated synthetic data (committed fixtures live in data/fixtures/)
 data/synthetic/
 
+# Runtime audit log
+data/audit.jsonl
+
 # Local env / secrets
 .env
 

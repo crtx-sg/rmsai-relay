@@ -40,10 +40,14 @@ class ECGModel(ABC):
 
 
 class VitalsAnalysis(ABC):
-    """Wraps `ecgtranscnn.mews` (MEWS + Mann-Kendall trend + ECG-vital correlation)."""
+    """Wraps `ecgtranscnn.mews` (MEWS + Mann-Kendall trend + ECG-vital correlation).
+
+    `event_type` (the model's prediction) is optional context for ECG-vital correlation notes;
+    MEWS + trends are computed from the vitals alone and do not require it.
+    """
 
     @abstractmethod
-    def analyze(self, window: SignalWindow) -> ClinicalAnalysis: ...
+    def analyze(self, window: SignalWindow, event_type: str | None = None) -> ClinicalAnalysis: ...
 
 
 # --------------------------------------------------------------------------------------

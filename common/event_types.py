@@ -34,6 +34,34 @@ CLASS_NAMES: tuple[str, ...] = (
 #: Predicting this class means the event is a false positive (no real arrhythmia).
 NORMAL_SINUS = "NORMAL_SINUS"
 
+#: Maps the simulator's short ground-truth `condition` codes (HDF5 event attr, == the
+#: `Condition` enum *values*) to our class names (== enum *names*). The reader uses this to
+#: translate the sim-only ground truth; it is NEVER the source of the predicted event_type.
+#: Mirrors `ecg_transcovnet.simulator.conditions.Condition`; parity-tested.
+CONDITION_CODE_TO_NAME: dict[str, str] = {
+    "N": "NORMAL_SINUS",
+    "SB": "SINUS_BRADYCARDIA",
+    "ST": "SINUS_TACHYCARDIA",
+    "AFIB": "ATRIAL_FIBRILLATION",
+    "AFL": "ATRIAL_FLUTTER",
+    "A": "PAC",
+    "SVTA": "SVT",
+    "V": "PVC",
+    "VT": "VENTRICULAR_TACHYCARDIA",
+    "VF": "VENTRICULAR_FIBRILLATION",
+    "L": "LBBB",
+    "R": "RBBB",
+    "1AVB": "AV_BLOCK_1",
+    "2AVB1": "AV_BLOCK_2_TYPE1",
+    "2AVB2": "AV_BLOCK_2_TYPE2",
+    "STE": "ST_ELEVATION",
+}
+
+
+def condition_code_to_name(code: str) -> str | None:
+    """Translate a sim ground-truth condition code (e.g. 'AFIB') to a class name."""
+    return CONDITION_CODE_TO_NAME.get(code)
+
 
 class EventType(str, Enum):
     """Typed enum over the 16 classes; `EventType.NORMAL_SINUS.value == "NORMAL_SINUS"`."""
@@ -75,3 +103,10 @@ def load_upstream_class_names() -> list[str]:
     from ecg_transcovnet.constants import CLASS_NAMES as upstream  # noqa: PLC0415
 
     return list(upstream)
+
+
+def load_upstream_condition_codes() -> dict[str, str]:
+    """Return the upstream `{code: name}` map (for the parity test). Pulls torch — guard it."""
+    from ecg_transcovnet.simulator.conditions import Condition  # noqa: PLC0415
+
+    return {c.value: c.name for c in Condition}
