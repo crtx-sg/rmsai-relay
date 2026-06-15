@@ -29,6 +29,11 @@ dev = [
     "pytest>=7.0",
     "ruff>=0.3",
 ]
+# Real BGE embeddings + cross-encoder reranker (Phase 2A). Opt-in to keep the base install light;
+# without it the deterministic HashingEmbedder fallback is used.
+rag = [
+    "sentence-transformers>=2.2",
+]
 
 # Keep torch on the CPU wheel index — no GPU needed for the POC stub path,
 # and it keeps the install small.
