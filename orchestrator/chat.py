@@ -24,18 +24,23 @@ from .orchestrator import Orchestrator
 
 
 def build_orchestrator(
-    *, embedder: str = "hashing", llm: str = "echo", deid: str = "regex", docs: str = "docs"
+    *, embedder: str | None = None, llm: str | None = None, deid: str | None = None,
+    docs: str = "docs", config=DEFAULT,
 ) -> tuple[Orchestrator, GraphDriver]:
+    """Wire the orchestrator over live backends. Unset args fall back to `config` (env)."""
+    embedder = embedder or config.embedder
+    deid = deid or config.deid_backend
     vector = VectorRetriever.build(
-        store=QdrantStore.connect(DEFAULT.qdrant_url, "rmsai_docs"), embedder_name=embedder
+        store=QdrantStore.connect(config.qdrant_url, "rmsai_docs"), embedder_name=embedder
     )
     vector.index_dir(docs)
-    driver = GraphDriver.from_config(DEFAULT)
+    driver = GraphDriver.from_config(config)
+    llm_provider = get_llm_provider(llm or config.llm_provider, config)
     orch = Orchestrator(
         working=WorkingMemory.from_config(),
         hybrid=HybridRetriever(vector, driver),
         episodic=EpisodicMemory.from_config(embedder_name=embedder),
-        llm=DeidentifyingLLM(get_llm_provider(llm), get_deidentifier(deid)),
+        llm=DeidentifyingLLM(llm_provider, get_deidentifier(deid)),
         driver=driver,
     )
     return orch, driver

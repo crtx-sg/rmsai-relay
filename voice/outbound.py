@@ -16,7 +16,7 @@ from enum import Enum
 from common.config import DEFAULT, Config
 from common.notify import is_valid_number  # shared with the text-notify channel
 
-__all__ = ["CallOutcome", "Caller", "SimulatedCaller", "LiveKitCaller",
+__all__ = ["CallOutcome", "Caller", "SimulatedCaller", "LiveKitCaller", "get_caller",
            "is_valid_number", "place_with_retries", "parse_ack"]
 
 
@@ -45,17 +45,35 @@ class SimulatedCaller(Caller):
         return self._outcomes.pop(0) if self._outcomes else CallOutcome.ANSWERED
 
 
-class LiveKitCaller(Caller):  # pragma: no cover - needs live infra
-    """Real outbound via LiveKit SIP (lazy). Dials the number into the agent's room."""
+class LiveKitCaller(Caller):
+    """Real outbound via LiveKit (Cloud or self-hosted) SIP — dials the number into a room.
 
-    def __init__(self, livekit_url: str = "ws://localhost:7880") -> None:
-        self.livekit_url = livekit_url
+    The room is then driven by the LiveKit agent (voice/livekit_agent.py) for real audio. Returns
+    a coarse `CallOutcome`: ANSWERED if the SIP participant was created (call picked up when
+    `wait_until_answered`), INVALID if LiveKit isn't configured, else NO_ANSWER on a SIP error.
+    """
 
-    def place_call(self, number: str) -> CallOutcome:
-        raise SystemExit(
-            "LiveKit outbound is a deployment step — configure a SIP outbound trunk and use the "
-            "agent worker (voice/gateway/README.md)."
-        )
+    def __init__(self, config: Config = DEFAULT, room: str | None = None) -> None:
+        self.config = config
+        self.room = room or config.livekit_sip_room
+
+    def place_call(self, number: str) -> CallOutcome:  # pragma: no cover - needs LiveKit + SDK
+        from .livekit_cloud import LiveKitClient, is_configured  # noqa: PLC0415
+
+        if not is_configured(self.config):
+            return CallOutcome.INVALID
+        try:
+            LiveKitClient(self.config).create_outbound_sip_call(room=self.room, number=number)
+            return CallOutcome.ANSWERED
+        except Exception:  # noqa: BLE001 - SIP/trunk error -> treat as no-answer (retry policy applies)
+            return CallOutcome.NO_ANSWER
+
+
+def get_caller(name: str = "simulated", config: Config = DEFAULT, **kwargs) -> Caller:
+    """Build a caller: 'simulated' (default, offline) or 'livekit' (real SIP via LiveKit Cloud)."""
+    if name == "livekit":
+        return LiveKitCaller(config, **kwargs)
+    return SimulatedCaller(**kwargs)
 
 
 def place_with_retries(

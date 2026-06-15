@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     handler, greeting, cleanup = _build_handler(args.mode)
+    # Offline terminal demo: typed text is stub-encoded as caller "audio", so STT/TTS are stubs
+    # here regardless of config. The real Whisper/Piper backends (config STT_BACKEND/TTS_BACKEND)
+    # are wired in voice/livekit_agent.py via build_stt()/build_tts().
     session = VoiceSession(StubSTT(), StubTTS(), handler, args.session)
     print(greeting)
     try:

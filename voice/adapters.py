@@ -13,6 +13,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
+from common.config import DEFAULT, Config
+
 _SEP = b"\x00"
 
 
@@ -76,3 +78,17 @@ class PiperTTS(TTSAdapter):
         buf = io.BytesIO()
         self._voice.synthesize(text, buf)
         return buf.getvalue()
+
+
+def build_stt(config: Config = DEFAULT) -> STTAdapter:
+    """Return the configured STT backend (stub by default; Whisper for real audio)."""
+    if config.stt_backend == "whisper":
+        return WhisperSTT(model=config.whisper_model)
+    return StubSTT()
+
+
+def build_tts(config: Config = DEFAULT) -> TTSAdapter:
+    """Return the configured TTS backend (stub by default; Piper for real audio)."""
+    if config.tts_backend == "piper":
+        return PiperTTS(model_path=config.piper_voice_path)
+    return StubTTS()

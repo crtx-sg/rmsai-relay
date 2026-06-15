@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 import urllib.request
 
-from .deid import Deidentifier, deidentify
+from .config import DEFAULT, Config
+from .deid import Deidentifier, deidentify, get_deidentifier
 from .interfaces import LLMProvider
 
 
@@ -43,9 +44,9 @@ class EchoLLM(LLMProvider):
 class OllamaProvider(LLMProvider):
     """Self-hosted LLM via Ollama's HTTP API (stdlib only)."""
 
-    def __init__(self, host: str = "http://localhost:11434", model: str = "llama3.2") -> None:
-        self.host = host.rstrip("/")
-        self.model = model
+    def __init__(self, host: str | None = None, model: str | None = None) -> None:
+        self.host = (host or DEFAULT.ollama_url).rstrip("/")
+        self.model = model or DEFAULT.llm_model
 
     def _post(self, path: str, payload: dict) -> dict:
         req = urllib.request.Request(
@@ -94,7 +95,17 @@ class DeidentifyingLLM(LLMProvider):
         return self.inner.embed([deidentify(self.deidentifier, t) for t in texts])
 
 
-def get_llm_provider(name: str = "echo", **kwargs) -> LLMProvider:
+def get_llm_provider(name: str | None = None, config: Config = DEFAULT, **kwargs) -> LLMProvider:
+    """Build the configured LLM provider. `name` defaults to `config.llm_provider`."""
+    name = name or config.llm_provider
     if name == "ollama":
+        kwargs.setdefault("host", config.ollama_url)
+        kwargs.setdefault("model", config.llm_model)
         return OllamaProvider(**kwargs)
     return EchoLLM()
+
+
+def build_llm(config: Config = DEFAULT) -> DeidentifyingLLM:
+    """The orchestrator's LLM: the configured provider, always behind the de-id wrapper."""
+    return DeidentifyingLLM(get_llm_provider(config.llm_provider, config),
+                            get_deidentifier(config.deid_backend))

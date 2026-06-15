@@ -34,6 +34,12 @@ dev = [
 rag = [
     "sentence-transformers>=2.2",
 ]
+# Real voice over LiveKit Cloud (inbound + outbound SIP). Token generation is stdlib (no dep);
+# this extra is only needed for the agent worker + SIP room operations.
+livekit = [
+    "livekit-api>=0.8",
+    "livekit-agents>=0.12",
+]
 
 # Keep torch on the CPU wheel index — no GPU needed for the POC stub path,
 # and it keeps the install small.

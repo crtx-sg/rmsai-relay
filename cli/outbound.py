@@ -12,10 +12,11 @@ is a deployment step; this uses a SimulatedCaller so the loop is demonstrable en
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import replace
 
 from common.bed_assignment import BedAssignmentStub
-from common.config import DEFAULT
+from common.config import DEFAULT, Config
 from common.deid import get_deidentifier
 from common.patient_history import PatientHistoryStub
 from common.providers import DeidentifyingLLM, get_llm_provider
@@ -35,7 +36,7 @@ from common.notify import SimulatedSmsNotifier
 from orchestrator.event_flow import process_device_event
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.outbound_flow import run_outbound, run_text_notify, should_call
-from voice.outbound import CallOutcome, SimulatedCaller
+from voice.outbound import CallOutcome, SimulatedCaller, get_caller
 
 
 def _ensure_patient(driver, beds: BedAssignmentStub, patient_id: str) -> tuple[str, str]:
@@ -55,15 +56,19 @@ def main(argv: list[str] | None = None) -> int:
                         help="alert by outbound voice call or by text message")
     parser.add_argument("--follow-up", action="append", default=[], dest="follow_ups")
     parser.add_argument("--ack", default="yes I acknowledge")
+    parser.add_argument("--caller", choices=["simulated", "livekit"], default="simulated",
+                        help="voice channel: 'simulated' (offline) or 'livekit' (real SIP via LiveKit Cloud)")
     parser.add_argument("--no-answer", action="store_true", help="simulate the call not answering")
     parser.add_argument("--fail-delivery", action="store_true", help="simulate text delivery failure")
+    parser.add_argument("--notifier", choices=["simulated", "twilio"], default="simulated",
+                        help="text channel: 'simulated' prints the message; 'twilio' sends real SMS")
     parser.add_argument("--number", default="+15551234567")
     parser.add_argument("--min-criticality", default="High")
     parser.add_argument("--embedder", default="hashing", choices=["auto", "bge", "hashing"])
     args = parser.parse_args(argv)
 
     config = replace(
-        DEFAULT, outbound_enabled=True, outbound_call_number=args.number,
+        Config.from_env(), outbound_enabled=True, outbound_call_number=args.number,
         outbound_min_criticality=args.min_criticality,
     )
     utterances = [*args.follow_ups, args.ack, "yes"]  # follow-ups, then ack + confirm-back
@@ -83,8 +88,23 @@ def main(argv: list[str] | None = None) -> int:
         episodic=EpisodicMemory.from_config(embedder_name=args.embedder),
         llm=DeidentifyingLLM(get_llm_provider("echo"), get_deidentifier("regex")), driver=driver,
     )
-    caller = SimulatedCaller([CallOutcome.NO_ANSWER] * 5 if args.no_answer else [CallOutcome.ANSWERED])
-    notifier = SimulatedSmsNotifier(deliver=not args.fail_delivery)
+    if args.channel == "voice" and args.caller == "livekit":
+        caller = get_caller("livekit", config)  # real SIP via LiveKit Cloud
+    else:
+        caller = SimulatedCaller(
+            [CallOutcome.NO_ANSWER] * 5 if args.no_answer else [CallOutcome.ANSWERED]
+        )
+    if args.channel == "text" and args.notifier == "twilio":
+        from common.notify import get_notifier  # noqa: PLC0415
+
+        notifier = get_notifier(
+            "twilio",
+            account_sid=os.environ["TWILIO_ACCOUNT_SID"],
+            auth_token=os.environ["TWILIO_AUTH_TOKEN"],
+            from_number=os.environ.get("OUTBOUND_FROM", DEFAULT.outbound_from),
+        )
+    else:
+        notifier = SimulatedSmsNotifier(deliver=not args.fail_delivery)
 
     try:
         for event in read_hdf5_file(args.file):
