@@ -7,12 +7,19 @@ text + citation in the point payload so search returns ready-to-cite passages.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from .chunking import Chunk
+
+
+def _stable_id(chunk: Chunk) -> int:
+    """Content-addressed point id so re-indexing the same chunk is idempotent (upsert)."""
+    h = hashlib.sha256(f"{chunk.doc_id}|{chunk.idx}|{chunk.source}".encode()).hexdigest()
+    return int(h[:15], 16)
 
 DEFAULT_COLLECTION = "rmsai_docs"
 
@@ -47,15 +54,23 @@ class QdrantStore:
             vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
         )
 
+    def ensure(self, dim: int) -> None:
+        """Create the collection if it does not exist (for incremental adds)."""
+        if not self.client.collection_exists(self.collection):
+            self.client.create_collection(
+                collection_name=self.collection,
+                vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+            )
+
     def index(self, chunks: list[Chunk], vectors: list[list[float]]) -> int:
-        """Upsert chunks + their vectors. Returns the number indexed."""
+        """Upsert chunks + their vectors (content-addressed ids → idempotent). Returns the count."""
         points = [
             PointStruct(
-                id=i,
+                id=_stable_id(c),
                 vector=vec,
                 payload={"text": c.text, "source": c.source, "doc_id": c.doc_id},
             )
-            for i, (c, vec) in enumerate(zip(chunks, vectors))
+            for c, vec in zip(chunks, vectors)
         ]
         self.client.upsert(collection_name=self.collection, points=points)
         return len(points)

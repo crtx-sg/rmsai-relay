@@ -36,11 +36,22 @@ class VectorRetriever:
         return cls(store, embedder, LexicalReranker() if rerank else None)
 
     def index_dir(self, directory: str | Path) -> int:
-        """Chunk, embed, and index every document under `directory`. Returns #chunks."""
+        """Chunk, embed, and index every document under `directory` (resets first). Returns #chunks."""
         chunks = chunk_dir(directory)
         if not chunks:
             return 0
         self.store.reset(self.embedder.dim)
+        vectors = self.embedder.embed([c.text for c in chunks])
+        return self.store.index(chunks, vectors)
+
+    def add_document(self, doc_id: str, text: str) -> int:
+        """Incrementally chunk + embed + index one document (no reset). Returns #chunks added."""
+        from .chunking import chunk_document  # noqa: PLC0415
+
+        chunks = chunk_document(text, doc_id)
+        if not chunks:
+            return 0
+        self.store.ensure(self.embedder.dim)
         vectors = self.embedder.embed([c.text for c in chunks])
         return self.store.index(chunks, vectors)
 

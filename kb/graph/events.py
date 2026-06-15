@@ -82,3 +82,61 @@ def persist_monitored_event(
         )
 
     return uuid
+
+
+def persist_report(
+    driver: GraphDriver,
+    *,
+    event_uuid: str,
+    report_id: str,
+    uri: str,
+    summary: str,
+    generated_at: float,
+    index_status: str = "pending",
+) -> str:
+    """MERGE a Report node and link it to its MonitoredEvent (idempotent). Returns the report id."""
+    driver.run_write(
+        "MATCH (e:MonitoredEvent {id:$euuid}) "
+        "MERGE (r:Report {id:$rid}) "
+        "SET r.uri=$uri, r.summary=$summary, r.generated_at=$gen, r.index_status=$idx "
+        "MERGE (e)-[:HAS_REPORT]->(r)",
+        euuid=event_uuid, rid=report_id, uri=uri, summary=summary,
+        gen=generated_at, idx=index_status,
+    )
+    return report_id
+
+
+def set_report_indexed(driver: GraphDriver, report_id: str) -> None:
+    driver.run_write(
+        "MATCH (r:Report {id:$rid}) SET r.index_status='indexed'", rid=report_id
+    )
+
+
+def get_patient_context(driver: GraphDriver, patient_id: str) -> dict:
+    """Fetch a patient's demographics + history from the graph (for grounding event reports)."""
+    rows = driver.run_read(
+        """
+        MATCH (p:Patient {id:$pid})
+        OPTIONAL MATCH (p)-[:HAS_DIAGNOSIS]->(c:Condition)
+        OPTIONAL MATCH (p)-[:PRESENTS]->(s:Symptom)
+        OPTIONAL MATCH (p)-[:HAD_SURGERY]->(su:Surgery)
+        OPTIONAL MATCH (p)-[:PRESCRIBED]->(t:Treatment)
+        RETURN p.gender AS gender, p.age AS age,
+               collect(DISTINCT c.name) AS conditions,
+               collect(DISTINCT s.name) AS symptoms,
+               collect(DISTINCT su.name) AS surgeries,
+               collect(DISTINCT t.name) AS medications
+        """,
+        pid=patient_id,
+    )
+    if not rows:
+        return {"gender": None, "age": None, "conditions": [], "symptoms": [],
+                "surgeries": [], "medications": []}
+    r = rows[0]
+    return {
+        "gender": r["gender"], "age": r["age"],
+        "conditions": [c for c in r["conditions"] if c],
+        "symptoms": [s for s in r["symptoms"] if s],
+        "surgeries": [s for s in r["surgeries"] if s],
+        "medications": [m for m in r["medications"] if m],
+    }
