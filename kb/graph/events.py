@@ -112,6 +112,13 @@ def set_report_indexed(driver: GraphDriver, report_id: str) -> None:
     )
 
 
+def set_event_status(driver: GraphDriver, uuid: str, status: str) -> None:
+    """Update a MonitoredEvent's lifecycle status (reported/acknowledged/notify_failed/resolved)."""
+    driver.run_write(
+        "MATCH (e:MonitoredEvent {id:$uuid}) SET e.status=$status", uuid=uuid, status=status
+    )
+
+
 def get_patient_context(driver: GraphDriver, patient_id: str) -> dict:
     """Fetch a patient's demographics + history from the graph (for grounding event reports)."""
     rows = driver.run_read(
