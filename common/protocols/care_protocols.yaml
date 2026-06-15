@@ -1,0 +1,22 @@
+# Curated care protocols (D19 / §5.5). External config — revise or replace with AHA/society
+# guidelines without code changes. Loaded into the graph + indexed as narrative in Phase 2B.
+- id: afib_rvr
+  title: Atrial fibrillation with rapid ventricular response
+  version: "1"
+  source: TODO-AHA-ref
+  match: { event_type: ATRIAL_FIBRILLATION, vital_conditions: ["HR > 120"], min_severity: High }
+  steps:
+    - { order: 1, kind: vitals_check, vital: HR, periodicity: "q15min x4 then hourly", alert_if: "HR > 150" }
+    - { order: 2, kind: test, name: "12-lead ECG", when: "on detection", priority: high }
+    - { order: 3, kind: medication, drug: "rate-control per local policy", route: IV, caution: "check BP" }
+    - { order: 4, kind: escalation, trigger: "HR > 150 or SBP < 90", escalate_to: "on-call cardiology", within: "15 min" }
+    - { order: 5, kind: monitoring, modality: "continuous ECG", duration: "24h" }
+
+- id: default
+  title: Default monitoring protocol
+  version: "1"
+  source: internal
+  match: { event_type: "*", min_severity: Low }
+  steps:
+    - { order: 1, kind: monitoring, modality: "continuous ECG", duration: "until reviewed" }
+    - { order: 2, kind: escalation, trigger: "MEWS rises by >=2", escalate_to: "on-call", within: "30 min" }

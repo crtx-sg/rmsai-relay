@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# uv: the lockfile (uv.lock) is committed for reproducibility.
+
+# Vendored upstream (cloned in Phase 0, not committed) — keep only the placeholder
+external/ecgtranscnn/*
+!external/ecgtranscnn/PLACEHOLDER.md
+
+# Generated synthetic data (committed fixtures live in data/fixtures/)
+data/synthetic/
+
+# Local env / secrets
+.env
+
+# OS / editor
+.DS_Store

@@ -1,0 +1,98 @@
+# All POC services are declared here, but only the lean always-on datastores
+# (redis, neo4j, qdrant) are started in Phase 0. Heavy services are tagged with the
+# `later` profile so a plain `up` skips them; bring them up at their phase with
+# `--profile later` (or by name).
+#
+#   Phase 0:  docker compose up -d redis neo4j qdrant
+#   Phase 1:  docker compose up -d mosquitto
+#   Phase 5+: docker compose --profile later up -d livekit model-server
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5.24-community
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    environment:
+      NEO4J_AUTH: "${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-rmsai_dev_pw}"
+      NEO4J_server_memory_pagecache_size: "256m"
+      NEO4J_server_memory_heap_max__size: "512m"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - neo4j_data:/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    healthcheck:
+      # qdrant image is distroless; TCP probe via bash on the gRPC port is unavailable,
+      # so probe readiness from the host instead (see scripts/health). Liveness only here.
+      test: ["CMD-SHELL", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # --- Phase 1: telemetry stream broker ---
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    profiles: ["telemetry", "later"]
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+    command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 -W 2 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Phase 2/4: local LLM + embeddings serving (Ollama for the POC) ---
+  model-server:
+    image: ollama/ollama:latest
+    profiles: ["later"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - ollama_data:/root/.ollama
+
+  # --- Phase 5+: voice / media transport ---
+  livekit:
+    image: livekit/livekit-server:latest
+    profiles: ["later"]
+    command: ["--dev"]
+    ports:
+      - "${LIVEKIT_PORT:-7880}:7880"
+      - "${LIVEKIT_RTC_PORT:-7881}:7881"
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  neo4j_data:
+  qdrant_data:
+  ollama_data:

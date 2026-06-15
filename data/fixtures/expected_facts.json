@@ -1,0 +1,47 @@
+{
+  "file": "PT1155_2026-06.h5",
+  "patient_id": "PT1155",
+  "sampling_rate_ecg": 200.0,
+  "sampling_rate_ppg": 75.0,
+  "seconds_before_event": 6.0,
+  "seconds_after_event": 6.0,
+  "alarm_offset_seconds": 6.0,
+  "max_vital_history": 30,
+  "has_waveform_units": false,
+  "events": {
+    "event_1001": {
+      "uuid": "efec7323-b617-44c9-9db7-b7c8a39d77fb",
+      "ground_truth_condition_code": "AFIB",
+      "ecg_samples": 2400,
+      "ppg_samples": 900,
+      "resp_samples": 399,
+      "vitals": [
+        "Diastolic",
+        "HR",
+        "Pulse",
+        "RespRate",
+        "SpO2",
+        "Systolic",
+        "Temp",
+        "XL_Posture"
+      ]
+    },
+    "event_1002": {
+      "uuid": "619ca333-842c-49af-9701-5d8dabf7e681",
+      "ground_truth_condition_code": "N",
+      "ecg_samples": 2400,
+      "ppg_samples": 900,
+      "resp_samples": 399,
+      "vitals": [
+        "Diastolic",
+        "HR",
+        "Pulse",
+        "RespRate",
+        "SpO2",
+        "Systolic",
+        "Temp",
+        "XL_Posture"
+      ]
+    }
+  }
+}

@@ -1,0 +1,59 @@
+[project]
+name = "rmsai-relay"
+version = "0.0.0"
+description = "Self-hostable medical IoT + AI POC: ingest physiological events, classify arrhythmias, report to a clinician over the phone, answer grounded follow-ups."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# Dependencies are added incrementally, one phase at a time (working agreement).
+# Phase 0 needs only: contracts (pydantic/pyyaml), the vendored simulator stack
+# (numpy/scipy/h5py/matplotlib/torch), and the lean datastore clients we health-check.
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    # vendored ecgtranscnn import chain (its package __init__ eagerly imports these)
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "h5py>=3.8",
+    "matplotlib>=3.7",
+    "torch>=2.0",
+    # lean datastore clients (Phase 0 health-checks redis/neo4j/qdrant)
+    "redis>=5.0",
+    "neo4j>=5.0",
+    "qdrant-client>=1.12,<1.13",  # match the pinned qdrant server image (v1.12.x)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.3",
+]
+
+# Keep torch on the CPU wheel index — no GPU needed for the POC stub path,
+# and it keeps the install small.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "infra: tests that require live lean containers (redis/neo4j/qdrant)",
+    "ecgtranscnn: tests that require the vendored ecgtranscnn package (torch et al.)",
+]
+
+[tool.setuptools.packages.find]
+include = ["common*", "ingest*", "inference*", "kb*", "memory*", "orchestrator*", "voice*", "live*", "emr*", "cli*"]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
