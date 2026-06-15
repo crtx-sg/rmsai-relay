@@ -78,6 +78,18 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+  # --- Phase 8: real EMR (HAPI FHIR) ---
+  hapi-fhir:
+    image: hapiproject/hapi:v7.4.0
+    profiles: ["later"]
+    ports:
+      - "${HAPI_FHIR_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   # --- Phase 5+: voice / media transport ---
   livekit:
     image: livekit/livekit-server:latest

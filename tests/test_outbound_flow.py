@@ -149,6 +149,21 @@ def test_no_answer_marks_notify_failed(env):
 
 
 @pytest.mark.infra
+def test_dropped_call_mid_alert_stays_reported(env):
+    driver, _, orch = env
+    ev = _persist(env)
+    # caller asks one question then the line drops before acknowledging
+    result = run_outbound(
+        ev, driver=driver, orchestrator=orch, caller=SimulatedCaller([CallOutcome.ANSWERED]),
+        utterances=["what were the vitals", "yes I acknowledge", "yes"],
+        config=_CFG, bed="Unit1-Bed05", sleep_fn=_no_sleep, drop_after=1,
+    )
+    assert result.dropped and not result.acknowledged
+    assert result.status == "reported"  # unacknowledged -> eligible for retry
+    assert _status(driver, ev.window.event_id) == "reported"
+
+
+@pytest.mark.infra
 def test_unclear_ack_left_reported(env):
     driver, _, orch = env
     ev = _persist(env)

@@ -35,6 +35,7 @@ class OutboundResult:
     spoken_report: str = ""
     answers: list[str] = field(default_factory=list)
     acknowledged: bool = False
+    dropped: bool = False  # call dropped mid-alert
     status: str = "reported"
     transcript: list[str] = field(default_factory=list)  # what the agent said/sent
 
@@ -63,8 +64,13 @@ def run_outbound(
     session_id: str | None = None,
     audit: AuditLog | None = None,
     sleep_fn=time.sleep,
+    drop_after: int | None = None,
 ) -> OutboundResult:
-    """Run the outbound loop. `utterances` is the clinician's scripted side of the call."""
+    """Run the outbound loop. `utterances` is the clinician's scripted side of the call.
+
+    `drop_after` simulates the call dropping after that many clinician turns (mid-alert): the
+    event stays `reported` (unacknowledged) and is eligible for the same retry policy.
+    """
     audit = audit or AuditLog()
     session_id = session_id or f"outbound-{event.window.event_id}"
     uuid = event.window.event_id
@@ -84,18 +90,21 @@ def run_outbound(
         return OutboundResult(called=True, decision_reason=reason, outcome=outcome.value,
                               attempts=attempts, status="notify_failed")
 
-    conv = _converse(event, orchestrator, utterances, session_id, bed, emit=lambda _t: None)
+    conv = _converse(event, orchestrator, utterances, session_id, bed,
+                     emit=lambda _t: None, drop_after=drop_after)
     set_event_status(driver, uuid, conv["status"])
+    ack_outcome = "dropped" if conv["dropped"] else conv["status"]
     audit.write(actor="system", action="acknowledgment", subject=event.window.patient_ref,
-                outcome=conv["status"])
+                outcome=ack_outcome)
     return OutboundResult(
         called=True, decision_reason=reason, outcome=outcome.value, attempts=attempts,
         spoken_report=conv["transcript"][0], answers=conv["answers"],
-        acknowledged=conv["acknowledged"], status=conv["status"], transcript=conv["transcript"],
+        acknowledged=conv["acknowledged"], dropped=conv["dropped"],
+        status=conv["status"], transcript=conv["transcript"],
     )
 
 
-def _converse(event, orchestrator, utterances, session_id, bed, *, emit) -> dict:
+def _converse(event, orchestrator, utterances, session_id, bed, *, emit, drop_after=None) -> dict:
     """Shared report -> follow-ups -> ack loop. `emit(text)` delivers each agent message.
 
     Returns {answers, acknowledged, status, transcript}. Channel-agnostic: voice records the
@@ -110,6 +119,7 @@ def _converse(event, orchestrator, utterances, session_id, bed, *, emit) -> dict
     say(spoken_report(event, bed=bed))
     answers: list[str] = []
     acknowledged = False
+    dropped = False
     status = "reported"
     idx = 0
 
@@ -121,7 +131,13 @@ def _converse(event, orchestrator, utterances, session_id, bed, *, emit) -> dict
         idx += 1
         return u
 
-    while (u := _next()) is not None:
+    while True:
+        if drop_after is not None and idx >= drop_after:
+            dropped = True  # caller hung up mid-alert -> stays reported (unacknowledged)
+            break
+        u = _next()
+        if u is None:
+            break
         intent = parse_ack(u)
         if intent == "yes":
             say(_CONFIRM_BACK)
@@ -140,8 +156,8 @@ def _converse(event, orchestrator, utterances, session_id, bed, *, emit) -> dict
         answers.append(result.answer)
         say(result.answer)
 
-    return {"answers": answers, "acknowledged": acknowledged, "status": status,
-            "transcript": transcript}
+    return {"answers": answers, "acknowledged": acknowledged, "dropped": dropped,
+            "status": status, "transcript": transcript}
 
 
 def run_text_notify(
