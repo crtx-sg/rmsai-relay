@@ -58,6 +58,20 @@ class OllamaProvider(LLMProvider):
     def generate(self, prompt: str, **kwargs) -> str:
         return self._post("/api/generate", {"model": self.model, "prompt": prompt, "stream": False})["response"]
 
+    def generate_stream(self, prompt: str, **kwargs):
+        """Stream tokens from Ollama (stream=True) so TTS can start on the first sentence."""
+        req = urllib.request.Request(
+            f"{self.host}/api/generate",
+            data=json.dumps({"model": self.model, "prompt": prompt, "stream": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310 (trusted local host)
+            for line in resp:
+                if line.strip():
+                    tok = json.loads(line).get("response", "")
+                    if tok:
+                        yield tok
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [self._post("/api/embeddings", {"model": self.model, "prompt": t})["embedding"] for t in texts]
 
@@ -71,6 +85,10 @@ class DeidentifyingLLM(LLMProvider):
 
     def generate(self, prompt: str, **kwargs) -> str:
         return self.inner.generate(deidentify(self.deidentifier, prompt), **kwargs)
+
+    def generate_stream(self, prompt: str, **kwargs):
+        # De-identify the whole prompt up front (fail closed) before any token is generated.
+        yield from self.inner.generate_stream(deidentify(self.deidentifier, prompt), **kwargs)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return self.inner.embed([deidentify(self.deidentifier, t) for t in texts])

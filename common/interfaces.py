@@ -25,6 +25,10 @@ class LLMProvider(ABC):
     @abstractmethod
     def embed(self, texts: list[str]) -> list[list[float]]: ...
 
+    def generate_stream(self, prompt: str, **kwargs):
+        """Yield response tokens/chunks. Default: a single chunk (override for true streaming)."""
+        yield self.generate(prompt, **kwargs)
+
 
 # --------------------------------------------------------------------------------------
 # ECG model + vitals analysis
