@@ -1,0 +1,18 @@
+# Example LiveKit SIP inbound trunk + dispatch rule (copy, fill creds, apply with `lk sip ...`).
+# Terminates a carrier SIP trunk and routes inbound calls into a LiveKit room where the agent runs.
+
+trunk:
+  name: rmsai-inbound
+  numbers: ["+10000000000"]        # your DID(s)
+  # auth for the carrier trunk (use a secret manager in production)
+  auth_username: CHANGE_ME
+  auth_password: CHANGE_ME
+
+dispatch_rule:
+  name: rmsai-dispatch
+  # each inbound call gets its own room; the agent worker auto-joins matching rooms
+  rule:
+    dispatchRuleIndividual:
+      roomPrefix: "rmsai-call-"
+  # require the shared PIN before any PHI is voiced (Phase 6 / G10)
+  metadata: '{"auth": "pin"}'
