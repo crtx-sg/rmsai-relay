@@ -57,14 +57,16 @@ def answer(
     if llm is not None:
         text = llm.generate(_build_prompt(query, passages, relationships))
     else:
-        # Extractive: lead with graph relationships (the graph-only facts), then the top passage.
+        # Extractive: lead with graph relationships (the graph-only facts), then the retrieved
+        # passage context (all top-k, since the answer fact may live in any retrieved chunk —
+        # an LLM would synthesize across them).
         parts: list[str] = []
         if relationships:
             parts.append(
                 "Known relationships:\n" + "\n".join(f"- {r.fact}" for r in relationships)
             )
         if passage_relevant:
-            parts.append(passages[0].text)
+            parts.append("\n\n".join(p.text for p in passages))
         text = "\n\n".join(parts)
 
     return GroundedAnswer(answer=text, citations=citations, declined=False, passages=passages)
