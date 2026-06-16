@@ -23,3 +23,6 @@ data/audit.jsonl
 
 # OS / editor
 .DS_Store
+*.swp
+*.swo
+*~

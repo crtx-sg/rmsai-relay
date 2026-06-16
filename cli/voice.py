@@ -29,7 +29,8 @@ def _build_handler(mode: str):
 
     from orchestrator.chat import build_orchestrator
 
-    orch, driver = build_orchestrator(embedder="hashing", llm="echo", deid="regex")
+    # embedder/llm kept offline for the terminal demo; deid backend honours config (DEID_BACKEND)
+    orch, driver = build_orchestrator(embedder="hashing", llm="echo")
     handler: Handler = OrchestratorHandler(orch, orch.working)
     return handler, handler.greeting(), driver.close
 

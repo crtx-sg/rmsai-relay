@@ -7,6 +7,37 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load `.env` from the repo root into the process env (does NOT override existing vars).
+
+    Minimal, dependency-free. Lets `.env` configure the Python app the same way it configures
+    docker-compose. Exported shell vars take precedence over `.env`.
+    """
+    if os.environ.get("RMSAI_NO_DOTENV"):  # tests/CI set this for a hermetic env
+        return
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if not env_path.exists():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        val = val.split(" #", 1)[0].strip().strip('"').strip("'")  # drop inline comment + quotes
+        os.environ.setdefault(key.strip(), val)
+
+
+# Clinical vocabulary that biases Whisper STT (G15) — helps small models (e.g. tiny.en) recognise
+# arrhythmia/drug/vitals terms and the acknowledgement words.
+CLINICAL_STT_PROMPT = (
+    "Arrhythmia, atrial fibrillation, ventricular tachycardia, ventricular fibrillation, "
+    "bradycardia, tachycardia, SVT, PVC, AV block, ST elevation, MEWS, SpO2, systolic, diastolic, "
+    "beta-blocker, anticoagulant, amiodarone, defibrillation, cardioversion, escalate, acknowledge, "
+    "bed, unit, criticality."
+)
 
 
 def _f(name: str, default: float) -> float:
@@ -56,11 +87,13 @@ class Config:
 
     # De-identification backend (before any model call)
     deid_backend: str = "regex"  # regex (offline) | presidio | auto
+    deid_spacy_model: str = "en_core_web_lg"  # spaCy NER model for presidio (or en_core_web_sm)
 
     # Voice STT/TTS (real audio path)
     stt_backend: str = "stub"  # stub | whisper
     tts_backend: str = "stub"  # stub | piper
     whisper_model: str = "base.en"
+    stt_initial_prompt: str = CLINICAL_STT_PROMPT  # Whisper vocab biasing (G15)
     piper_voice_path: str = ""  # path to a Piper .onnx voice
     # LiveKit (self-hosted ws://localhost:7880 or LiveKit Cloud wss://<project>.livekit.cloud)
     livekit_url: str = "ws://localhost:7880"
@@ -95,9 +128,11 @@ class Config:
             embedder=os.environ.get("EMBEDDER", "hashing"),
             bge_model=os.environ.get("BGE_MODEL", "BAAI/bge-small-en-v1.5"),
             deid_backend=os.environ.get("DEID_BACKEND", "regex"),
+            deid_spacy_model=os.environ.get("DEID_SPACY_MODEL", "en_core_web_lg"),
             stt_backend=os.environ.get("STT_BACKEND", "stub"),
             tts_backend=os.environ.get("TTS_BACKEND", "stub"),
             whisper_model=os.environ.get("WHISPER_MODEL", "base.en"),
+            stt_initial_prompt=os.environ.get("STT_INITIAL_PROMPT", CLINICAL_STT_PROMPT),
             piper_voice_path=os.environ.get("PIPER_VOICE_PATH", ""),
             livekit_url=os.environ.get("LIVEKIT_URL", "ws://localhost:7880"),
             livekit_api_key=os.environ.get("LIVEKIT_API_KEY", ""),
@@ -108,5 +143,7 @@ class Config:
         )
 
 
-#: Process-wide default; call `Config.from_env()` for a fresh read.
-DEFAULT = Config()
+#: Process-wide default, populated from `.env` + environment at import.
+#: Call `Config.from_env()` for a fresh read after changing env vars.
+_load_dotenv()
+DEFAULT = Config.from_env()

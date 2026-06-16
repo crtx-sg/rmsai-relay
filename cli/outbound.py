@@ -86,7 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     orch = Orchestrator(
         working=WorkingMemory.from_config(), hybrid=HybridRetriever(vector, driver),
         episodic=EpisodicMemory.from_config(embedder_name=args.embedder),
-        llm=DeidentifyingLLM(get_llm_provider("echo"), get_deidentifier("regex")), driver=driver,
+        llm=DeidentifyingLLM(get_llm_provider(config.llm_provider, config),
+                             get_deidentifier(config.deid_backend)), driver=driver,
     )
     if args.channel == "voice" and args.caller == "livekit":
         caller = get_caller("livekit", config)  # real SIP via LiveKit Cloud

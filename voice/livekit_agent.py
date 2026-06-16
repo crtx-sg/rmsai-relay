@@ -17,11 +17,8 @@ from .adapters import STTAdapter, TTSAdapter, build_stt, build_tts
 from .handlers import EchoHandler, Handler
 from .session import VoiceSession
 
-# Clinical vocabulary biasing for Whisper (G15).
-CLINICAL_PROMPT = (
-    "Arrhythmia, atrial fibrillation, ventricular tachycardia, bradycardia, MEWS, "
-    "SpO2, beta-blocker, anticoagulant, defibrillation, acknowledge, bed, unit."
-)
+# STT/TTS (incl. the Whisper clinical-vocab prompt, G15) are configured via common.config and
+# applied by build_stt()/build_tts().
 
 
 def build_session(

@@ -81,9 +81,13 @@ class PiperTTS(TTSAdapter):
 
 
 def build_stt(config: Config = DEFAULT) -> STTAdapter:
-    """Return the configured STT backend (stub by default; Whisper for real audio)."""
+    """Return the configured STT backend (stub by default; Whisper for real audio).
+
+    Whisper is biased with the clinical vocabulary (`config.stt_initial_prompt`, G15) — this
+    materially helps small models like `tiny.en` transcribe arrhythmia/drug/ack terms.
+    """
     if config.stt_backend == "whisper":
-        return WhisperSTT(model=config.whisper_model)
+        return WhisperSTT(model=config.whisper_model, initial_prompt=config.stt_initial_prompt)
     return StubSTT()
 
 

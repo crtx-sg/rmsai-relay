@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 
+from .config import DEFAULT
+
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _PHONE = re.compile(r"\b\+?\d[\d\-().\s]{7,}\d\b")
 _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
@@ -48,13 +50,24 @@ class RegexDeidentifier(Deidentifier):
 
 
 class PresidioDeidentifier(Deidentifier):
-    """NLP-backed de-identification via Microsoft Presidio (lazy import)."""
+    """NLP-backed de-identification via Microsoft Presidio (lazy import).
 
-    def __init__(self, language: str = "en") -> None:
+    `spacy_model` selects the spaCy NER model (default `en_core_web_lg`; use `en_core_web_sm` for
+    a lighter install). The model must be downloaded first:
+    `uv run python -m spacy download <model>`.
+    """
+
+    def __init__(self, language: str = "en", spacy_model: str | None = None) -> None:
         from presidio_analyzer import AnalyzerEngine  # noqa: PLC0415
+        from presidio_analyzer.nlp_engine import NlpEngineProvider  # noqa: PLC0415
         from presidio_anonymizer import AnonymizerEngine  # noqa: PLC0415
 
-        self._analyzer = AnalyzerEngine()
+        spacy_model = spacy_model or DEFAULT.deid_spacy_model
+        nlp_engine = NlpEngineProvider(nlp_configuration={
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": language, "model_name": spacy_model}],
+        }).create_engine()
+        self._analyzer = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=[language])
         self._anonymizer = AnonymizerEngine()
         self._language = language
 

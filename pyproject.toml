@@ -34,6 +34,19 @@ dev = [
 rag = [
     "sentence-transformers>=2.2",
 ]
+# NLP-backed de-identification (Presidio). Also requires a spaCy model:
+#   uv run python -m spacy download en_core_web_lg   (or en_core_web_sm)
+deid = [
+    "presidio-analyzer>=2.2",
+    "presidio-anonymizer>=2.2",
+    "spacy>=3.7",
+    "click>=8.0",  # spaCy CLI (model download) needs it; not always pulled transitively
+]
+# Real self-hosted speech: faster-whisper STT + Piper TTS (STT_BACKEND=whisper / TTS_BACKEND=piper).
+voice = [
+    "faster-whisper>=1.0",
+    "piper-tts>=1.2",
+]
 # Real voice over LiveKit Cloud (inbound + outbound SIP). Token generation is stdlib (no dep);
 # this extra is only needed for the agent worker + SIP room operations.
 livekit = [

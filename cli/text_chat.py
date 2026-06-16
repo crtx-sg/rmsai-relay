@@ -22,7 +22,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llm", default="echo", choices=["echo", "ollama"])
     args = parser.parse_args(argv)
 
-    orch, driver = build_orchestrator(embedder=args.embedder, llm=args.llm, deid="regex")
+    # deid backend comes from config (DEID_BACKEND: regex | presidio | auto)
+    orch, driver = build_orchestrator(embedder=args.embedder, llm=args.llm)
     handler = OrchestratorHandler(orch, orch.working)
     print(handler.greeting())
     try:
