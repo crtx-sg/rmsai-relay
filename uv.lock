@@ -1886,6 +1886,22 @@ wheels = [
 ]
 
 [[package]]
+name = "livekit-plugins-silero"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "livekit-agents" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "onnxruntime", version = "1.27.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/15/ac/ffa3c99adc21c2e82ed36fe67470bddadc394a38971b687360c9cc7b5082/livekit_plugins_silero-1.6.0.tar.gz", hash = "sha256:e9d7c99e5e7a3b1ea0012351fc3b03d690ed47ad90548329ffd232cc7812f7a7", size = 1955929 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/ab/1c4afcaeb931c9e08d13ee64c61bba1f20b25411ec36a0c55f43399bf586/livekit_plugins_silero-1.6.0-py3-none-any.whl", hash = "sha256:0abae3ce01b3a72e6a77aa6cf6383c0de3492c8319c0bfb0887922a8ac441109", size = 3903897 },
+]
+
+[[package]]
 name = "livekit-protocol"
 version = "1.1.15"
 source = { registry = "https://pypi.org/simple" }
@@ -3760,6 +3776,7 @@ dev = [
 livekit = [
     { name = "livekit-agents" },
     { name = "livekit-api" },
+    { name = "livekit-plugins-silero" },
 ]
 rag = [
     { name = "sentence-transformers" },
@@ -3776,6 +3793,7 @@ requires-dist = [
     { name = "h5py", specifier = ">=3.8" },
     { name = "livekit-agents", marker = "extra == 'livekit'", specifier = ">=0.12" },
     { name = "livekit-api", marker = "extra == 'livekit'", specifier = ">=0.8" },
+    { name = "livekit-plugins-silero", marker = "extra == 'livekit'", specifier = ">=0.7" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "neo4j", specifier = ">=5.0" },
     { name = "numpy", specifier = ">=1.24" },

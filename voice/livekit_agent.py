@@ -33,6 +33,14 @@ from .handlers import EchoHandler, Handler, build_handler
 from .livekit_cloud import is_configured
 from .session import VoiceSession
 
+# LiveKit plugins register themselves at import time, and that registration MUST run on the main
+# thread (prewarm/job init runs in worker threads). So import silero at module top, not lazily.
+# Guarded so the base install (no `livekit` extra) can still import this module.
+try:
+    from livekit.plugins import silero
+except ImportError:  # pragma: no cover - exercised only without the livekit extra
+    silero = None
+
 # TTS sample rate to assume when an adapter doesn't advertise one (e.g. the stub). Real Piper
 # voices expose `.sample_rate`; lessac-medium is 22.05 kHz.
 _FALLBACK_SAMPLE_RATE = 22050
@@ -177,7 +185,6 @@ def make_agent_class():
 async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit room
     """Worker job: join the room, then run STT -> Handler -> TTS until the call ends."""
     from livekit.agents import AgentSession  # noqa: PLC0415
-    from livekit.plugins import silero  # noqa: PLC0415
 
     config = DEFAULT
     mode = os.environ.get("VOICE_MODE", "orchestrator")
@@ -209,8 +216,6 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
 
 
 def _prewarm(proc) -> None:  # pragma: no cover - needs the silero plugin + a worker process
-    from livekit.plugins import silero  # noqa: PLC0415
-
     proc.userdata["vad"] = silero.VAD.load()
 
 

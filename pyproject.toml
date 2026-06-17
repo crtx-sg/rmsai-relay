@@ -52,6 +52,7 @@ voice = [
 livekit = [
     "livekit-api>=0.8",
     "livekit-agents>=0.12",
+    "livekit-plugins-silero>=0.7",  # voice-activity detection (endpointing + barge-in)
 ]
 
 # Keep torch on the CPU wheel index — no GPU needed for the POC stub path,
