@@ -65,11 +65,17 @@ def run_outbound(
     audit: AuditLog | None = None,
     sleep_fn=time.sleep,
     drop_after: int | None = None,
+    live_audio: bool = False,
 ) -> OutboundResult:
     """Run the outbound loop. `utterances` is the clinician's scripted side of the call.
 
     `drop_after` simulates the call dropping after that many clinician turns (mid-alert): the
     event stays `reported` (unacknowledged) and is eligible for the same retry policy.
+
+    `live_audio=True` is the real-LiveKit path: the relay only *places* the call; the agent worker
+    that joins the room drives the actual PIN -> alert -> Q&A -> ack audio loop (and writes the ack
+    status from its side). So once the call is answered there is no scripted `_converse` here — the
+    event is left `reported` and the worker promotes it to `acknowledged`.
     """
     audit = audit or AuditLog()
     session_id = session_id or f"outbound-{event.window.event_id}"
@@ -89,6 +95,15 @@ def run_outbound(
         set_event_status(driver, uuid, "notify_failed")
         return OutboundResult(called=True, decision_reason=reason, outcome=outcome.value,
                               attempts=attempts, status="notify_failed")
+
+    if live_audio:
+        # Worker owns the conversation from here (real STT/TTS over LiveKit). Don't script it.
+        audit.write(actor="system", action="outbound_live", subject=event.window.patient_ref,
+                    outcome="worker_driven")
+        alert = spoken_report(event, bed=bed)
+        return OutboundResult(called=True, decision_reason=reason, outcome=outcome.value,
+                              attempts=attempts, status="reported", spoken_report=alert,
+                              transcript=[alert])
 
     conv = _converse(event, orchestrator, utterances, session_id, bed,
                      emit=lambda _t: None, drop_after=drop_after)

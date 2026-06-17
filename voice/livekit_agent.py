@@ -29,8 +29,9 @@ from functools import partial
 from common.config import DEFAULT, Config
 
 from .adapters import STTAdapter, TTSAdapter, build_stt, build_tts
-from .handlers import EchoHandler, Handler, build_handler
+from .handlers import EchoHandler, Handler, build_handler, build_outbound_handler
 from .livekit_cloud import is_configured
+from .outbound_alert import OutboundAlertStore
 from .session import VoiceSession
 
 # LiveKit plugins register themselves at import time, and that registration MUST run on the main
@@ -96,6 +97,30 @@ async def emit_tts_audio(adapter: TTSAdapter, sample_rate: int, text: str, outpu
         )
         output_emitter.push(wav)
     output_emitter.flush()
+
+
+def resolve_handler(room_name: str, alert_store, *, mode: str = "orchestrator"):
+    """Pick the handler for a room: outbound (event-seeded) if an alert is waiting, else generic.
+
+    The relay writes an `OutboundAlert` keyed by room name before placing an outbound call, so a
+    room with a pending alert is a relay-initiated call → speak that event after the PIN gate. A
+    room with no alert is an inbound call → the standard PIN-gated orchestrator handler. Returns
+    `(handler, greeting, cleanup)`; the alert is consumed (deleted) so a retry/redial is explicit.
+    """
+    alert = None
+    if alert_store is not None:
+        try:
+            alert = alert_store.get(room_name)
+        except Exception:  # noqa: BLE001 - a store hiccup must not block answering the call
+            alert = None
+    if alert is not None:
+        handler, greeting, cleanup = build_outbound_handler(alert)
+        try:
+            alert_store.delete(room_name)
+        except Exception:  # noqa: BLE001
+            pass
+        return handler, greeting, cleanup
+    return build_handler(mode)
 
 
 def make_speech_bridges():
@@ -198,7 +223,12 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
     tts_adapter = build_tts(config)
     sample_rate = getattr(tts_adapter, "sample_rate", _FALLBACK_SAMPLE_RATE)
 
-    handler, greeting, cleanup = build_handler(mode)
+    try:
+        alert_store = OutboundAlertStore.from_config(config)
+    except Exception:  # noqa: BLE001 - no redis -> inbound-only worker still functions
+        alert_store = None
+    # Outbound (relay-initiated) call if an alert is waiting for this room; else inbound.
+    handler, greeting, cleanup = resolve_handler(ctx.room.name, alert_store, mode=mode)
     if cleanup is not None:
         async def _shutdown() -> None:
             cleanup()

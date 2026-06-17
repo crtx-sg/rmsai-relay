@@ -1,6 +1,7 @@
 """Phase 7 full loop: drop an HDF5 file -> detect -> persist -> call out -> follow-up -> ack.
 
   python -m cli.outbound --file data/fixtures/PT1155_2026-06.h5 \
+      --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt \
       --follow-up "what were the vitals at the event" --ack "yes I acknowledge"
 
 For each event in the file: run the Phase 1 pipeline -> DeviceEvent, persist it (Phase 4
@@ -18,14 +19,12 @@ from dataclasses import replace
 from common.bed_assignment import BedAssignmentStub
 from common.config import DEFAULT, Config
 from common.deid import get_deidentifier
-from common.patient_history import PatientHistoryStub
 from common.providers import DeidentifyingLLM, get_llm_provider
 from inference.ecg_model import get_ecg_model
 from inference.pipeline import process_window
 from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
 from kb.graph.driver import GraphDriver
-from kb.graph.ingest import ingest_patient_record
 from kb.graph.schema import migrate
 from kb.hybrid.retriever import HybridRetriever
 from kb.vector.retriever import VectorRetriever
@@ -36,17 +35,8 @@ from common.notify import SimulatedSmsNotifier
 from orchestrator.event_flow import process_device_event
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.outbound_flow import run_outbound, run_text_notify, should_call
+from orchestrator.patient_bootstrap import ensure_patient
 from voice.outbound import CallOutcome, SimulatedCaller, get_caller
-
-
-def _ensure_patient(driver, beds: BedAssignmentStub, patient_id: str) -> tuple[str, str]:
-    """Auto-create an unknown patient (G8): fetch synthetic history + assign a bed, then ingest."""
-    rows = driver.run_read("MATCH (p:Patient {id:$id}) RETURN p.id AS id", id=patient_id)
-    unit, bed = beds.assign(patient_id)
-    if not rows:
-        history = PatientHistoryStub().get(patient_id).to_dict()
-        ingest_patient_record(driver, history, bed=(unit, bed))
-    return unit, bed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -65,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--number", default="+15551234567")
     parser.add_argument("--min-criticality", default="High")
     parser.add_argument("--embedder", default="hashing", choices=["auto", "bge", "hashing"])
+    parser.add_argument("--checkpoint", default=None,
+                        help="ECG model checkpoint (.pt); falls back to the stub if absent.")
     args = parser.parse_args(argv)
 
     config = replace(
@@ -73,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     utterances = [*args.follow_ups, args.ack, "yes"]  # follow-ups, then ack + confirm-back
 
-    model = get_ecg_model()  # stub until real weights present
+    model = get_ecg_model(args.checkpoint)  # real wrapper if checkpoint present, else stub
     vitals = MewsVitalsAnalysis()
     beds = BedAssignmentStub()
 
@@ -110,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for event in read_hdf5_file(args.file):
             de = process_window(event, model, vitals)
-            unit, bed = _ensure_patient(driver, beds, de.window.patient_ref)
+            unit, bed = ensure_patient(driver, beds, de.window.patient_ref)
             process_device_event(de, driver, vector, bed=(unit, bed))
             call, reason = should_call(de, config)
             tag = f"{de.window.patient_ref}/{de.event_type} (conf {de.confidence:.2f})"

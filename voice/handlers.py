@@ -12,6 +12,8 @@ from abc import ABC, abstractmethod
 
 from common.audit import AuditLog
 from voice.auth import PinAuthGate, parse_pin
+from voice.outbound import parse_ack
+from voice.outbound_alert import OutboundAlert
 
 
 class Handler(ABC):
@@ -61,20 +63,14 @@ class OrchestratorHandler(Handler):
         state = self.working.get_or_create(session_id)
 
         if state.authenticated:
-            result = self.orchestrator.handle_turn(session_id, text)
-            self.audit.write(
-                actor=f"caller:{session_id}", action="phi_voice_query",
-                subject=state.patient_ref or session_id,
-                outcome="declined" if result.declined else "answered",
-            )
-            return result.answer
+            return self._authenticated_turn(session_id, text)
 
         # --- not yet authenticated: PIN gate ---
         if self.auth_gate.verify(text):
             self.working.set_authenticated(session_id)
             self.audit.write(actor=f"caller:{session_id}", action="inbound_auth",
                              subject=session_id, outcome="success")
-            return _AUTH_OK
+            return self._on_authenticated(session_id)
 
         if parse_pin(text):  # looked like a PIN but was wrong -> count an attempt
             self._attempts[session_id] = self._attempts.get(session_id, 0) + 1
@@ -87,6 +83,55 @@ class OrchestratorHandler(Handler):
 
         # not a PIN at all -> refuse PHI, prompt (no attempt charged)
         return f"I can't share patient information until you authenticate. {_PROMPT_PIN}"
+
+    def _on_authenticated(self, session_id: str) -> str:
+        """First message spoken right after the PIN is accepted. Overridable (see OutboundHandler)."""
+        return _AUTH_OK
+
+    def _authenticated_turn(self, session_id: str, text: str) -> str:
+        """Handle one post-auth turn. Overridable; default routes to the grounded orchestrator."""
+        result = self.orchestrator.handle_turn(session_id, text)
+        self.audit.write(
+            actor=f"caller:{session_id}", action="phi_voice_query",
+            subject=self.working.get_or_create(session_id).patient_ref or session_id,
+            outcome="declined" if result.declined else "answered",
+        )
+        return result.answer
+
+
+_ACK_CONFIRMED = "Thank you, I've recorded your acknowledgment. Goodbye."
+
+
+class OutboundHandler(OrchestratorHandler):
+    """Outbound (relay-initiated) variant: PIN gate, then voice *this event's* alert, then Q&A + ack.
+
+    The relay placed the call for a specific `OutboundAlert`; this handler is seeded with it. The PIN
+    gate is unchanged (PHI stays fail-closed). On auth it binds the session to the alert's patient so
+    follow-ups are scoped, and speaks the event report instead of a generic greeting. A spoken
+    acknowledgment flips the `MonitoredEvent` status in the graph (G4) — closing the outbound loop
+    from the worker side.
+    """
+
+    def __init__(self, orchestrator, working_memory, alert: OutboundAlert, *, driver=None, **kwargs) -> None:
+        super().__init__(orchestrator, working_memory, **kwargs)
+        self.alert = alert
+        self.driver = driver
+
+    def _on_authenticated(self, session_id: str) -> str:
+        # Scope every subsequent turn to this patient, then speak the alert that prompted the call.
+        self.working.set_authenticated(session_id, patient_ref=self.alert.patient_ref)
+        return self.alert.spoken_alert
+
+    def _authenticated_turn(self, session_id: str, text: str) -> str:
+        if parse_ack(text) == "yes":
+            if self.driver is not None:
+                from kb.graph.events import set_event_status  # noqa: PLC0415
+
+                set_event_status(self.driver, self.alert.event_id, "acknowledged")
+            self.audit.write(actor=f"caller:{session_id}", action="acknowledgment",
+                             subject=self.alert.patient_ref, outcome="acknowledged")
+            return _ACK_CONFIRMED
+        return super()._authenticated_turn(session_id, text)
 
 
 def build_handler(
@@ -106,4 +151,19 @@ def build_handler(
 
     orch, driver = build_orchestrator(embedder=embedder, llm=llm)
     handler: Handler = OrchestratorHandler(orch, orch.working)
+    return handler, handler.greeting(), driver.close
+
+
+def build_outbound_handler(
+    alert: OutboundAlert, *, embedder: str = "hashing", llm: str = "echo",
+) -> tuple[Handler, str | None, "callable | None"]:
+    """Build the outbound (event-seeded) handler for the worker. Returns (handler, greeting, cleanup).
+
+    Same backends as `build_handler`, but wrapped in an `OutboundHandler` carrying the alert + a
+    graph driver (so a spoken acknowledgment updates the event status). Greeting is the PIN prompt.
+    """
+    from orchestrator.chat import build_orchestrator  # noqa: PLC0415
+
+    orch, driver = build_orchestrator(embedder=embedder, llm=llm)
+    handler = OutboundHandler(orch, orch.working, alert, driver=driver)
     return handler, handler.greeting(), driver.close
