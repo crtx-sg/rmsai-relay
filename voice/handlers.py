@@ -87,3 +87,23 @@ class OrchestratorHandler(Handler):
 
         # not a PIN at all -> refuse PHI, prompt (no attempt charged)
         return f"I can't share patient information until you authenticate. {_PROMPT_PIN}"
+
+
+def build_handler(
+    mode: str = "orchestrator", *, embedder: str = "hashing", llm: str = "echo",
+) -> tuple[Handler, str | None, "callable | None"]:
+    """Build a conversation handler for `mode`. Returns (handler, greeting, cleanup).
+
+    Single source of truth shared by the offline `cli.voice` demo and the live LiveKit worker.
+    `greeting` is the line to speak first (None for echo); `cleanup` releases backend resources
+    (None for echo). `embedder`/`llm` keep the terminal demo offline by default; the de-id backend
+    still honours config (DEID_BACKEND).
+    """
+    if mode == "echo":
+        return EchoHandler(), None, None
+
+    from orchestrator.chat import build_orchestrator  # noqa: PLC0415 - heavy, optional dep
+
+    orch, driver = build_orchestrator(embedder=embedder, llm=llm)
+    handler: Handler = OrchestratorHandler(orch, orch.working)
+    return handler, handler.greeting(), driver.close

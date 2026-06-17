@@ -18,21 +18,16 @@ from __future__ import annotations
 import argparse
 
 from voice.adapters import StubSTT, StubTTS
-from voice.handlers import EchoHandler, Handler, OrchestratorHandler
+from voice.handlers import build_handler
 from voice.session import VoiceSession
+
+_ECHO_BANNER = "voice echo demo — type what the caller says ('quit' to exit)."
 
 
 def _build_handler(mode: str):
-    """Return (handler, greeting, cleanup)."""
-    if mode == "echo":
-        return EchoHandler(), "voice echo demo — type what the caller says ('quit' to exit).", None
-
-    from orchestrator.chat import build_orchestrator
-
-    # embedder/llm kept offline for the terminal demo; deid backend honours config (DEID_BACKEND)
-    orch, driver = build_orchestrator(embedder="hashing", llm="echo")
-    handler: Handler = OrchestratorHandler(orch, orch.working)
-    return handler, handler.greeting(), driver.close
+    """Return (handler, greeting, cleanup) for the terminal demo (shares voice.handlers factory)."""
+    handler, greeting, cleanup = build_handler(mode)
+    return handler, greeting or _ECHO_BANNER, cleanup
 
 
 def main(argv: list[str] | None = None) -> int:

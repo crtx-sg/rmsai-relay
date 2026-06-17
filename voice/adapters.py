@@ -65,19 +65,32 @@ class WhisperSTT(STTAdapter):
 
 
 class PiperTTS(TTSAdapter):
-    """Self-hosted Piper TTS (lazy)."""
+    """Self-hosted Piper TTS (lazy). `sample_rate` comes from the loaded voice model."""
 
     def __init__(self, model_path: str) -> None:
         from piper.voice import PiperVoice  # noqa: PLC0415
 
         self._voice = PiperVoice.load(model_path)
+        self.sample_rate: int = self._voice.config.sample_rate
 
     def synthesize(self, text: str) -> bytes:
+        """Return a complete WAV (header + PCM) for `text`."""
         import io  # noqa: PLC0415
+        import wave  # noqa: PLC0415
 
         buf = io.BytesIO()
-        self._voice.synthesize(text, buf)
+        with wave.open(buf, "wb") as wav:  # synthesize_wav sets channels/width/rate
+            self._voice.synthesize_wav(text, wav)
         return buf.getvalue()
+
+    def pcm_stream(self, text: str) -> Iterator[bytes]:
+        """Yield raw little-endian int16 PCM (mono, `sample_rate`), one chunk per sentence.
+
+        This is the low-latency primitive the LiveKit worker publishes frame-by-frame; the first
+        chunk can play before the whole utterance is synthesized.
+        """
+        for chunk in self._voice.synthesize(text):
+            yield chunk.audio_int16_bytes
 
 
 def build_stt(config: Config = DEFAULT) -> STTAdapter:
