@@ -80,9 +80,11 @@ async def emit_tts_audio(adapter: TTSAdapter, sample_rate: int, text: str, outpu
     loop = asyncio.get_running_loop()
     pcm_stream = getattr(adapter, "pcm_stream", None)
     if pcm_stream is not None:
+        # stream=False: one ChunkedStream call == one segment; push all chunks, then flush.
+        # (stream=True would require start_segment()/end_segment() framing per segment.)
         output_emitter.initialize(
             request_id=request_id, sample_rate=sample_rate, num_channels=1,
-            mime_type="audio/pcm", stream=True,
+            mime_type="audio/pcm",
         )
         chunks = await loop.run_in_executor(None, lambda: list(pcm_stream(text)))
         for pcm in chunks:

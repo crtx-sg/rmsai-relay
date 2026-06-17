@@ -158,7 +158,7 @@ def test_emit_tts_audio_pcm_stream_path():
     em = _FakeEmitter()
     asyncio.run(emit_tts_audio(_PcmTTS(), 16000, "hello", em))
     assert em.init["mime_type"] == "audio/pcm"
-    assert em.init["stream"] is True
+    assert em.init.get("stream", False) is False  # single segment: no start_segment() framing
     assert em.pushed == [b"\x01\x02", b"\x03\x04"]  # one push per sentence chunk
     assert em.flushed
 
