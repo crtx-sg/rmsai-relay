@@ -220,6 +220,30 @@ text-to-Cypher is an allowlisted read-only fallback only):
 | 9 | ECG strips for last AFib event | graph → artifact ref |
 | 10 | HR & BP trend for last Tachycardia event | graph → artifact ref |
 
+### Example questions the system answers
+
+These are the natural-language prompts a clinician can ask (over text or an authenticated call) that
+the data model is built to serve. Each maps to a tested query template (`T*` above) or the hybrid
+retriever:
+
+| Question | Maps to |
+|----------|---------|
+| "List all patients, bed number, unit/ward who had **critical events in the last 24 hours**." | T1 (graph) |
+| "List **positive patient events** reported in the **last *x* minutes**." | T2 (graph, non-FP) |
+| "What is the **status of events reported on Bed xx** — timestamp, reported event, false positive?, actual condition?" | T3 (graph) |
+| "Get the **event analysis report** for patient / Bed xx in Unit/Ward." | T4 (graph → vector report content) |
+| "What were the **vitals at the time of the specific event** for the patient in Bed xx?" | T5 (graph, inline vitals snapshot) |
+| "Provide an **action-item list** of all outstanding actions for patients." | T6 (graph) |
+| "What is the **treatment / care protocol** for Bedside x's last reported event?" | T7 (hybrid: graph condition + protocol, narrative from vector) |
+| "From the data, do you see any **pattern of age / gender / co-morbidities / symptoms** leading to a specific event?" | T8 (graph analytics — framed as correlation, not causation) |
+| "Show me the **ECG strips** for the patient with the last reported AFib event." | T9 (graph → artifact ref; companion app / chat link, spoken summary over voice) |
+| "Show me the **HR and BP trend** for the patient with the last reported Tachycardia event." | T10 (graph → vitals/trend plot ref) |
+| "Show **all patients who have a specific event** (e.g. all AFib)." | graph traversal: `MonitoredEvent {event_type}` → `Patient` (+ optional bed/unit) |
+
+> Operational items (1–6, 9, 10) are judged by **exact-row match**; hybrid/relationship items (7, 8)
+> by **groundedness + citations**. Out-of-corpus / unknown-bed / unknown-patient questions are
+> expected to **decline**, never fabricate.
+
 ---
 
 ## POC configuration & stubs
