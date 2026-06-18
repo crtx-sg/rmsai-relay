@@ -70,6 +70,7 @@ class OrchestratorHandler(Handler):
             self.working.set_authenticated(session_id)
             self.audit.write(actor=f"caller:{session_id}", action="inbound_auth",
                              subject=session_id, outcome="success")
+            print(f"[voice] PIN accepted for session {session_id}", flush=True)
             return self._on_authenticated(session_id)
 
         if parse_pin(text):  # looked like a PIN but was wrong -> count an attempt
@@ -120,6 +121,8 @@ class OutboundHandler(OrchestratorHandler):
     def _on_authenticated(self, session_id: str) -> str:
         # Scope every subsequent turn to this patient, then speak the alert that prompted the call.
         self.working.set_authenticated(session_id, patient_ref=self.alert.patient_ref)
+        print(f"[voice] speaking event alert for {self.alert.patient_ref} "
+              f"(event {self.alert.event_id})", flush=True)
         return self.alert.spoken_alert
 
     def _authenticated_turn(self, session_id: str, text: str) -> str:
@@ -130,6 +133,8 @@ class OutboundHandler(OrchestratorHandler):
                 set_event_status(self.driver, self.alert.event_id, "acknowledged")
             self.audit.write(actor=f"caller:{session_id}", action="acknowledgment",
                              subject=self.alert.patient_ref, outcome="acknowledged")
+            print(f"[voice] acknowledgment received -> MonitoredEvent {self.alert.event_id} "
+                  f"status=acknowledged (Neo4j updated)", flush=True)
             return _ACK_CONFIRMED
         return super()._authenticated_turn(session_id, text)
 

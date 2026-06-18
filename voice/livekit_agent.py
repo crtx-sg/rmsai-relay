@@ -99,6 +99,14 @@ async def emit_tts_audio(adapter: TTSAdapter, sample_rate: int, text: str, outpu
     output_emitter.flush()
 
 
+def _has_alert(alert_store, room_name: str) -> bool:
+    """Peek whether an outbound alert is staged for a room (for logging; does not consume it)."""
+    try:
+        return alert_store.get(room_name) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def resolve_handler(room_name: str, alert_store, *, mode: str = "orchestrator"):
     """Pick the handler for a room: outbound (event-seeded) if an alert is waiting, else generic.
 
@@ -196,14 +204,17 @@ def make_agent_class():
 
         async def on_enter(self) -> None:
             if self._greeting:
+                print(f"[worker] speaking greeting: {self._greeting!r}", flush=True)
                 self.session.say(self._greeting)
 
         async def llm_node(self, chat_ctx, tools, model_settings):
             text = last_user_text(chat_ctx)
+            print(f"[worker] heard: {text!r}", flush=True)
             loop = asyncio.get_running_loop()
             reply = await loop.run_in_executor(
                 None, partial(self._handler.respond, text, session_id=self._session_id)
             )
+            print(f"[worker] reply: {reply!r}", flush=True)
             yield reply
 
     return HandlerAgent
@@ -228,6 +239,9 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
     except Exception:  # noqa: BLE001 - no redis -> inbound-only worker still functions
         alert_store = None
     # Outbound (relay-initiated) call if an alert is waiting for this room; else inbound.
+    kind = "OUTBOUND (event alert staged)" if (
+        alert_store is not None and _has_alert(alert_store, ctx.room.name)
+    ) else "INBOUND (KB query)"
     handler, greeting, cleanup = resolve_handler(ctx.room.name, alert_store, mode=mode)
     if cleanup is not None:
         async def _shutdown() -> None:
@@ -235,6 +249,7 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         ctx.add_shutdown_callback(_shutdown)
 
     await ctx.connect()
+    print(f"[worker] joined room {ctx.room.name!r} over WebRTC — {kind}", flush=True)
     vad = (ctx.proc.userdata or {}).get("vad") or silero.VAD.load()
     session = AgentSession(
         stt=LocalSTT(stt_adapter),  # session + vad wrap the non-streaming STT for endpointing

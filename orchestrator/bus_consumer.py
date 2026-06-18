@@ -68,13 +68,19 @@ def process_bus_event(
     """
     event = dict_to_event(payload)
     w = event.window
+    print(f"[consume] received event {w.event_id} type={event.event_type} "
+          f"conf={event.confidence:.2f} patient={w.patient_ref}", flush=True)
     unit, bed = ensure_patient(driver, beds, w.patient_ref)
     bed_label = f"{unit}/{bed}"
+    print(f"[consume] patient {w.patient_ref} -> bed {bed_label}", flush=True)
 
-    process_device_event(event, driver, vector, bed=(unit, bed))
+    process_device_event(event, driver, vector, bed=(unit, bed), config=config)
+    print(f"[consume] persisted MonitoredEvent {w.event_id} -> Neo4j graph", flush=True)
+    print(f"[consume] archived report narrative -> Qdrant vector store", flush=True)
 
     call, reason = should_call(event, config)
     if not call:
+        print(f"[consume] no call: {reason} (event still persisted)", flush=True)
         return ConsumeResult(
             event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
             bed=bed_label, persisted=True, called=False, decision_reason=reason,
@@ -88,10 +94,14 @@ def process_bus_event(
         )
     elif caller_factory is not None:  # live LiveKit audio: stage the alert, place the call, hand off
         room = f"rmsai-outbound-{w.event_id}"
+        print(f"[consume] criticality gate PASSED ({reason}); staging alert for room {room}",
+              flush=True)
         alert_store.put(OutboundAlert(
             session_id=room, patient_ref=w.patient_ref, event_id=w.event_id,
-            spoken_alert=spoken_report(event, bed=bed_label), bed=bed_label,
+            spoken_alert=spoken_report(event, bed=bed_label, config=config), bed=bed_label,
         ))
+        print(f"[consume] alert staged in Redis; placing call -> worker will join room {room}",
+              flush=True)
         result = run_outbound(
             event, driver=driver, orchestrator=orchestrator, caller=caller_factory(room),
             utterances=utterances, config=config, bed=bed_label, live_audio=True,

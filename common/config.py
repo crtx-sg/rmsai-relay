@@ -61,6 +61,13 @@ class Config:
     # Inbound auth (G10)
     inbound_auth_pin: str = "1234"
 
+    # Criticality escalation (G1) — gates the outbound call + protocol matching. All configurable:
+    # any event other than the normal baseline, a MEWS score at/above the threshold, or a
+    # deteriorating vital trend escalates criticality to at least High.
+    criticality_normal_event: str = "NORMAL_SINUS"  # the only event treated as non-critical
+    criticality_mews_threshold: int = 3  # MEWS score at/above this ⇒ escalate to High
+    criticality_escalate_on_deteriorating: bool = True  # any deteriorating vital ⇒ escalate to High
+
     # Outbound calling (§6.1 / D16)
     outbound_enabled: bool = False
     outbound_call_number: str = ""
@@ -111,6 +118,9 @@ class Config:
             fp_suppress_min_confidence=_f("FP_SUPPRESS_MIN_CONFIDENCE", 0.80),
             low_confidence_caveat=_f("LOW_CONFIDENCE_CAVEAT", 0.60),
             inbound_auth_pin=os.environ.get("INBOUND_AUTH_PIN", "1234"),
+            criticality_normal_event=os.environ.get("CRITICALITY_NORMAL_EVENT", "NORMAL_SINUS"),
+            criticality_mews_threshold=_i("CRITICALITY_MEWS_THRESHOLD", 3),
+            criticality_escalate_on_deteriorating=_b("CRITICALITY_ESCALATE_ON_DETERIORATING", True),
             outbound_enabled=_b("OUTBOUND_ENABLED", False),
             outbound_call_number=os.environ.get("OUTBOUND_CALL_NUMBER", ""),
             outbound_from=os.environ.get("OUTBOUND_FROM", ""),

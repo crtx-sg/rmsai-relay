@@ -257,6 +257,9 @@ touching callers.
 |-----|---------|---------|
 | `FP_SUPPRESS_MIN_CONFIDENCE` | `0.80` | suppress as FP only if `NORMAL_SINUS` ≥ this; else flag `uncertain` |
 | `LOW_CONFIDENCE_CAVEAT` | `0.60` | top-class confidence below this marks the event `low_confidence` |
+| `CRITICALITY_NORMAL_EVENT` | `NORMAL_SINUS` | the only event treated as non-critical; any other event ⇒ at least High |
+| `CRITICALITY_MEWS_THRESHOLD` | `3` | MEWS score at/above this ⇒ escalate criticality to High |
+| `CRITICALITY_ESCALATE_ON_DETERIORATING` | `true` | any deteriorating vital trend ⇒ escalate criticality to High |
 | `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` | `false` / `High` | gate which events dial out |
 | `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` | — | single hard-configured destination + caller ID |
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` | `2` / `30` | no-answer retry policy |

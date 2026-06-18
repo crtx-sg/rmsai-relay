@@ -7,7 +7,8 @@ symptoms, surgeries, age, gender). References the pseudonym only (G3).
 
 from __future__ import annotations
 
-from common.criticality import criticality
+from common.config import DEFAULT, Config
+from common.criticality import event_criticality
 from common.schemas import DeviceEvent
 
 
@@ -27,11 +28,11 @@ def build_event_report(event: DeviceEvent, patient_context: dict) -> str:
     return f"{base}\n\n{render_patient_context(patient_context)}\n"
 
 
-def spoken_report(event: DeviceEvent, *, bed: str | None = None) -> str:
+def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config = DEFAULT) -> str:
     """A concise spoken alert for the outbound call (the full markdown is for the chart/vector)."""
     w = event.window
     a = event.analysis
-    crit = criticality(event.event_type, a.mews.risk)
+    crit = event_criticality(event, config)
     where = f" on bed {bed}" if bed else ""
     guidance = a.care_guidance[0] if a.care_guidance else ""
     guidance_txt = f" Recommended: {guidance}." if guidance else ""

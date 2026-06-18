@@ -123,17 +123,26 @@ def main(argv: list[str] | None = None) -> int:
     else:
         notifier = SimulatedSmsNotifier()
 
-    client = redis.Redis.from_url(args.redis_url)
+    # socket_timeout must outlive the server-side BLOCK window, else an idle blocking read
+    # (no new messages) raises redis TimeoutError instead of returning nil. Give it headroom.
+    client = redis.Redis.from_url(args.redis_url, socket_timeout=args.block_ms / 1000 + 5)
     _ensure_group(client, args.stream, args.group)
     print(f"[consume] group={args.group} consumer={args.consumer} stream={args.stream}")
 
     processed = 0
     try:
         while True:
-            resp = client.xreadgroup(
-                args.group, args.consumer, {args.stream: ">"},
-                count=args.count, block=args.block_ms,
-            )
+            try:
+                resp = client.xreadgroup(
+                    args.group, args.consumer, {args.stream: ">"},
+                    count=args.count, block=args.block_ms,
+                )
+            except redis.exceptions.TimeoutError:
+                # Idle blocking read elapsed (or a transient slow read) with no new messages.
+                # Treat as an empty batch: exit on --once, otherwise keep waiting.
+                if args.once:
+                    break
+                continue
             if not resp:
                 if args.once:
                     break

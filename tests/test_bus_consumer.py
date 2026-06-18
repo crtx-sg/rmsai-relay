@@ -45,7 +45,7 @@ def patched(monkeypatch):
     calls = {"persist": [], "voice": [], "text": []}
     monkeypatch.setattr(bus_consumer, "ensure_patient", lambda d, b, pid: ("ICU", "3"))
     monkeypatch.setattr(bus_consumer, "process_device_event",
-                        lambda ev, d, v, bed=None: calls["persist"].append(ev.window.event_id))
+                        lambda ev, d, v, bed=None, config=None: calls["persist"].append(ev.window.event_id))
 
     def _voice(ev, **kw):
         calls["voice"].append(kw["bed"])

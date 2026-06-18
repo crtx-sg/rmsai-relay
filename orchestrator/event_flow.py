@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from common.criticality import criticality
+from common.config import DEFAULT, Config
+from common.criticality import event_criticality
 from common.schemas import DeviceEvent
 from kb.graph.driver import GraphDriver
 from kb.graph.events import (
@@ -60,10 +61,11 @@ def process_device_event(
     *,
     bed: tuple | None = None,
     generated_at: float = 0.0,
+    config: Config = DEFAULT,
 ) -> EventFlowResult:
     """Persist + archive an inbound DeviceEvent. Returns a summary of what was written."""
     w = event.window
-    crit = criticality(event.event_type, event.analysis.mews.risk)
+    crit = event_criticality(event, config)
     gt = w.ground_truth.condition if w.ground_truth else None
     actions = _action_items(event, crit)
 

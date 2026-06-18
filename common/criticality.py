@@ -1,8 +1,13 @@
 """Criticality lookup (gap G1).
 
-`criticality(event_type, mews_risk) -> {Low, Medium, High, Critical}` — a small, reviewable
-rule that gates the outbound call and protocol matching. Derived from the arrhythmia class and
-the MEWS risk level; the more severe of the two wins.
+`criticality(event_type, mews_risk) -> {Low, Medium, High, Critical}` — the intrinsic rule:
+the more severe of the arrhythmia class and the MEWS risk level wins.
+
+`assess_criticality(...)` / `event_criticality(event, config)` layer the **configurable escalation**
+on top: criticality escalates to at least High when the event is not the normal baseline
+(`CRITICALITY_NORMAL_EVENT`), the MEWS score is at/above `CRITICALITY_MEWS_THRESHOLD`, or a vital is
+deteriorating (`CRITICALITY_ESCALATE_ON_DETERIORATING`). This is what gates the outbound call and
+protocol matching. Escalation only raises to High — it never lowers an already-Critical event.
 """
 
 from __future__ import annotations
@@ -48,6 +53,52 @@ def criticality(event_type: str, mews_risk: str) -> Criticality:
     event_c = _EVENT_CRITICALITY.get(event_type, "Medium")
     mews_c = _MEWS_CRITICALITY.get(mews_risk, "Low")
     return event_c if _RANK[event_c] >= _RANK[mews_c] else mews_c
+
+
+def assess_criticality(
+    event_type: str,
+    mews_risk: str,
+    mews_score: int,
+    deteriorating: bool,
+    *,
+    normal_event: str = "NORMAL_SINUS",
+    mews_threshold: int = 3,
+    escalate_on_deteriorating: bool = True,
+) -> Criticality:
+    """Criticality under the configurable escalation rules.
+
+    Starts from the intrinsic event/MEWS lookup (so VT/VF/ST stay Critical), then escalates to at
+    least High when ANY of these hold: the event is not the `normal_event` baseline; the MEWS score
+    is at/above `mews_threshold`; or a vital is `deteriorating` (when escalation on trend is on).
+    Escalation only raises to High — it never lowers an already-Critical event.
+    """
+    base = criticality(event_type, mews_risk)
+    escalate = (
+        event_type != normal_event
+        or mews_score >= mews_threshold
+        or (escalate_on_deteriorating and deteriorating)
+    )
+    if escalate and _RANK[base] < _RANK["High"]:
+        return "High"
+    return base
+
+
+def is_deteriorating(analysis) -> bool:
+    """True iff any per-vital Mann-Kendall trend is deteriorating."""
+    return any(t.direction == "deteriorating" for t in analysis.vital_trends.values())
+
+
+def event_criticality(event, config) -> Criticality:
+    """Configurable criticality for a `DeviceEvent` (duck-typed), reading thresholds from `config`."""
+    return assess_criticality(
+        event.event_type,
+        event.analysis.mews.risk,
+        event.analysis.mews.score,
+        is_deteriorating(event.analysis),
+        normal_event=config.criticality_normal_event,
+        mews_threshold=config.criticality_mews_threshold,
+        escalate_on_deteriorating=config.criticality_escalate_on_deteriorating,
+    )
 
 
 def at_least(level: str, threshold: str) -> bool:

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from common.audit import AuditLog
 from common.config import DEFAULT, Config
-from common.criticality import at_least, criticality
+from common.criticality import at_least, event_criticality
 from common.schemas import DeviceEvent
 from kb.graph.driver import GraphDriver
 from kb.graph.events import set_event_status
@@ -46,7 +46,7 @@ def should_call(event: DeviceEvent, config: Config = DEFAULT) -> tuple[bool, str
         return False, "false_positive"
     if not config.outbound_enabled:
         return False, "outbound_disabled"
-    crit = criticality(event.event_type, event.analysis.mews.risk)
+    crit = event_criticality(event, config)
     if not at_least(crit, config.outbound_min_criticality):
         return False, f"below_threshold ({crit} < {config.outbound_min_criticality})"
     return True, "ok"
@@ -100,7 +100,7 @@ def run_outbound(
         # Worker owns the conversation from here (real STT/TTS over LiveKit). Don't script it.
         audit.write(actor="system", action="outbound_live", subject=event.window.patient_ref,
                     outcome="worker_driven")
-        alert = spoken_report(event, bed=bed)
+        alert = spoken_report(event, bed=bed, config=config)
         return OutboundResult(called=True, decision_reason=reason, outcome=outcome.value,
                               attempts=attempts, status="reported", spoken_report=alert,
                               transcript=[alert])
@@ -131,7 +131,7 @@ def _converse(event, orchestrator, utterances, session_id, bed, *, emit, drop_af
         transcript.append(text)
         emit(text)
 
-    say(spoken_report(event, bed=bed))
+    say(spoken_report(event, bed=bed, config=config))
     answers: list[str] = []
     acknowledged = False
     dropped = False
@@ -197,7 +197,7 @@ def run_text_notify(
     if not call:
         return OutboundResult(called=False, decision_reason=reason, channel="text", status="reported")
 
-    alert = spoken_report(event, bed=bed)
+    alert = spoken_report(event, bed=bed, config=config)
     delivered = notifier.send(to, alert)
     audit.write(actor="system", action="text_notify", subject=event.window.patient_ref,
                 outcome="delivered" if delivered else "failed")

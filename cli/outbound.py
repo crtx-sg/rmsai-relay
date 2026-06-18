@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         for event in read_hdf5_file(args.file):
             de = process_window(event, model, vitals)
             unit, bed = ensure_patient(driver, beds, de.window.patient_ref)
-            process_device_event(de, driver, vector, bed=(unit, bed))
+            process_device_event(de, driver, vector, bed=(unit, bed), config=config)
             call, reason = should_call(de, config)
             tag = f"{de.window.patient_ref}/{de.event_type} (conf {de.confidence:.2f})"
             if not call:
