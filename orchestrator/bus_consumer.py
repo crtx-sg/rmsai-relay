@@ -85,6 +85,10 @@ def process_bus_event(
             event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
             bed=bed_label, persisted=True, called=False, decision_reason=reason,
         )
+    if reason.startswith("fp_override"):
+        print(f"[consume] FALSE-POSITIVE OVERRIDE: ECG classified {event.event_type} "
+              f"(false positive), but the patient's vitals warrant a call [{reason}]. "
+              f"Calling anyway — vitals/MEWS-driven escalation, not the rhythm.", flush=True)
 
     to = to or config.outbound_call_number
     if channel == "text":

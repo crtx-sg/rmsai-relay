@@ -10,6 +10,14 @@ import pytest
 from common.config import DEFAULT
 from common.deid import RegexDeidentifier
 from common.interfaces import ECGModel
+from common.schemas import (
+    ClinicalAnalysis,
+    DeviceEvent,
+    MEWS,
+    SignalWindow,
+    VitalTrend,
+    WindowGeometry,
+)
 from common.providers import DeidentifyingLLM, EchoLLM
 from inference.pipeline import process_window
 from inference.vitals_analysis import MewsVitalsAnalysis
@@ -65,7 +73,49 @@ def test_false_positive_never_calls():
 
     fp = process_window(w, _Normal(), MewsVitalsAnalysis())
     assert fp.is_false_positive
-    assert not should_call(fp, _CFG)[0]
+    # Pure D10 guard (vitals-override off): a false positive never dials out.
+    assert not should_call(fp, replace(_CFG, criticality_fp_override_on_vitals=False))[0]
+
+
+# --- false-positive override: vitals/MEWS drive a call even on a confident NORMAL_SINUS ---------
+
+
+def _fp_event(*, mews_score=0, mews_risk="Low", deteriorating=False) -> DeviceEvent:
+    """A confident NORMAL_SINUS (is_false_positive=True) with controllable MEWS + vital trend."""
+    w = SignalWindow(patient_ref="PT0001", event_id="E-FP", start_timestamp=0.0,
+                     event_timestamp=6.0, window=WindowGeometry(before_s=6.0, after_s=6.0))
+    trends = {"HR": VitalTrend(direction="deteriorating")} if deteriorating else {}
+    return DeviceEvent(
+        window=w, event_type="NORMAL_SINUS", confidence=0.99, is_false_positive=True,
+        analysis=ClinicalAnalysis(mews=MEWS(score=mews_score, risk=mews_risk), vital_trends=trends),
+    )
+
+
+def test_fp_override_calls_on_high_mews():
+    call, reason = should_call(_fp_event(mews_score=4, mews_risk="Medium"), _CFG)
+    assert call and reason.startswith("fp_override") and "MEWS" in reason
+
+
+def test_fp_override_calls_on_deteriorating_vitals():
+    call, reason = should_call(_fp_event(deteriorating=True), _CFG)
+    assert call and reason.startswith("fp_override") and "deteriorating" in reason
+
+
+def test_fp_override_can_be_disabled_reverting_to_d10():
+    ev = _fp_event(mews_score=4, mews_risk="Medium")
+    assert should_call(ev, replace(_CFG, criticality_fp_override_on_vitals=False)) == \
+        (False, "false_positive")
+
+
+def test_fp_without_vitals_concern_still_skips():
+    assert should_call(_fp_event(), _CFG) == (False, "false_positive")
+
+
+def test_fp_override_spoken_report_explains_the_case():
+    from orchestrator.report import spoken_report
+
+    txt = spoken_report(_fp_event(deteriorating=True), bed="ICU/1", config=_CFG)
+    assert "High criticality" in txt and "driven by the patient's vitals" in txt
 
 
 # --- full loop over live backends ---

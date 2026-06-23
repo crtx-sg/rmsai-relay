@@ -8,7 +8,7 @@ symptoms, surgeries, age, gender). References the pseudonym only (G3).
 from __future__ import annotations
 
 from common.config import DEFAULT, Config
-from common.criticality import event_criticality
+from common.criticality import event_criticality, vitals_override
 from common.schemas import DeviceEvent
 
 
@@ -36,10 +36,20 @@ def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config 
     where = f" on bed {bed}" if bed else ""
     guidance = a.care_guidance[0] if a.care_guidance else ""
     guidance_txt = f" Recommended: {guidance}." if guidance else ""
+    # When the rhythm is a false positive but vitals drove the alert, say so plainly so the
+    # clinician isn't confused by a "normal sinus" event being High criticality.
+    override_txt = ""
+    if event.is_false_positive:
+        triggered, why = vitals_override(event, config)
+        if triggered and config.criticality_fp_override_on_vitals:
+            override_txt = (
+                f" Note: the ECG rhythm is classified as normal sinus, so this alert is driven by "
+                f"the patient's vitals ({why}), not the rhythm."
+            )
     return (
         f"Alert for patient {w.patient_ref}{where}. Detected {event.event_type.replace('_', ' ')}, "
         f"{crit} criticality, MEWS {a.mews.score} ({a.mews.risk}), "
-        f"confidence {event.confidence:.0%}.{guidance_txt}"
+        f"confidence {event.confidence:.0%}.{guidance_txt}{override_txt}"
     )
 
 

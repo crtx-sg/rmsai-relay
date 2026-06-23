@@ -62,10 +62,10 @@ def patched(monkeypatch):
     return calls
 
 
-def _run(payload, patched, **kw):
+def _run(payload, patched, *, config=_CFG, **kw):
     return bus_consumer.process_bus_event(
         payload, driver=object(), vector=object(), orchestrator=object(), beds=object(),
-        utterances=["yes", "yes"], config=_CFG, **kw,
+        utterances=["yes", "yes"], config=config, **kw,
     )
 
 
@@ -83,7 +83,17 @@ def test_text_channel_routes_to_notify(patched):
 
 
 def test_false_positive_persists_but_never_calls(patched):
-    res = _run(event_to_dict(_event(_Normal())), patched, channel="voice")
+    # D10 guard with the vitals-override disabled: a NORMAL_SINUS persists but never dials out.
+    cfg = replace(_CFG, criticality_fp_override_on_vitals=False)
+    res = _run(event_to_dict(_event(_Normal())), patched, channel="voice", config=cfg)
     assert res.persisted and not res.called
     assert res.decision_reason == "false_positive"
     assert patched["persist"] and not patched["voice"] and not patched["text"]
+
+
+def test_false_positive_overridden_by_vitals_calls(patched):
+    # Same NORMAL_SINUS event (HR=145 -> high MEWS) DOES call when the vitals-override is on.
+    res = _run(event_to_dict(_event(_Normal())), patched, channel="voice")
+    assert res.persisted and res.called
+    assert res.decision_reason.startswith("fp_override")
+    assert patched["voice"] == ["ICU/3"]

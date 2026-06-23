@@ -260,6 +260,7 @@ touching callers.
 | `CRITICALITY_NORMAL_EVENT` | `NORMAL_SINUS` | the only event treated as non-critical; any other event ⇒ at least High |
 | `CRITICALITY_MEWS_THRESHOLD` | `3` | MEWS score at/above this ⇒ escalate criticality to High |
 | `CRITICALITY_ESCALATE_ON_DETERIORATING` | `true` | any deteriorating vital trend ⇒ escalate criticality to High |
+| `CRITICALITY_FP_OVERRIDE_ON_VITALS` | `true` | call even on a confident false-positive ECG (NORMAL_SINUS) when vitals warrant it (MEWS ≥ threshold or deteriorating); overrides the spec-D10 no-call guard |
 | `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` | `false` / `High` | gate which events dial out |
 | `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` | — | single hard-configured destination + caller ID |
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` | `2` / `30` | no-answer retry policy |
@@ -271,6 +272,42 @@ touching callers.
 deterministic test stub → validated SaMD model on Triton) · `EventStore` (Neo4j → Postgres/
 TimescaleDB at scale) · FHIR client (stub → HAPI) · outbound (single number → escalation tree) ·
 caller auth (shared PIN → per-user identity/MFA) · audit (JSONL → tamper-evident store).
+
+### Criticality & the outbound-call decision
+
+Criticality (`common/criticality.py`) drives both the persisted `MonitoredEvent.criticality` and the
+outbound-call gate, and all of its inputs are configurable (table above). It is computed in layers:
+
+1. **Intrinsic** — `criticality(event_type, mews_risk)` takes the more severe of the arrhythmia
+   class and the MEWS risk (so VT/VF/ST_ELEVATION are intrinsically `Critical`).
+2. **Configurable escalation** — `event_criticality(event, config)` raises that to **at least
+   `High`** when **any** of:
+   - the event is **not** the normal baseline (`CRITICALITY_NORMAL_EVENT`, default `NORMAL_SINUS`) —
+     i.e. *any* real arrhythmia is at least High;
+   - the **MEWS score ≥ `CRITICALITY_MEWS_THRESHOLD`** (default 3);
+   - a **vital is deteriorating** (Mann-Kendall trend), when `CRITICALITY_ESCALATE_ON_DETERIORATING`
+     is on.
+
+   Escalation only ever raises to `High` — it never lowers an already-`Critical` event.
+3. **Call gate** (`should_call`) — dials out when `outbound_enabled` and the criticality is at or
+   above `OUTBOUND_MIN_CRITICALITY` (default `High`). The event is **always persisted**; the gate
+   only governs the call.
+
+**False-positive override (vitals beat the rhythm).** A confident `NORMAL_SINUS`
+(≥ `FP_SUPPRESS_MIN_CONFIDENCE`) is a false positive and normally does **not** call (spec D10). When
+`CRITICALITY_FP_OVERRIDE_ON_VITALS` is on (default), a **vitals-driven escalation** (MEWS ≥ threshold
+or deteriorating) **overrides** that guard — the patient is deteriorating regardless of the rhythm,
+so the call still fires. This case is made explicit at three layers so it is never confusing:
+
+- **decision reason** → `fp_override (MEWS 5 >= threshold 3)` / `fp_override (vitals deteriorating)`
+  (also written to the audit log);
+- **console** → `[consume] FALSE-POSITIVE OVERRIDE: ECG classified NORMAL_SINUS (false positive),
+  but the patient's vitals warrant a call … — vitals/MEWS-driven escalation, not the rhythm.`;
+- **spoken alert** → appends *"Note: the ECG rhythm is classified as normal sinus, so this alert is
+  driven by the patient's vitals (…), not the rhythm."*
+
+Set `CRITICALITY_FP_OVERRIDE_ON_VITALS=false` to revert to the strict spec-D10 behaviour
+(NORMAL_SINUS ⇒ never call).
 
 ### Safety & PHI guarantees
 

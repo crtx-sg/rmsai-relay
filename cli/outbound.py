@@ -109,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
             if not call:
                 print(f"[skip] {tag} @ {bed}: {reason}")
                 continue
+            if reason.startswith("fp_override"):
+                print(f"[fp-override] {tag} @ {bed}: ECG is a false positive, but vitals warrant "
+                      f"a call [{reason}] — calling anyway (vitals/MEWS-driven escalation).")
             if args.channel == "text":
                 result = run_text_notify(
                     de, driver=driver, orchestrator=orch, notifier=notifier, to=args.number,

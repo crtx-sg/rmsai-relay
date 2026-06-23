@@ -67,6 +67,9 @@ class Config:
     criticality_normal_event: str = "NORMAL_SINUS"  # the only event treated as non-critical
     criticality_mews_threshold: int = 3  # MEWS score at/above this ⇒ escalate to High
     criticality_escalate_on_deteriorating: bool = True  # any deteriorating vital ⇒ escalate to High
+    # Call even when the ECG is a (confident) false positive, if the patient's vitals warrant it
+    # (MEWS >= threshold or deteriorating). Overrides the NORMAL_SINUS ⇒ no-call guard (spec D10).
+    criticality_fp_override_on_vitals: bool = True
 
     # Outbound calling (§6.1 / D16)
     outbound_enabled: bool = False
@@ -121,6 +124,7 @@ class Config:
             criticality_normal_event=os.environ.get("CRITICALITY_NORMAL_EVENT", "NORMAL_SINUS"),
             criticality_mews_threshold=_i("CRITICALITY_MEWS_THRESHOLD", 3),
             criticality_escalate_on_deteriorating=_b("CRITICALITY_ESCALATE_ON_DETERIORATING", True),
+            criticality_fp_override_on_vitals=_b("CRITICALITY_FP_OVERRIDE_ON_VITALS", True),
             outbound_enabled=_b("OUTBOUND_ENABLED", False),
             outbound_call_number=os.environ.get("OUTBOUND_CALL_NUMBER", ""),
             outbound_from=os.environ.get("OUTBOUND_FROM", ""),

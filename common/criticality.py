@@ -88,6 +88,21 @@ def is_deteriorating(analysis) -> bool:
     return any(t.direction == "deteriorating" for t in analysis.vital_trends.values())
 
 
+def vitals_override(event, config) -> tuple[bool, str]:
+    """Whether the patient's *vitals* warrant a call regardless of the ECG classification.
+
+    Independent of `event_type` (so it applies even to a false-positive NORMAL_SINUS): True when the
+    MEWS score is at/above `criticality_mews_threshold`, or a vital is deteriorating (when enabled).
+    Returns `(triggered, reason)` — the reason is a short, loggable phrase for clarity.
+    """
+    score = event.analysis.mews.score
+    if score >= config.criticality_mews_threshold:
+        return True, f"MEWS {score} >= threshold {config.criticality_mews_threshold}"
+    if config.criticality_escalate_on_deteriorating and is_deteriorating(event.analysis):
+        return True, "vitals deteriorating"
+    return False, ""
+
+
 def event_criticality(event, config) -> Criticality:
     """Configurable criticality for a `DeviceEvent` (duck-typed), reading thresholds from `config`."""
     return assess_criticality(

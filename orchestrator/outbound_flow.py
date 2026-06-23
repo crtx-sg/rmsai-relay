@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from common.audit import AuditLog
 from common.config import DEFAULT, Config
-from common.criticality import at_least, event_criticality
+from common.criticality import at_least, event_criticality, vitals_override
 from common.schemas import DeviceEvent
 from kb.graph.driver import GraphDriver
 from kb.graph.events import set_event_status
@@ -41,15 +41,23 @@ class OutboundResult:
 
 
 def should_call(event: DeviceEvent, config: Config = DEFAULT) -> tuple[bool, str]:
-    """Decide whether this event dials out. Returns (call?, reason)."""
-    if event.is_false_positive:
-        return False, "false_positive"
+    """Decide whether this event dials out. Returns (call?, reason).
+
+    A false-positive ECG (NORMAL_SINUS) normally does not call (spec D10). But when
+    `criticality_fp_override_on_vitals` is on, a vitals-driven escalation (MEWS >= threshold or a
+    deteriorating trend) **overrides** that guard — the patient is deteriorating regardless of the
+    rhythm, so we still call. The returned reason names the override for the audit/console log.
+    """
     if not config.outbound_enabled:
         return False, "outbound_disabled"
     crit = event_criticality(event, config)
+    vitals_warn, why = vitals_override(event, config)
+    fp_override = event.is_false_positive and config.criticality_fp_override_on_vitals and vitals_warn
+    if event.is_false_positive and not fp_override:
+        return False, "false_positive"
     if not at_least(crit, config.outbound_min_criticality):
         return False, f"below_threshold ({crit} < {config.outbound_min_criticality})"
-    return True, "ok"
+    return True, (f"fp_override ({why})" if fp_override else "ok")
 
 
 def run_outbound(
