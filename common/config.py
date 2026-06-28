@@ -100,11 +100,18 @@ class Config:
     deid_spacy_model: str = "en_core_web_lg"  # spaCy NER model for presidio (or en_core_web_sm)
 
     # Voice STT/TTS (real audio path)
-    stt_backend: str = "stub"  # stub | whisper
-    tts_backend: str = "stub"  # stub | piper
+    stt_backend: str = "stub"  # stub | whisper | elevenlabs
+    tts_backend: str = "stub"  # stub | piper | elevenlabs
     whisper_model: str = "base.en"
     stt_initial_prompt: str = CLINICAL_STT_PROMPT  # Whisper vocab biasing (G15)
     piper_voice_path: str = ""  # path to a Piper .onnx voice
+    # ElevenLabs (cloud STT "Scribe" + TTS) — for accuracy/latency benchmarking on SYNTHETIC data
+    # only. Sends audio/text to a third party, so it must NEVER carry real PHI (hard rules #4/#5).
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # default public voice ("Rachel")
+    elevenlabs_tts_model: str = "eleven_flash_v2_5"  # low-latency TTS model
+    elevenlabs_stt_model: str = "scribe_v1"
+    elevenlabs_tts_sample_rate: int = 22050  # PCM rate; ElevenLabs supports 16000/22050/24000/44100
     # LiveKit (self-hosted ws://localhost:7880 or LiveKit Cloud wss://<project>.livekit.cloud)
     livekit_url: str = "ws://localhost:7880"
     livekit_api_key: str = ""
@@ -153,6 +160,11 @@ class Config:
             whisper_model=os.environ.get("WHISPER_MODEL", "base.en"),
             stt_initial_prompt=os.environ.get("STT_INITIAL_PROMPT", CLINICAL_STT_PROMPT),
             piper_voice_path=os.environ.get("PIPER_VOICE_PATH", ""),
+            elevenlabs_api_key=os.environ.get("ELEVENLABS_API_KEY", ""),
+            elevenlabs_voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+            elevenlabs_tts_model=os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_flash_v2_5"),
+            elevenlabs_stt_model=os.environ.get("ELEVENLABS_STT_MODEL", "scribe_v1"),
+            elevenlabs_tts_sample_rate=_i("ELEVENLABS_TTS_SAMPLE_RATE", 22050),
             livekit_url=os.environ.get("LIVEKIT_URL", "ws://localhost:7880"),
             livekit_api_key=os.environ.get("LIVEKIT_API_KEY", ""),
             livekit_api_secret=os.environ.get("LIVEKIT_API_SECRET", ""),

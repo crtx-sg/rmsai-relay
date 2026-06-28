@@ -62,6 +62,16 @@ class QdrantStore:
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
             )
 
+    def vector_dim(self) -> int | None:
+        """Return the collection's configured vector size, or None if it does not exist."""
+        if not self.client.collection_exists(self.collection):
+            return None
+        params = self.client.get_collection(self.collection).config.params.vectors
+        # Single unnamed vector -> VectorParams(.size); named vectors -> dict (take the first).
+        if isinstance(params, dict):
+            params = next(iter(params.values()))
+        return params.size
+
     def index(self, chunks: list[Chunk], vectors: list[list[float]]) -> int:
         """Upsert chunks + their vectors (content-addressed ids → idempotent). Returns the count."""
         points = [
@@ -74,6 +84,27 @@ class QdrantStore:
         ]
         self.client.upsert(collection_name=self.collection, points=points)
         return len(points)
+
+    def chunks_for_doc(self, doc_id: str, limit: int = 100) -> list[dict]:
+        """Return the payloads ({text, source, doc_id}) of every chunk for a document id.
+
+        Inspection/dump helper — filters by payload `doc_id` (no vector search). Empty if the
+        collection or document is absent.
+        """
+        from qdrant_client.models import (  # noqa: PLC0415
+            FieldCondition,
+            Filter,
+            MatchValue,
+        )
+
+        if not self.client.collection_exists(self.collection):
+            return []
+        flt = Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))])
+        points, _ = self.client.scroll(
+            collection_name=self.collection, scroll_filter=flt, limit=limit,
+            with_payload=True, with_vectors=False,
+        )
+        return [p.payload for p in points]
 
     def search(self, query_vector: list[float], k: int = 5) -> list[SearchHit]:
         hits = self.client.search(

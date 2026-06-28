@@ -421,5 +421,15 @@ def run_agent(config: Config | None = None) -> None:  # pragma: no cover - needs
             "WARNING: STT_BACKEND/TTS_BACKEND is 'stub' — the worker will not produce real audio. "
             "Set STT_BACKEND=whisper and TTS_BACKEND=piper (uv sync --extra voice) for real calls."
         )
+    if config.tts_backend == "elevenlabs":
+        print(
+            "NOTE: TTS_BACKEND=elevenlabs (cloud). Spoken text is de-identified (Presidio/regex) "
+            "before being sent, on top of pseudonym-by-construction — no PHI in the outbound text."
+        )
+    if config.stt_backend == "elevenlabs":
+        print(
+            "WARNING: STT_BACKEND=elevenlabs (cloud). RAW caller AUDIO is sent to a third party and "
+            "CANNOT be de-identified first — use SYNTHETIC speech ONLY, never real PHI (rules #4/#5)."
+        )
 
     cli.run_app(build_worker_options(config))

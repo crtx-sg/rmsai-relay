@@ -16,6 +16,9 @@ from voice.wake import detect_wake_word
         ("um, hey vios, get the patient history", "get the patient history"),  # leading noise
         ("hey bios what is the mews", "what is the mews"),  # STT variant of "vios"
         ("hello vios status please", "status please"),     # greeting variant
+        ("aveos what were the vitals", "what were the vitals"),  # merged single-token mishearing
+        ("Avios, show the vitals.", "show the vitals"),    # another merged form
+        ("a vios get the patient history", "get the patient history"),  # split lead-in
     ],
 )
 def test_wake_word_matches_and_strips(text, remainder):

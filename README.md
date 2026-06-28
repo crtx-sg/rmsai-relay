@@ -382,6 +382,25 @@ uv sync --extra livekit                               # LiveKit agent worker + S
 `TTS_BACKEND`, `INBOUND_AUTH_PIN`, and for live calls `LIVEKIT_URL` / `LIVEKIT_API_KEY` /
 `LIVEKIT_API_SECRET` plus `OUTBOUND_ENABLED=true`.
 
+**Swappable speech backends.** STT/TTS sit behind `STTAdapter`/`TTSAdapter` (`voice/adapters.py`),
+selected by `STT_BACKEND` / `TTS_BACKEND`: self-hosted **whisper**/**piper** (default), or cloud
+**elevenlabs** (STT "Scribe" + TTS; stdlib HTTP, no extra dep) for **accuracy/latency benchmarking**.
+Set `ELEVENLABS_API_KEY` (+ optional `ELEVENLABS_VOICE_ID` / `ELEVENLABS_TTS_MODEL` /
+`ELEVENLABS_STT_MODEL`). Compare backends + latency offline with
+`uv run python -m cli.speech_check --tts elevenlabs --stt elevenlabs` (TTS → STT round-trip, prints
+per-leg ms).
+
+PHI handling differs by direction (the two cloud legs are **not** symmetric):
+
+- **Cloud TTS is PHI-guarded.** Every spoken string (greeting, alert, answers) is run through the
+  configured de-identifier (`DEID_BACKEND`: Presidio/regex) by `DeidentifyingTTS` **before** the
+  text leaves the host — on top of pseudonym-by-construction. So no name/SSN/etc. reaches the
+  provider; cloud TTS is safe for the de-identified clinical text this system produces.
+- **Cloud STT cannot be pre-redacted.** It sends **raw caller audio** to be transcribed, so there is
+  nothing to de-identify first (de-id needs text). If a clinician *speaks* an identifier it reaches
+  the provider. Therefore `STT_BACKEND=elevenlabs` is **synthetic-speech only, never real PHI**
+  (hard rules #4/#5). The worker prints a warning. The self-hosted whisper path keeps STT on-box.
+
 > If you hit `ModuleNotFoundError: presidio_analyzer`, set `DEID_BACKEND=auto` (or `regex`), or
 > install the `deid` extra above.
 

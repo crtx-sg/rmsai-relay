@@ -1,11 +1,14 @@
 """Phase 2A vector-RAG CLI.
 
-  python -m cli.kb_vector index   --dir docs/
+  python -m cli.kb_vector index   --dir docs/            # APPEND (upsert) — preserves event reports
+  python -m cli.kb_vector index   --dir docs/ --reset    # full rebuild — wipes the collection first
   python -m cli.kb_vector retrieve "how do I rate control atrial fibrillation"
   python -m cli.kb_vector ask      "what triggers escalation to critical care"
 
-`index` persists into the live Qdrant server; `retrieve`/`ask` query it. Use `--in-memory` to run
-a self-contained index+query in one process (no server needed). `--embedder {auto,bge,hashing}`
+`index` persists into the live Qdrant server; `retrieve`/`ask` query it. `index` **appends** by
+default (idempotent upsert), so re-indexing the clinical corpus no longer wipes event-report
+narratives added by `consume`; pass `--reset` for a clean rebuild. Use `--in-memory` to run a
+self-contained index+query in one process (no server needed). `--embedder {auto,bge,hashing}`
 selects the embedding backend (auto prefers BGE, falls back to hashing offline).
 """
 
@@ -40,8 +43,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-rerank", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_index = sub.add_parser("index", help="chunk + embed + index a corpus")
+    p_index = sub.add_parser("index", help="chunk + embed + index a corpus (append by default)")
     p_index.add_argument("--dir", default="docs")
+    p_index.add_argument("--reset", action="store_true",
+                         help="recreate the collection first (wipes event-report narratives)")
 
     p_ret = sub.add_parser("retrieve", help="ranked chunks + citations")
     p_ret.add_argument("query")
@@ -59,8 +64,9 @@ def main(argv: list[str] | None = None) -> int:
         retriever.index_dir("docs")
 
     if args.cmd == "index":
-        n = retriever.index_dir(args.dir)
-        print(json.dumps({"indexed_chunks": n, "embedder": retriever.embedder.name}))
+        n = retriever.index_dir(args.dir, reset=args.reset)
+        print(json.dumps({"indexed_chunks": n, "embedder": retriever.embedder.name,
+                          "mode": "reset" if args.reset else "append"}))
         return 0
 
     if args.cmd == "retrieve":

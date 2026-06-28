@@ -87,7 +87,9 @@ def main(argv: list[str] | None = None) -> int:
     vector = VectorRetriever.build(
         store=QdrantStore.connect(DEFAULT.qdrant_url, "rmsai_docs"), embedder_name=args.embedder
     )
-    vector.index_dir("docs")
+    # Append (don't reset): ensure the clinical docs are present without wiping event-report
+    # narratives that earlier consume runs archived into the same collection.
+    vector.index_dir("docs", reset=False)
     driver = GraphDriver.from_config(DEFAULT)
     migrate(driver)
     orch = Orchestrator(

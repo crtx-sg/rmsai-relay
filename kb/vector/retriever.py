@@ -35,12 +35,28 @@ class VectorRetriever:
         store = store or QdrantStore.in_memory()
         return cls(store, embedder, LexicalReranker() if rerank else None)
 
-    def index_dir(self, directory: str | Path) -> int:
-        """Chunk, embed, and index every document under `directory` (resets first). Returns #chunks."""
+    def index_dir(self, directory: str | Path, *, reset: bool = True) -> int:
+        """Chunk, embed, and index every document under `directory`. Returns #chunks.
+
+        `reset=True` (default) recreates the collection first — a clean corpus rebuild. `reset=False`
+        appends: chunks are upserted by content-addressed id (idempotent for unchanged docs), so
+        re-indexing the corpus preserves other documents already in the store (e.g. event-report
+        narratives added by `consume`). The CLI exposes this as `index` (append) vs `index --reset`.
+        """
         chunks = chunk_dir(directory)
         if not chunks:
             return 0
-        self.store.reset(self.embedder.dim)
+        if reset:
+            self.store.reset(self.embedder.dim)
+        else:
+            existing = self.store.vector_dim()
+            if existing is not None and existing != self.embedder.dim:
+                raise ValueError(
+                    f"collection '{self.store.collection}' has vector dim {existing}, but embedder "
+                    f"'{self.embedder.name}' produces dim {self.embedder.dim}. Append needs a "
+                    f"matching embedder — re-run with that embedder, or rebuild with --reset."
+                )
+            self.store.ensure(self.embedder.dim)
         vectors = self.embedder.embed([c.text for c in chunks])
         return self.store.index(chunks, vectors)
 
