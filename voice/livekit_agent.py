@@ -23,6 +23,7 @@ turn-taking logic is covered via stub adapters in `voice/session.py`, and the sp
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from functools import partial
@@ -46,6 +47,21 @@ except ImportError:  # pragma: no cover - exercised only without the livekit ext
 # TTS sample rate to assume when an adapter doesn't advertise one (e.g. the stub). Real Piper
 # voices expose `.sample_rate`; lessac-medium is 22.05 kHz.
 _FALLBACK_SAMPLE_RATE = 22050
+
+# Third-party libraries that flood the worker console at DEBUG (presidio dumps every PII recognizer
+# decision per turn; whisper/piper log per-segment phonemes; neo4j/redis/http log every call). We
+# keep our own `[worker]`/`[voice]` prints and livekit's own logs; these get pinned to WARNING.
+# `cli.voice_worker dev` sets the root logger to DEBUG, so quieting must be explicit per-logger.
+_NOISY_LOGGERS = (
+    "presidio-analyzer", "presidio-anonymizer", "faster_whisper", "piper", "piper.voice",
+    "neo4j", "neo4j.pool", "h5py", "h5py._conv", "httpx", "httpcore", "urllib3", "redis",
+)
+
+
+def quiet_noisy_loggers(level: int = logging.WARNING) -> None:
+    """Pin chatty third-party loggers to `level` so the worker console stays readable."""
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(level)
 
 
 def build_session(
@@ -283,6 +299,7 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
     """Worker job: join the room, then run STT -> Handler -> TTS until the call ends."""
     from livekit.agents import AgentSession, RoomInputOptions  # noqa: PLC0415
 
+    quiet_noisy_loggers()  # presidio/whisper/piper/etc. flood the console at DEBUG
     config = DEFAULT
     mode = os.environ.get("VOICE_MODE", "orchestrator")
 
@@ -341,6 +358,7 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
 
 
 def _prewarm(proc) -> None:  # pragma: no cover - needs the silero plugin + a worker process
+    quiet_noisy_loggers()  # quiet the noisy libs in each warmed job process too
     proc.userdata["vad"] = silero.VAD.load()
     # Warm the Ollama model into memory so the first clinician turn doesn't pay a cold load.
     # MUST be non-blocking: prewarm runs inside LiveKit's ~10s process-init budget, and a cold

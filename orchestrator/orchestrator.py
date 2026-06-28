@@ -53,9 +53,34 @@ def _render_blocks(result) -> tuple[str, list[str]]:
     return text, cites
 
 
+_TS_KEYS = {"ts", "timestamp", "due", "due_at", "generated_at"}
+
+
+def _fmt_value(key: str, value) -> str:
+    """Human-readable scalar: trim float noise, render epoch timestamps as a date-time."""
+    if key in _TS_KEYS and isinstance(value, (int, float)):
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    if isinstance(value, float):
+        return f"{value:g}"  # 171.0 -> "171", 97.9 -> "97.9"
+    return str(value)
+
+
 def _render_operational(name: str, rows: list[dict]) -> str:
-    body = "\n".join(f"- {r}" for r in rows) or "(no matching records)"
-    return f"## Operational result: {name}\n{body}"
+    """Render template rows as readable text (not raw dicts), so the answer reads as prose.
+
+    Each row becomes `- key: value, key: value` with nulls dropped and floats/timestamps tidied.
+    Feeding the LLM clean text (instead of `{'hr': 171.0, ...}`) keeps the grounded answer from
+    echoing a Python object back to the clinician.
+    """
+    if not rows:
+        return f"## Operational result: {name}\n(no matching records)"
+    lines = []
+    for row in rows:
+        pairs = [f"{k}: {_fmt_value(k, v)}" for k, v in row.items() if v is not None]
+        lines.append(f"- {', '.join(pairs)}")
+    return f"## Operational result: {name}\n" + "\n".join(lines)
 
 
 class Orchestrator:

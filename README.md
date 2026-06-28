@@ -113,6 +113,31 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
   intent → operational Cypher template OR hybrid retrieve → de-id → LLM → cited answer.
 ```
 
+### Voice worker architecture (the VOICE LOOP, explained)
+
+The worker (`cli.voice_worker` → `voice/livekit_agent.py`) joins a LiveKit room and runs the call.
+A few design points that aren't obvious from the diagram:
+
+- **The `Handler` *is* the "LLM node", not a model.** LiveKit's `AgentSession` pipeline is
+  STT → *LLM* → TTS. We override that LLM node (`HandlerAgent.llm_node`) to call our conversation
+  `Handler` instead. The Handler runs the **PIN gate → de-identification → KB/graph retrieval →
+  grounded answer** path — i.e. all the safety and grounding logic lives here, *not* in a raw model
+  prompt. The real LLM (**Ollama**, local) is still used, but **inside** the Handler/orchestrator
+  (RAG over the clinical KB + per-patient graph), one layer below the pipeline.
+- **The "stub LLM" is a permanent shim, not a placeholder.** LiveKit *skips reply generation
+  entirely* when `session.llm is None`, so `llm_node` would never run. We install a no-op
+  `make_stub_llm()` purely to satisfy that gate; its `chat()` is never called. This is **not** a
+  temporary fix awaiting a "real LLM" — Ollama is already the real LLM (via the Handler). Swapping
+  providers means changing `LLM_PROVIDER` (the orchestrator's provider), never this shim.
+- **Modality-matched I/O.** *Audio* turns go STT → wake-word gate → Handler → **TTS (audio)**.
+  *Text* turns (LiveKit chat box) go through a separate `text_input_cb` → Handler → **`send_text`
+  (text on the chat channel)**, bypassing TTS. Audio→audio, text→text; they never cross.
+- **Wake word gates *audio only*.** After the alert, follow-up **audio** Q&A must start with
+  `AUDIO_WAKE_WORD` ("hey vios"); the agent then stays awake for `AUDIO_WAKE_WINDOW_S` (30 s) so
+  back-and-forth speech needn't repeat it. This guards against room noise and Whisper
+  hallucinations-on-silence. **Text chat is never wake-word gated** — `AUDIO_WAKE_WINDOW_S` does not
+  apply to typing. The PIN, the spoken alert, and the verbal ack also run un-gated (pre-Q&A).
+
 ### Frozen contracts (`common/schemas.py`, `common/interfaces.py`)
 
 - **`SignalWindow`** — reader output (multi-rate signals in mV, vitals + history, window geometry,
@@ -269,7 +294,7 @@ touching callers.
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` | `2` / `30` | no-answer retry policy |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
-| `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word, so follow-ups needn't repeat it |
+| `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word so audio follow-ups needn't repeat it (audio only — does not affect text chat) |
 | `DEID_BACKEND` | `auto` | `auto` / `regex` / `presidio` |
 
 **Stubs (POC → production):** `PatientHistory` (synthetic, seeded by `patient_id` → EMR/FHIR) ·
