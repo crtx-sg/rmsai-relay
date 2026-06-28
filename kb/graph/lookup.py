@@ -18,11 +18,26 @@ from .templates import run_template
 _BED = re.compile(r"\bbed\s+([A-Za-z0-9_-]+)", re.IGNORECASE)
 _HOURS = re.compile(r"\b(\d+)\s*h(?:ours?)?\b", re.IGNORECASE)
 _MINUTES = re.compile(r"\b(\d+)\s*m(?:in(?:utes?)?)?\b", re.IGNORECASE)
+# Vitals question: any vital-sign term. Only actionable when a patient is in scope (the chat
+# session), since "the event" resolves to that patient's most recent MonitoredEvent.
+_VITALS = re.compile(
+    r"\b(vitals?|vital\s+signs?|heart\s+rate|blood\s+pressure|"
+    r"spo2|oxygen|saturation|respiratory\s+rate|resp\s+rate|temperature|hr|bp|rr)\b",
+    re.IGNORECASE,
+)
 
 
-def match_intent(query: str, *, now: float) -> tuple[str, dict] | None:
-    """Map a natural-language query to (template_name, params), or None."""
+def match_intent(query: str, *, now: float, patient_ref: str | None = None) -> tuple[str, dict] | None:
+    """Map a natural-language query to (template_name, params), or None.
+
+    `patient_ref` scopes patient-specific intents (e.g. vitals "at the event"); when absent (the
+    operational CLI path) those intents are skipped so the query falls through to templates/Cypher.
+    """
     q = query.lower()
+
+    # Patient-scoped vitals snapshot ("what were the vitals at the time of the event?").
+    if patient_ref and _VITALS.search(q):
+        return "vitals_at_patient_last_event", {"patient_id": patient_ref}
 
     if "critical" in q and "event" in q:
         hours = int(m.group(1)) if (m := _HOURS.search(q)) else 24

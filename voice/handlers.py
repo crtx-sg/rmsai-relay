@@ -59,6 +59,14 @@ class OrchestratorHandler(Handler):
     def greeting(self) -> str:
         return f"Remote clinical line. {_PROMPT_PIN}"
 
+    def is_authenticated(self, session_id: str) -> bool:
+        """Whether this session passed the PIN gate — i.e. is in the post-alert Q&A phase.
+
+        The LiveKit worker uses this to scope wake-word gating to follow-up audio only (PIN entry,
+        the spoken alert, and the verbal ack run before this is True and are never gated).
+        """
+        return self.working.get_or_create(session_id).authenticated
+
     def respond(self, text: str, *, session_id: str) -> str:
         state = self.working.get_or_create(session_id)
 

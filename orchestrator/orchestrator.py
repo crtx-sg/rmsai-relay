@@ -118,7 +118,7 @@ class Orchestrator:
 
         # --- intent: operational template vs hybrid KB ---
         with tracer.span("retrieve") as sp:
-            intent = match_intent(user_text, now=now)
+            intent = match_intent(user_text, now=now, patient_ref=state.patient_ref)
             if intent:
                 name, params = intent
                 rows = run_template(self.driver, name, **params)

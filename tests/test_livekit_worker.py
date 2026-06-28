@@ -9,6 +9,7 @@ with fake adapters/emitters (no Whisper/Piper models, no audio hardware).
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import replace
 
 import pytest
@@ -21,12 +22,17 @@ from livekit import rtc  # noqa: E402
 from common.config import DEFAULT  # noqa: E402
 from voice.adapters import STTAdapter, TTSAdapter  # noqa: E402
 from voice.handlers import EchoHandler  # noqa: E402
+from livekit.agents import StopResponse  # noqa: E402
+from livekit.agents import llm as lkllm  # noqa: E402
+
 from voice.livekit_agent import (  # noqa: E402
     build_handler,
     build_worker_options,
     emit_tts_audio,
     last_user_text,
+    make_agent_class,
     make_speech_bridges,
+    make_stub_llm,
     run_agent,
 )
 
@@ -51,12 +57,93 @@ def test_run_agent_requires_livekit_config():
         run_agent(_UNCONFIGURED)
 
 
+def test_stub_llm_satisfies_pipeline_gate():
+    # AgentSession skips reply generation when llm is None (it `return`s in on_end_of_turn), so the
+    # overridden llm_node never runs. The stub flips `llm is not None` without being a RealtimeModel
+    # and without ever generating: chat() must raise if anything tries to call it directly.
+    from livekit.agents import llm as lkllm
+
+    stub = make_stub_llm()
+    assert isinstance(stub, lkllm.LLM)
+    assert not isinstance(stub, lkllm.RealtimeModel)
+    with pytest.raises(RuntimeError, match="must not be called"):
+        stub.chat(chat_ctx=None)
+
+
 def test_build_handler_echo():
     handler, greeting, cleanup = build_handler("echo")
     assert isinstance(handler, EchoHandler)
     assert greeting is None
     assert cleanup is None
     assert handler.respond("ping", session_id="s") == "ping"
+
+
+# --- wake-word gate (on_user_turn_completed) ---
+
+
+class _FakeAuthHandler:
+    """Stand-in handler: toggleable auth state + an echo respond()."""
+
+    def __init__(self, authenticated: bool) -> None:
+        self._authed = authenticated
+
+    def is_authenticated(self, session_id: str) -> bool:
+        return self._authed
+
+    def respond(self, text, *, session_id):
+        return f"echo:{text}"
+
+
+def _make_agent(authenticated: bool):
+    HandlerAgent = make_agent_class("hey vios", awake_window_s=30.0)
+    return HandlerAgent(_FakeAuthHandler(authenticated), session_id="room1", greeting=None)
+
+
+def _turn(agent, text):
+    """Run on_user_turn_completed for an audio turn; return (raised_stop, message)."""
+    msg = lkllm.ChatMessage(role="user", content=[text])
+    try:
+        asyncio.run(agent.on_user_turn_completed(lkllm.ChatContext(), msg))
+        return False, msg
+    except StopResponse:
+        return True, msg
+
+
+def test_wake_gate_skipped_before_auth():
+    # Pre-auth (PIN/alert/ack): every audio turn passes through, no wake word needed.
+    agent = _make_agent(authenticated=False)
+    stopped, msg = _turn(agent, "one two three four")
+    assert stopped is False
+    assert msg.text_content == "one two three four"  # unchanged
+
+
+def test_wake_gate_drops_unprompted_audio_after_auth():
+    # Post-auth with no wake word and not awake -> dropped (noise / hallucination).
+    agent = _make_agent(authenticated=True)
+    assert _turn(agent, "it's been a lot of years")[0] is True
+
+
+def test_wake_word_opens_turn_and_strips_phrase():
+    agent = _make_agent(authenticated=True)
+    stopped, msg = _turn(agent, "hey vios what were the vitals")
+    assert stopped is False
+    assert msg.text_content == "what were the vitals"  # wake phrase stripped for the LLM
+    assert agent._awake_until > 0.0  # now awake
+
+
+def test_follow_up_within_awake_window_passes_without_wake_word():
+    agent = _make_agent(authenticated=True)
+    agent._awake_until = time.monotonic() + 30.0  # simulate a recent wake word
+    stopped, msg = _turn(agent, "and the heart rate")
+    assert stopped is False
+    assert msg.text_content == "and the heart rate"
+
+
+def test_bare_wake_word_arms_but_drops_empty_turn():
+    agent = _make_agent(authenticated=True)
+    stopped, _ = _turn(agent, "hey vios")
+    assert stopped is True              # nothing to answer yet
+    assert agent._awake_until > 0.0     # but now awake for the follow-up
 
 
 # --- transcript extraction ---

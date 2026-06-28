@@ -49,6 +49,15 @@ TEMPLATES: dict[str, str] = {
         RETURN e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
                e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
     """,
+    # Vitals snapshot for a patient's most recent event — backs the "vitals at the time of the
+    # event" chat intent, where "the event" is implicitly the latest one for the scoped patient.
+    "vitals_at_patient_last_event": """
+        MATCH (p:Patient {id: $patient_id})-[:HAD_EVENT]->(e:MonitoredEvent)
+        RETURN e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
+               e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+        ORDER BY e.timestamp DESC LIMIT 1
+    """,
     # T6 — Outstanding action items across all patients
     "outstanding_action_items": """
         MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)-[:HAS_ACTION]->(a:ActionItem)

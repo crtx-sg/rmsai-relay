@@ -112,6 +112,19 @@ def test_t5_vitals_at_event(graph):
     assert rows[0]["hr"] == 170 and rows[0]["spo2"] == 92
 
 
+def test_vitals_at_patient_last_event(graph):
+    # PT8001 has evt-vf (older) and evt-afib (newer); "last event" must resolve to evt-afib.
+    rows = _tpl(graph, "vitals_at_patient_last_event", patient_id="PT8001")
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "ATRIAL_FIBRILLATION"
+    assert rows[0]["hr"] == 170 and rows[0]["spo2"] == 92
+
+
+def test_vitals_at_patient_last_event_unknown_patient(graph):
+    # Resilience: no event for the patient -> empty rows, not an error.
+    assert _tpl(graph, "vitals_at_patient_last_event", patient_id="PT_NOPE") == []
+
+
 def test_t6_outstanding_action_items(graph):
     rows = _tpl(graph, "outstanding_action_items")
     assert any("ACLS" in r["action"] for r in rows)

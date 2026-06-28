@@ -100,10 +100,13 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │                         VOICE LOOP  (two-process model)                         │
         │  relay PLACES the call (LiveKitCaller → SIP dial / WebRTC room)                  │
-        │  cli.voice_worker JOINS the room:                                               │
-        │     audio ──Whisper STT──► OutboundHandler ──Ollama LLM (RAG)──► Piper TTS ──►   │
+        │  cli.voice_worker JOINS the room (Handler is the 'LLM' node; stub LLM fills the  │
+        │  pipeline gate so llm_node runs):                                                │
+        │   audio ─Whisper STT─►[wake word]─► OutboundHandler ─Ollama LLM(RAG)─► Piper TTS │
+        │   text  ─chat box────────────────► OutboundHandler ─Ollama LLM(RAG)─► chat text  │
         │     PIN gate → speak THIS event's alert → Q&A grounded in KB+graph → "ack"       │
         │     → MonitoredEvent.status = acknowledged                                       │
+        │  modality-matched: audio→audio (wake-gated), text→text; never crossed            │
         └──────────────────────────────────────────────────────────────────────────────┘
 
   Inbound path (clinician calls/joins to query): same worker, build_handler() → PIN gate →
@@ -265,6 +268,8 @@ touching callers.
 | `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` | — | single hard-configured destination + caller ID |
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` | `2` / `30` | no-answer retry policy |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
+| `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
+| `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word, so follow-ups needn't repeat it |
 | `DEID_BACKEND` | `auto` | `auto` / `regex` / `presidio` |
 
 **Stubs (POC → production):** `PatientHistory` (synthetic, seeded by `patient_id` → EMR/FHIR) ·
@@ -420,9 +425,29 @@ uv run python -m cli.livekit_token --room rmsai-call-demo
 ```bash
 # produce an event (step 4 producer), then stage the alert + print a join token
 uv run python -m cli.consume --channel voice --caller livekit --transport webrtc --once
-# → join the printed rmsai-outbound-<event_id> room in the playground
-# → PIN → hear THIS event's alert → Q&A → say "acknowledge" (flips event status)
+# → join the printed rmsai-outbound-<event_id> room (playground or meet.livekit.io)
+# → PIN → hear THIS event's alert → Q&A (see below) → say "acknowledge" (flips event status)
 ```
+
+> Each event gets its **own** room (`rmsai-outbound-<event_id>`) and a **fresh** join token, both
+> printed by `cli.consume`. The static `rmsai-outbound` name is for SIP phone dialing only. The
+> worker joins when you join (auto-dispatch); a worker started before a code change won't pick it up
+> for an already-live room — restart the worker **and** place a new call.
+
+**Talking vs typing during a call (modality-matched replies).** Once past the PIN and the spoken
+alert, you can interact two ways and the response matches the input modality:
+
+- **Speak** — follow-up *audio* Q&A is gated by a **wake word** (`AUDIO_WAKE_WORD`, default
+  `"hey vios"`) so room noise and Whisper hallucinations don't trigger replies. Say e.g.
+  *"hey vios, what were the vitals at the time of the event?"* → **spoken** answer. The agent then
+  stays "awake" for `AUDIO_WAKE_WINDOW_S` (default 30 s), so immediate follow-ups don't need to
+  repeat the wake word. Audio with no wake word (and outside the window) is silently ignored.
+- **Type** — a message in the LiveKit **chat box** gets a **text-only** reply on the chat channel
+  (no TTS/audio). Typed turns are never wake-word gated.
+
+The PIN entry, the spoken alert, and the verbal **"acknowledge"** run *before* the Q&A phase and are
+never wake-word gated. Patient-scoped questions resolve "the event" to that patient's most recent
+`MonitoredEvent` (e.g. vitals → `T5`).
 
 ### 6. Real SIP phone call (outbound to a number)
 

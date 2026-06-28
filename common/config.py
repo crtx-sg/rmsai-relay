@@ -111,6 +111,11 @@ class Config:
     livekit_api_secret: str = ""
     livekit_sip_trunk_id: str = ""  # outbound SIP trunk id (LiveKit Cloud Telephony)
     livekit_sip_room: str = "rmsai-outbound"
+    # Wake word: after the alert, follow-up *audio* Q&A must start with this phrase (so room noise
+    # and Whisper hallucinations don't trigger replies). The agent stays "awake" for the window
+    # after each wake word so follow-ups don't repeat it. Text-chat turns are never gated.
+    audio_wake_word: str = "hey vios"
+    audio_wake_window_s: float = 30.0
 
     # Audit log
     audit_log_path: str = "data/audit.jsonl"
@@ -153,6 +158,8 @@ class Config:
             livekit_api_secret=os.environ.get("LIVEKIT_API_SECRET", ""),
             livekit_sip_trunk_id=os.environ.get("LIVEKIT_SIP_TRUNK_ID", ""),
             livekit_sip_room=os.environ.get("LIVEKIT_SIP_ROOM", "rmsai-outbound"),
+            audio_wake_word=os.environ.get("AUDIO_WAKE_WORD", "hey vios"),
+            audio_wake_window_s=_f("AUDIO_WAKE_WINDOW_S", 30.0),
             audit_log_path=os.environ.get("AUDIT_LOG_PATH", "data/audit.jsonl"),
         )
 
