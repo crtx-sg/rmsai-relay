@@ -145,6 +145,23 @@ TEMPLATES: dict[str, str] = {
         RETURN e.uuid AS event, e.timestamp AS ts,
                e.vitals_plot_ref AS vitals_plot, e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp
     """,
+    # ECG strips for the most recent event across ALL patients (no event type named) —
+    # "show ECG strips for the patient with the last reported event".
+    "ecg_strips_last_event": """
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        WITH p, e ORDER BY e.timestamp DESC LIMIT 1
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event, e.timestamp AS ts,
+               e.signal_ref AS signal_ref, e.ecg_plot_ref AS ecg_plot
+    """,
+    # ECG strips for the session patient's most recent event — "ECG strips for this patient's event".
+    "ecg_strips_for_patient_last_event": """
+        MATCH (p:Patient {id: $patient_id})-[:HAD_EVENT]->(e:MonitoredEvent)
+        WITH p, e ORDER BY e.timestamp DESC LIMIT 1
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event, e.timestamp AS ts,
+               e.signal_ref AS signal_ref, e.ecg_plot_ref AS ecg_plot
+    """,
     # ECG strips for the patient with the most recent event of a given type, across ALL patients
     # ("show ECG strips for the patient with the last reported AFib event"). The _of_type variants
     # find the patient by event type rather than requiring one up front.
@@ -155,6 +172,15 @@ TEMPLATES: dict[str, str] = {
         OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
         RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event, e.timestamp AS ts,
                e.signal_ref AS signal_ref, e.ecg_plot_ref AS ecg_plot
+    """,
+    # HR trend (the recorded HR history series) at the session patient's most recent event —
+    # "how was HR trending at the time of this patient's event?". POC: HR only (RR/SpO2/BP later).
+    "hr_trend_for_patient_last_event": """
+        MATCH (p:Patient {id: $patient_id})-[:HAD_EVENT]->(e:MonitoredEvent)
+        WITH p, e ORDER BY e.timestamp DESC LIMIT 1
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event, e.timestamp AS ts,
+               e.hr AS hr, e.hr_history AS hr_history, e.hr_history_ts AS hr_history_ts
     """,
     # HR & BP trend for the patient with the most recent event of a given type, across ALL patients.
     "trend_last_event_of_type": """

@@ -77,14 +77,16 @@ _TS_KEYS = {"ts", "timestamp", "due", "due_at", "generated_at"}
 
 
 def _fmt_value(key: str, value) -> str:
-    """Human-readable scalar: trim float noise, render epoch timestamps as a date-time."""
+    """Human-readable scalar: trim float noise, render epoch timestamps, drop event-name underscores."""
     if key in _TS_KEYS and isinstance(value, (int, float)):
         from datetime import datetime, timezone  # noqa: PLC0415
 
         return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     if isinstance(value, float):
         return f"{value:g}"  # 171.0 -> "171", 97.9 -> "97.9"
-    return str(value)
+    # Event types / conditions are SNAKE_CASE ("AV_BLOCK_2_TYPE2"); TTS would read the underscores
+    # aloud, so render them as spaces ("AV BLOCK 2 TYPE2"). Only these fields carry underscores.
+    return str(value).replace("_", " ")
 
 
 def _render_operational(name: str, rows: list[dict]) -> str:
@@ -133,8 +135,15 @@ def _row_to_sentence(row: dict) -> str:
         lead.append(f"in unit {unit}")
     event = r.pop("event_type", None) or r.pop("event", None) or r.pop("reported_event", None)
     if event:
-        lead.append(f"had an event type {event}")
+        lead.append(f"had an event type {_fmt_value('event', event)}")  # underscores -> spaces
     text = " ".join(lead)
+
+    # Artifact refs (ECG strip / raw signal) and HR history get spoken-friendly phrasing, not a raw
+    # path/URI or a bare number list read aloud — pull them out before the generic clause loop.
+    ecg_plot = r.pop("ecg_plot", None) or r.pop("ecg_plot_ref", None)
+    has_signal = r.pop("signal_ref", None) is not None
+    hr_history = r.pop("hr_history", None)
+    r.pop("hr_history_ts", None)
 
     clauses = []
     if (crit := r.pop("criticality", None)):
@@ -149,12 +158,30 @@ def _row_to_sentence(row: dict) -> str:
     if clauses:
         text += ("; " if text else "") + "; ".join(clauses)
 
+    if hr_history:
+        vals = ", ".join(_fmt_value("hr", v) for v in hr_history)
+        text += (f". HR trended from {_fmt_value('hr', hr_history[0])} to "
+                 f"{_fmt_value('hr', hr_history[-1])} over {len(hr_history)} readings "
+                 f"({_trend_word(hr_history)}): {vals}")
+    if ecg_plot:
+        text += ". An ECG strip image is available"   # path is in the graph; companion app fetches it
+    elif has_signal:
+        text += ". The raw ECG is archived"
+
     vitals = [f"{_SPOKEN_LABEL.get(k, k)} {_fmt_value(k, r[k])}" for k in _VITAL_KEYS if k in r]
     if vitals:
         text += ". The vitals at this event were " + "; ".join(vitals)
 
     text = text.strip().strip(";").strip()
     return (text + ".") if text else "a record with no details."
+
+
+def _trend_word(values: list) -> str:
+    """Coarse trend direction from the first vs last reading."""
+    if len(values) < 2:
+        return "single reading"
+    delta = values[-1] - values[0]
+    return "stable" if abs(delta) < 1 else ("rising" if delta > 0 else "falling")
 
 
 def _answer_operational(rows: list[dict] | None) -> str:

@@ -55,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     n = 0
     for window in read_hdf5_file(args.file, strict_units=args.strict_units):
         event = process_window(window, model, vitals)
+        # Render the ECG strip here, while the raw samples are in hand (the bus drops them); the path
+        # rides along in the payload and is persisted as MonitoredEvent.ecg_plot_ref downstream.
+        if DEFAULT.ecg_plot_enabled:
+            from inference.plotting import render_ecg_strip  # noqa: PLC0415
+
+            event.window.ecg_plot_ref = render_ecg_strip(event.window, config=DEFAULT)
         n += 1
         if args.emit == "bus":
             msg_id = publish_to_bus(args.redis_url, args.stream, event_to_dict(event))

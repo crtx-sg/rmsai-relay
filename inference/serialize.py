@@ -5,9 +5,9 @@ structured event + report). `Fraction` sample rates are rendered as `"num/den"` 
 
 `dict_to_event` is the inverse used by the bus consumer: it reconstructs a `DeviceEvent` from a
 published payload. The classification already happened in the producer, so the reconstruction is
-faithful for everything the downstream flow reads (persist + report + outbound); the fields the bus
-intentionally drops (raw signals, vitals history, signal quality, pacer, ECG-vital correlations)
-come back empty.
+faithful for everything the downstream flow reads (persist + report + outbound). Small history
+(vital histories) and the rendered ECG-strip path ARE carried; the bulky raw signal arrays, signal
+quality, pacer, and ECG-vital correlations are dropped and come back empty.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from common.schemas import (
     MEWS,
     SignalWindow,
     Vital,
+    VitalSample,
     VitalTrend,
     WindowGeometry,
 )
@@ -49,6 +50,14 @@ def event_to_dict(event: DeviceEvent, *, include_signals: bool = False) -> dict[
             n: {"value": v.value, "units": v.units, "timestamp": v.timestamp}
             for n, v in w.vitals.items()
         },
+        # Vital history (small — a few samples per vital) IS carried so trend queries ("how was HR
+        # trending?") work off the bus; the raw waveform is not. The producer-rendered ECG strip is
+        # carried as a path only.
+        "vitals_history": {
+            n: [{"value": s.value, "timestamp": s.timestamp} for s in samples]
+            for n, samples in w.vitals_history.items()
+        },
+        "ecg_plot_ref": w.ecg_plot_ref,
         "waveform_units": w.waveform_units,
         "sample_rates": {g: f"{r.numerator}/{r.denominator}" for g, r in w.sample_rates.items()},
         "window": {
@@ -94,6 +103,11 @@ def dict_to_event(payload: dict[str, Any]) -> DeviceEvent:
                      timestamp=float(v.get("timestamp", payload["event_timestamp"])))
             for n, v in payload.get("vitals", {}).items()
         },
+        vitals_history={
+            n: [VitalSample(value=float(s["value"]), timestamp=float(s["timestamp"])) for s in samples]
+            for n, samples in payload.get("vitals_history", {}).items()
+        },
+        ecg_plot_ref=payload.get("ecg_plot_ref"),
         ground_truth=(
             GroundTruth(condition=gt["condition"], heart_rate=gt.get("heart_rate")) if gt else None
         ),

@@ -36,8 +36,9 @@ def test_answer_operational_single_row_prose():
                                 "note": None}])
     assert out.startswith("At 2026-")                         # leads with the time
     assert "patient PT8620 on bed Unit1-Bed01 in unit Unit1" in out
-    assert "had an event type AV_BLOCK_2_TYPE2; criticality High; MEWS risk Low" in out
+    assert "had an event type AV BLOCK 2 TYPE2; criticality High; MEWS risk Low" in out  # no _
     assert "The vitals at this event were hr 68; sbp 118; dbp 85; S P O 2 97" in out   # spo2 spelled
+    assert "_" not in out                                                              # no underscores
     assert "{" not in out and "note" not in out               # no objects / null fields
 
 
@@ -50,9 +51,27 @@ def test_answer_operational_multi_row_one_sentence_per_line():
     ])
     lines = out.splitlines()
     assert lines[0] == "2 matching records."
-    assert "patient PT1 on bed Unit1-Bed01 had an event type VENTRICULAR_FIBRILLATION" in lines[1]
+    assert "patient PT1 on bed Unit1-Bed01 had an event type VENTRICULAR FIBRILLATION" in lines[1]
     assert "patient PT2 on bed Unit1-Bed02 had an event type SVT" in lines[2]
     assert all(line.endswith(".") for line in lines[1:])      # each its own sentence -> TTS pause
+
+
+def test_answer_operational_hr_trend():
+    out = _answer_operational([{"patient": "PT8620", "event": "RBBB", "ts": 1782627240.0,
+                                "hr": 80.0, "hr_history": [70.0, 72.0, 78.0, 82.0, 88.0],
+                                "hr_history_ts": [1, 2, 3, 4, 5]}])
+    assert "HR trended from 70 to 88 over 5 readings (rising): 70, 72, 78, 82, 88" in out
+    assert "hr_history" not in out and "[" not in out      # no raw list / field name
+
+
+def test_answer_operational_ecg_strip_availability():
+    plot = _answer_operational([{"patient": "PT8620", "event": "RBBB", "ts": 1782627240.0,
+                                 "signal_ref": "hdf5://x", "ecg_plot": "data/plots/e.png"}])
+    assert "An ECG strip image is available" in plot
+    assert "hdf5://" not in plot and "data/plots" not in plot   # no raw path/URI spoken
+    archived = _answer_operational([{"patient": "PT8620", "event": "RBBB", "ts": 1782627240.0,
+                                     "signal_ref": "hdf5://x", "ecg_plot": None}])
+    assert "The raw ECG is archived" in archived
 
 
 def test_answer_operational_empty():

@@ -33,6 +33,8 @@ def persist_monitored_event(
     signal_ref: str | None = None,
     ecg_plot_ref: str | None = None,
     vitals_plot_ref: str | None = None,
+    hr_history: list | None = None,
+    hr_history_ts: list | None = None,
 ) -> str:
     """MERGE a MonitoredEvent (by uuid) + its links. Returns the event id (== uuid)."""
     vitals = vitals or {}
@@ -44,7 +46,8 @@ def persist_monitored_event(
             e.is_false_positive=$fp, e.ground_truth_condition=$gt, e.mews_risk=$mews,
             e.criticality=$crit, e.status=$status,
             e.hr=$hr, e.sbp=$sbp, e.dbp=$dbp, e.spo2=$spo2, e.rr=$rr, e.temp=$temp,
-            e.signal_ref=$signal_ref, e.ecg_plot_ref=$ecg_plot_ref, e.vitals_plot_ref=$vitals_plot_ref
+            e.signal_ref=$signal_ref, e.ecg_plot_ref=$ecg_plot_ref, e.vitals_plot_ref=$vitals_plot_ref,
+            e.hr_history=$hr_history, e.hr_history_ts=$hr_history_ts
         WITH e MATCH (p:Patient {id:$pid}) MERGE (p)-[:HAD_EVENT]->(e)
         """,
         uuid=uuid, ts=timestamp, etype=event_type, conf=confidence, fp=is_false_positive,
@@ -52,6 +55,7 @@ def persist_monitored_event(
         hr=vitals.get("hr"), sbp=vitals.get("sbp"), dbp=vitals.get("dbp"),
         spo2=vitals.get("spo2"), rr=vitals.get("rr"), temp=vitals.get("temp"),
         signal_ref=signal_ref, ecg_plot_ref=ecg_plot_ref, vitals_plot_ref=vitals_plot_ref,
+        hr_history=hr_history, hr_history_ts=hr_history_ts,
         pid=patient_id,
     )
 

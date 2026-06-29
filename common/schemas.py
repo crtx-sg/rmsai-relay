@@ -70,6 +70,7 @@ class SignalWindow(BaseModel):
     window: WindowGeometry
     vitals: dict[str, Vital] = Field(default_factory=dict)
     vitals_history: dict[str, list[VitalSample]] = Field(default_factory=dict)
+    ecg_plot_ref: Optional[str] = None  # path to a rendered ECG strip image, set by the producer
     # per-signal quality governs (decision D)
     signal_quality: dict[str, float] = Field(default_factory=dict)
     pacer: Optional[dict] = None  # {info, offset} when present

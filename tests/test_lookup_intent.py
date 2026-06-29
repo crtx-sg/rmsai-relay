@@ -74,6 +74,25 @@ def test_pattern_wins_over_comorbidity_when_both_present():
         "cohort_patterns", {})
 
 
+def test_ecg_strips_routes_without_event_type():
+    # No type named -> global latest; "this patient" -> session patient; typed -> of_type.
+    assert match_intent("Show me the ECG strips for the patient with the last reported event",
+                        now=NOW) == ("ecg_strips_last_event", {})
+    assert match_intent("show ECG strips for this patient", now=NOW, patient_ref="PT8620") == (
+        "ecg_strips_for_patient_last_event", {"patient_id": "PT8620"})
+    assert match_intent("ECG strips for the last AFib event", now=NOW) == (
+        "ecg_strips_last_event_of_type", {"event_type": "ATRIAL_FIBRILLATION"})
+
+
+def test_hr_trend_for_this_patient_routes():
+    assert match_intent("How was the HR values trending at the time of this patient event?",
+                        now=NOW, patient_ref="PT8620") == ("hr_trend_for_patient_last_event",
+                                                           {"patient_id": "PT8620"})
+    # No patient in session -> can't scope, falls through (not the HR-trend template).
+    assert match_intent("how was HR trending", now=NOW) != (
+        "hr_trend_for_patient_last_event", {"patient_id": None})
+
+
 def test_this_patient_scopes_to_session_patient():
     # With a patient in session, "this patient" scopes critical/all events to that patient.
     assert match_intent("what are other critical events for this patient?", now=NOW,

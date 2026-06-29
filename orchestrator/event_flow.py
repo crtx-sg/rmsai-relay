@@ -83,6 +83,17 @@ def process_device_event(
     gt = w.ground_truth.condition if w.ground_truth else None
     actions = _action_items(event, crit)
 
+    # ECG strip: use the producer-rendered path if present (bus path); else render now if the raw
+    # samples are still in hand (direct path). HR history (oldest-first) backs the trend query.
+    ecg_plot_ref = w.ecg_plot_ref
+    if ecg_plot_ref is None and w.signals and config.ecg_plot_enabled:
+        from inference.plotting import render_ecg_strip  # noqa: PLC0415
+
+        ecg_plot_ref = render_ecg_strip(w, config=config)
+    hr_samples = w.vitals_history.get("HR", [])
+    hr_history = [s.value for s in hr_samples] or None
+    hr_history_ts = [s.timestamp for s in hr_samples] or None
+
     # 1. persist MonitoredEvent (+ action items, dedupe by uuid)
     persist_monitored_event(
         driver, uuid=w.event_id, patient_id=w.patient_ref, timestamp=w.event_timestamp,
@@ -91,6 +102,7 @@ def process_device_event(
         ground_truth_condition=gt, status="reported", vitals=_vitals_snapshot(event), bed=bed,
         link_condition=gt or event.event_type, action_items=actions,
         signal_ref=f"hdf5://{w.patient_ref}/{w.event_id}",
+        ecg_plot_ref=ecg_plot_ref, hr_history=hr_history, hr_history_ts=hr_history_ts,
     )
 
     # 2. patient context + 3. assemble report

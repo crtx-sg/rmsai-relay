@@ -220,7 +220,8 @@ archived report narrative. Key nodes/edges:
 
 - **Nodes:** `Patient`, `Condition`, `Treatment`, `Symptom`, `Surgery`, `Guideline`, `Unit`, `Bed`,
   `MonitoredEvent` (persisted `DeviceEvent` with inline vitals snapshot + criticality + lifecycle
-  status + artifact refs), `ActionItem`, `Report`, `CareProtocol`/`ProtocolStep`.
+  status + `signal_ref` (HDF5 pointer), `ecg_plot_ref` (rendered PNG), `hr_history` (HR series for
+  the trend query)), `ActionItem`, `Report`, `CareProtocol`/`ProtocolStep`.
 - **Edges:** `HAS_DIAGNOSIS`, `CO_MORBID_WITH` (derived from cohort co-occurrence, carries
   confidence/count/window), `PRESENTS`, `HAD_SURGERY`, `PRESCRIBED`, `MANAGES`, `ASSIGNED_TO`
   (Patient→Bed), `IN_UNIT`, `HAD_EVENT`, `AT_BED`, `OF_CONDITION`, `FOLLOWED_BY` (per-patient chain
@@ -229,6 +230,15 @@ archived report narrative. Key nodes/edges:
 **Care protocols** are curated external YAML (`common/protocols/care_protocols.yaml`), matched on
 `event_type` + vital conditions + min severity (most-specific-wins, with a default fallback), loaded
 into the graph **and** indexed as narrative into the vector store.
+
+**Waveforms & artifacts.** The raw multi-lead ECG lives only in the **HDF5** source (and, briefly, in
+`SignalWindow.signals` at the producer — the bus drops it to stay small). So the **producer renders
+the ECG strip** (`inference/plotting.py`, primary lead → PNG under `PLOT_DIR`) while the samples are
+in hand, and only the **path** (`ecg_plot_ref`) rides the bus and is persisted — the same
+materialize-then-reference pattern as the report markdown. Small vital **histories** (HR for now) are
+carried on the bus too and persisted as `hr_history`, backing the "how was HR trending?" answer. The
+graph stays the structured source of truth; bulky signals stay in HDF5 / the rendered image. *(These
+fields populate on fresh `ingest → consume`; older events show "raw ECG is archived" until re-run.)*
 
 ### Operational query matrix (the verification target)
 
@@ -245,8 +255,8 @@ text-to-Cypher is an allowlisted read-only fallback only):
 | 6 | Outstanding action items across patients | graph |
 | 7 | Care protocol for a bed's last event | hybrid |
 | 8 | Patterns: age/gender/co-morbidity/symptom → event type | graph (analytics) |
-| 9 | ECG strips for last AFib event | graph → artifact ref |
-| 10 | HR & BP trend for last Tachycardia event | graph → artifact ref |
+| 9 | ECG strips for the last event (any type, a named type, or *this patient's*) | graph → PNG artifact |
+| 10 | HR & BP trend for last Tachycardia event; HR-history trend for *this patient's* event | graph → plot ref / HR series |
 
 ### Example questions the system answers
 
@@ -264,8 +274,10 @@ retriever:
 | "Provide an **action-item list** of all outstanding actions for patients." | T6 (graph) |
 | "What is the **treatment / care protocol** for Bedside x's last reported event?" | T7 (hybrid: graph condition + protocol, narrative from vector) |
 | "From the data, do you see any **pattern of age / gender / co-morbidities / symptoms** leading to a specific event?" | T8 (graph analytics — framed as correlation, not causation) |
-| "Show me the **ECG strips** for the patient with the last reported AFib event." | T9 (graph → artifact ref; companion app / chat link, spoken summary over voice) |
+| "Show me the **ECG strips** for the patient with the last reported (AFib) event." | T9 (graph → PNG path; producer renders the lead, voice says "an ECG strip is available", companion app shows it) |
 | "Show me the **HR and BP trend** for the patient with the last reported Tachycardia event." | T10 (graph → vitals/trend plot ref) |
+| "**How was HR trending** at the time of this patient's event?" | HR-history series persisted on the event (POC: HR; RR/SpO2/BP later) — answered as "HR trended from X to Y (rising)…" |
+| "What are the **other critical / all events for *this patient***?" | session-patient-scoped (outbound call) — filtered to the bound patient, not all |
 | "Show **all patients who have a specific event** (e.g. all AFib)." | graph traversal: `MonitoredEvent {event_type}` → `Patient` (+ optional bed/unit) |
 
 > Operational items (1–6, 9, 10) are judged by **exact-row match**; hybrid/relationship items (7, 8)
@@ -350,6 +362,8 @@ touching callers.
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
 | `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word so audio follow-ups needn't repeat it (audio only — does not affect text chat) |
 | `EPISODIC_RECALL` | `false` | condition free-text answers on recalled cross-session past Q&A; off keeps answers grounded in the live KB + current conversation only |
+| `STT_LANGUAGE` | `en` | force the STT language (ISO 639-1); blank/`auto` = auto-detect. Stops Whisper/Scribe "hearing" other languages on noise |
+| `ECG_PLOT_ENABLED` / `PLOT_DIR` | `true` / `data/plots` | producer renders each event's ECG lead to `{PLOT_DIR}/<event_id>.png` (gitignored); path persisted as `MonitoredEvent.ecg_plot_ref` |
 | `DEID_BACKEND` | `auto` | `auto` / `regex` / `presidio` |
 
 **Stubs (POC → production):** `PatientHistory` (synthetic, seeded by `patient_id` → EMR/FHIR) ·

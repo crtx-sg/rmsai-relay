@@ -168,6 +168,21 @@ def test_events_for_patient(graph):
     assert _tpl(graph, "events_for_patient", patient_id="PT8002")[0]["event"] == "NORMAL_SINUS"
 
 
+def test_ecg_strips_last_event_no_type(graph):
+    # No type -> latest event overall (evt-fp, the newest); patient-scoped -> that patient's latest.
+    glob = _tpl(graph, "ecg_strips_last_event")
+    assert len(glob) == 1 and glob[0]["patient"] == "PT8002"
+    assert glob[0]["signal_ref"] == "hdf5://PT8002/evt-fp"
+    pat = _tpl(graph, "ecg_strips_for_patient_last_event", patient_id="PT8001")
+    assert pat[0]["event"] == "ATRIAL_FIBRILLATION"   # evt-afib is PT8001's newest
+
+
+def test_hr_trend_for_patient_last_event(graph):
+    rows = _tpl(graph, "hr_trend_for_patient_last_event", patient_id="PT8001")
+    assert len(rows) == 1 and rows[0]["event"] == "ATRIAL_FIBRILLATION"
+    assert "hr_history" in rows[0]   # column present (null in this fixture; populated by ingest)
+
+
 def test_t6_outstanding_action_items(graph):
     rows = _tpl(graph, "outstanding_action_items")
     assert any("ACLS" in r["action"] for r in rows)

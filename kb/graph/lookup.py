@@ -53,13 +53,21 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None) -> t
     bed = m.group(1) if (m := _BED.search(query)) else None
     etype = event_type_from_text(q)
 
-    # T9 — ECG strips for the last event of a type ("ECG strips for the last AFib event").
-    if etype and ("ecg" in q or "strip" in q):
-        return "ecg_strips_last_event_of_type", {"event_type": etype}
+    # T9 — ECG strips. Typed ("last AFib event"), else this patient's latest, else the global latest.
+    if "ecg" in q or "strip" in q:
+        if etype:
+            return "ecg_strips_last_event_of_type", {"event_type": etype}
+        if patient_ref and _THIS_PATIENT.search(q):
+            return "ecg_strips_for_patient_last_event", {"patient_id": patient_ref}
+        return "ecg_strips_last_event", {}
 
     # T10 — HR/BP trend for the last event of a type ("HR and BP trend for the last VT event").
     if etype and ("trend" in q or ("hr" in q and "bp" in q)):
         return "trend_last_event_of_type", {"event_type": etype}
+
+    # HR trend for the session patient's last event ("how was HR trending at this patient's event?").
+    if patient_ref and ("hr" in q or "heart rate" in q) and ("trend" in q or "trending" in q):
+        return "hr_trend_for_patient_last_event", {"patient_id": patient_ref}
 
     # List all patients who had an event of a type ("show all patients with an AFib event").
     if etype and _ALL_PATIENTS.search(q):

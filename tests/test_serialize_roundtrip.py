@@ -44,6 +44,18 @@ def test_roundtrip_preserves_relay_fields():
     assert back.report_md == ev.report_md
 
 
+def test_roundtrip_preserves_ecg_plot_ref_and_hr_history():
+    from common.schemas import VitalSample  # noqa: PLC0415
+
+    ev = _afib_event()
+    ev.window.ecg_plot_ref = "data/plots/evt.png"
+    ev.window.vitals_history["HR"] = [VitalSample(value=120, timestamp=1),
+                                      VitalSample(value=145, timestamp=2)]
+    back = dict_to_event(event_to_dict(ev))
+    assert back.window.ecg_plot_ref == "data/plots/evt.png"     # carried on the bus (path only)
+    assert [s.value for s in back.window.vitals_history["HR"]] == [120, 145]  # small history carried
+
+
 def test_roundtrip_sample_rates_are_fractions():
     back = dict_to_event(event_to_dict(_afib_event()))
     assert all(isinstance(r, Fraction) for r in back.window.sample_rates.values())

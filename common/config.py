@@ -140,6 +140,11 @@ class Config:
     # log). The graph `Report.uri` points at the written file; the vector index is the search copy.
     report_dir: str = "data/reports"
 
+    # ECG strip plots — the producer renders an event's ECG lead to `{plot_dir}/{event_id}.png`
+    # (gitignored) and stores the path in `MonitoredEvent.ecg_plot_ref`. Off keeps the pipeline lean.
+    ecg_plot_enabled: bool = True
+    plot_dir: str = "data/plots"
+
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
@@ -189,6 +194,8 @@ class Config:
             episodic_recall=_b("EPISODIC_RECALL", False),
             audit_log_path=os.environ.get("AUDIT_LOG_PATH", "data/audit.jsonl"),
             report_dir=os.environ.get("REPORT_DIR", "data/reports"),
+            ecg_plot_enabled=_b("ECG_PLOT_ENABLED", True),
+            plot_dir=os.environ.get("PLOT_DIR", "data/plots"),
         )
 
 
