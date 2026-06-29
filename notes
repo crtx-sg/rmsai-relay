@@ -1,0 +1,53 @@
+Demo POC Setup:
+Date: 29, June 2026
+===================
+Open 3 terminals, On all terminals:
+~/aiwork/vios/repo/rmsai-relay
+conda activate rmsrelay_env
+
+Terminal A:
+under infra directory
+
+docker compose restart
+docker ps => ensure qdrant, redis, neo4j
+
+under project dir
+uv run python -m cli.voice_worker dev
+
+Terminal B:
+for generating hdf5 and publishing
+
+uv run python external/ecgtranscnn/scripts/generate_inference_data.py
+uv run python -m cli.ingest     --file data/inference/<REPLACE>.h5  --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt     --emit bus --stream rmsai.events
+
+Terminal C:
+for consuming events from redis -
+
+uv run python -m cli.consume --channel voice --caller livekit --transport webrtc --once
+
+Copy the URL and Token from any event in the terminal log. Every event produces a new Token.
+
+Web Browser:
+~~~~~~~~~~~~
+https://meet.livekit.io/?tab=custom
+Paste the URL and the Token and Connect
+
+Give permissions to MIC and Unmute the Mic
+Speak the PIN: 1234 (Configurable in .env)
+
+Q&A general:
+~~~~~~~~~~~~
+List all patients, bed number, unit or ward who had critical events in the last 24 hours
+List positive patient events that were reported in the last x minutes.
+What is the status of patient events reported on Bed xx. show the timnestamp, reported event, false positive?, actual condition. etc
+Get the event analysis report for patient or Bed xx in Unit/Ward.
+What was the vitals at the time of the specific event for patient in Bed. (retriveing specific data from the report)
+Provide an action Item list for all outstanding actions need to be taken for patients
+What is the treatment care protocol for patient Bed side x with the last reported event
+From the data, do you see any pattern for age, geneder, co-morbidites or symptoms are leading to specific event
+Show me the ECG strips for the patient with the last reported specific event (AFib etc).
+Show me the HR and BP trend for the patient with the last reported Tachycardia event.
+Show all patients who have a AFIB event.
+Show all patients who have an AFib event
+Show me the HR and BP trend for the patient with the last reported Tachycardia event
+Show me the ECG strips for the patient with the last reported AFib event
