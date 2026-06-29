@@ -61,11 +61,21 @@ class LiveKitCaller(Caller):
         from .livekit_cloud import LiveKitClient, is_configured  # noqa: PLC0415
 
         if not is_configured(self.config):
+            print("[outbound] LiveKit not configured (LIVEKIT_URL/KEY/SECRET).", flush=True)
+            return CallOutcome.INVALID
+        if not self.config.livekit_sip_trunk_id:
+            # No trunk = no bridge to the phone network; fail fast (retrying won't help).
+            print("[outbound] LIVEKIT_SIP_TRUNK_ID is not set — there is no SIP trunk to dial "
+                  "through. Create an outbound trunk in LiveKit Cloud Telephony and set it in .env.",
+                  flush=True)
             return CallOutcome.INVALID
         try:
-            LiveKitClient(self.config).create_outbound_sip_call(room=self.room, number=number)
+            info = LiveKitClient(self.config).create_outbound_sip_call(room=self.room, number=number)
+            print(f"[outbound] SIP call placed to {number} into room {self.room} "
+                  f"(participant {getattr(info, 'participant_id', '?')}).", flush=True)
             return CallOutcome.ANSWERED
-        except Exception:  # noqa: BLE001 - SIP/trunk error -> treat as no-answer (retry policy applies)
+        except Exception as exc:  # noqa: BLE001 - SIP/trunk error -> no-answer (retry policy applies)
+            print(f"[outbound] SIP dial failed: {type(exc).__name__}: {exc}", flush=True)
             return CallOutcome.NO_ANSWER
 
 

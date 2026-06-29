@@ -114,7 +114,7 @@ def run_outbound(
                               transcript=[alert])
 
     conv = _converse(event, orchestrator, utterances, session_id, bed,
-                     emit=lambda _t: None, drop_after=drop_after)
+                     emit=lambda _t: None, drop_after=drop_after, config=config)
     set_event_status(driver, uuid, conv["status"])
     ack_outcome = "dropped" if conv["dropped"] else conv["status"]
     audit.write(actor="system", action="acknowledgment", subject=event.window.patient_ref,
@@ -127,7 +127,8 @@ def run_outbound(
     )
 
 
-def _converse(event, orchestrator, utterances, session_id, bed, *, emit, drop_after=None) -> dict:
+def _converse(event, orchestrator, utterances, session_id, bed, *, emit, drop_after=None,
+              config: Config = DEFAULT) -> dict:
     """Shared report -> follow-ups -> ack loop. `emit(text)` delivers each agent message.
 
     Returns {answers, acknowledged, status, transcript}. Channel-agnostic: voice records the
@@ -223,7 +224,7 @@ def run_text_notify(
             return
         notifier.send(to, text)
 
-    conv = _converse(event, orchestrator, utterances, session_id, bed, emit=emit)
+    conv = _converse(event, orchestrator, utterances, session_id, bed, emit=emit, config=config)
     set_event_status(driver, uuid, conv["status"])
     audit.write(actor="system", action="acknowledgment", subject=event.window.patient_ref,
                 outcome=conv["status"])
