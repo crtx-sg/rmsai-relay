@@ -33,7 +33,10 @@ def build_orchestrator(
     vector = VectorRetriever.build(
         store=QdrantStore.connect(config.qdrant_url, "rmsai_docs"), embedder_name=embedder
     )
-    vector.index_dir(docs)
+    # Append (idempotent upsert), never reset: this runs on every orchestrator build — text chat
+    # AND every voice call — so a reset here would wipe the event-report narratives that `consume`
+    # archived into the same collection. Ensures the clinical docs are present without clobbering.
+    vector.index_dir(docs, reset=False)
     driver = GraphDriver.from_config(config)
     llm_provider = get_llm_provider(llm or config.llm_provider, config)
     orch = Orchestrator(
@@ -42,6 +45,7 @@ def build_orchestrator(
         episodic=EpisodicMemory.from_config(embedder_name=embedder),
         llm=DeidentifyingLLM(llm_provider, get_deidentifier(deid)),
         driver=driver,
+        episodic_recall=config.episodic_recall,
     )
     return orch, driver
 

@@ -88,6 +88,17 @@ def test_stt_posts_multipart_and_parses_text(monkeypatch):
     assert b'filename="audio.wav"' in cap["body"] and b"RIFFfake-wav-bytes" in cap["body"]
 
 
+def test_stt_forces_language_code(monkeypatch):
+    # default "en" -> language_code is sent; "auto" -> not sent (Scribe auto-detects).
+    cap = _patch_urlopen(monkeypatch, json.dumps({"text": "hi"}).encode())
+    ElevenLabsSTT("KEY", "scribe_v1", language="en").transcribe(b"wav")
+    assert b'name="language_code"' in cap["body"] and b"\r\nen\r\n" in cap["body"]
+
+    cap2 = _patch_urlopen(monkeypatch, json.dumps({"text": "hi"}).encode())
+    ElevenLabsSTT("KEY", "scribe_v1", language="auto").transcribe(b"wav")
+    assert b'name="language_code"' not in cap2["body"]
+
+
 def test_missing_api_key_raises():
     with pytest.raises(ValueError, match="ELEVENLABS_API_KEY"):
         ElevenLabsTTS("", "v", "m")

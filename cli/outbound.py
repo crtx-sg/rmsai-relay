@@ -72,7 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     vector = VectorRetriever.build(
         store=QdrantStore.connect(DEFAULT.qdrant_url, "rmsai_docs"), embedder_name=args.embedder
     )
-    vector.index_dir("docs")
+    # Append (don't reset): this relay path archives event-report narratives via process_device_event;
+    # a reset here would wipe reports from earlier runs (same rationale as cli.consume).
+    vector.index_dir("docs", reset=False)
     driver = GraphDriver.from_config(DEFAULT)
     migrate(driver)
     orch = Orchestrator(
@@ -80,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         episodic=EpisodicMemory.from_config(embedder_name=args.embedder),
         llm=DeidentifyingLLM(get_llm_provider(config.llm_provider, config),
                              get_deidentifier(config.deid_backend)), driver=driver,
+        episodic_recall=config.episodic_recall,
     )
     if args.channel == "voice" and args.caller == "livekit":
         caller = get_caller("livekit", config)  # real SIP via LiveKit Cloud

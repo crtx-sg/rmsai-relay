@@ -53,15 +53,20 @@ _FALLBACK_SAMPLE_RATE = 22050
 # keep our own `[worker]`/`[voice]` prints and livekit's own logs; these get pinned to WARNING.
 # `cli.voice_worker dev` sets the root logger to DEBUG, so quieting must be explicit per-logger.
 _NOISY_LOGGERS = (
-    "presidio-analyzer", "presidio-anonymizer", "faster_whisper", "piper", "piper.voice",
+    "faster_whisper", "piper", "piper.voice",
     "neo4j", "neo4j.pool", "h5py", "h5py._conv", "httpx", "httpcore", "urllib3", "redis",
 )
+# Presidio logs a WARNING per turn for every NER label it doesn't map ("Entity CARDINAL/MONEY/PERCENT
+# is not mapped…") — pure noise that buries the real log. Pin these to ERROR.
+_VERY_NOISY_LOGGERS = ("presidio-analyzer", "presidio-anonymizer")
 
 
 def quiet_noisy_loggers(level: int = logging.WARNING) -> None:
-    """Pin chatty third-party loggers to `level` so the worker console stays readable."""
+    """Pin chatty third-party loggers so the worker console stays readable."""
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(level)
+    for name in _VERY_NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.ERROR)
 
 
 def build_session(
@@ -297,7 +302,7 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0):
 
 async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit room
     """Worker job: join the room, then run STT -> Handler -> TTS until the call ends."""
-    from livekit.agents import AgentSession, RoomInputOptions  # noqa: PLC0415
+    from livekit.agents import AgentSession, RoomInputOptions, TurnHandlingOptions  # noqa: PLC0415
 
     quiet_noisy_loggers()  # presidio/whisper/piper/etc. flood the console at DEBUG
     config = DEFAULT
@@ -334,6 +339,11 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         # Gate-filler only: livekit skips reply generation when llm is None, so without this the
         # overridden llm_node (which calls our Handler -> ollama) would never run. See make_stub_llm.
         llm=make_stub_llm(),
+        # Disable preemptive generation: it starts llm_node BEFORE on_user_turn_completed, so a
+        # no-wake-word turn would still hit the KB/LLM (and could be spoken) before the wake gate
+        # drops it. Off => the gate runs first; ignored turns do no work. (Option is a mapping, not
+        # a bool — the SDK resolves it via `{**defaults, **config}`.)
+        turn_handling=TurnHandlingOptions(preemptive_generation={"enabled": False}),
     )
     # Text chat (meet.livekit.io chat box) -> text-only reply. Bypasses generate_reply (and thus
     # TTS), so a typed question gets a typed answer on the chat topic, never spoken audio. This also

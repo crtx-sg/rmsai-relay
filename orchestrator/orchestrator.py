@@ -11,6 +11,7 @@ checkpointer and node boundaries are already in place).
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -29,8 +30,27 @@ from .guardrails import Guardrails
 
 _MIN_OVERLAP = 0.18
 _DECLINE = "I don't have information on that in the knowledge base."
+# "say that again" — re-voice the previous answer from working memory (basic conversational memory).
+_REPEAT = re.compile(
+    r"\b(repeat( that| it| again| the (last|previous|prior)[\w ]*)?|say (that|it) again|"
+    r"come again|what did you (just )?say|(last|previous|prior) (response|answer|reply))\b",
+    re.IGNORECASE,
+)
+_NOTHING_TO_REPEAT = "There is nothing to repeat yet."
 _LLM_FALLBACK = "I'm having trouble generating a response right now; please try again."
 _MAX_HISTORY = 6
+
+# Keep answers crisp: this is a clinical relay heard over the phone / read in a chat box, so the
+# response text IS the payload. Instruct the model to lead with the answer and drop the filler small
+# models love to add (preambles, restating the question, disclaimers, "let me know if…").
+_ANSWER_INSTRUCTIONS = (
+    "You are a clinical relay assistant answering a clinician over voice or chat. Using ONLY the "
+    "facts in the context below, answer the question directly in one or two short sentences. State "
+    "the specific values, patient IDs (e.g. PT4543), and bed labels exactly as given in the context "
+    "— do not say information is unavailable when it is listed. Do NOT greet, restate the question, "
+    "explain your reasoning, add disclaimers, mention internal field/table/report names, or offer "
+    "further help. Only if the context contains no matching records, say so in one short sentence."
+)
 
 
 @dataclass
@@ -75,12 +95,82 @@ def _render_operational(name: str, rows: list[dict]) -> str:
     echoing a Python object back to the clinician.
     """
     if not rows:
-        return f"## Operational result: {name}\n(no matching records)"
+        return "## Matching records (patient knowledge graph)\n(no matching records)"
     lines = []
     for row in rows:
         pairs = [f"{k}: {_fmt_value(k, v)}" for k, v in row.items() if v is not None]
         lines.append(f"- {', '.join(pairs)}")
-    return f"## Operational result: {name}\n" + "\n".join(lines)
+    # No internal template name in the header — it leaks into the model's answer as snake_case noise.
+    return "## Matching records (patient knowledge graph)\n" + "\n".join(lines)
+
+
+# Vitals snapshot fields, in spoken order. `spo2` is spelled "S P O 2" so TTS says the letters
+# instead of "spo-two"; the rest read fine as-is.
+_VITAL_KEYS = ("hr", "sbp", "dbp", "spo2", "rr", "temp")
+_SPOKEN_LABEL = {
+    "spo2": "S P O 2", "mews_risk": "MEWS risk", "mews": "MEWS", "event_type": "event type",
+    "reported_event": "reported event", "false_positive": "false positive",
+    "actual_condition": "actual condition",
+}
+
+
+def _label(key: str) -> str:
+    return _SPOKEN_LABEL.get(key, key.replace("_", " "))
+
+
+def _row_to_sentence(row: dict) -> str:
+    """Render one graph row as a spoken-friendly sentence: 'At <ts>, patient <id> on bed … had …'."""
+    r = {k: v for k, v in row.items() if v is not None}
+    lead = []
+    ts = r.pop("ts", None) or r.pop("timestamp", None)
+    if ts is not None:
+        lead.append(f"At {_fmt_value('ts', ts)},")
+    if (patient := r.pop("patient", None)):
+        lead.append(f"patient {patient}")
+    if (bed := r.pop("bed", None)):
+        lead.append(f"on bed {bed}")
+    if (unit := r.pop("unit", None)):
+        lead.append(f"in unit {unit}")
+    event = r.pop("event_type", None) or r.pop("event", None) or r.pop("reported_event", None)
+    if event:
+        lead.append(f"had an event type {event}")
+    text = " ".join(lead)
+
+    clauses = []
+    if (crit := r.pop("criticality", None)):
+        clauses.append(f"criticality {crit}")
+    mews = r.pop("mews_risk", None)
+    if mews is None:
+        mews = r.pop("mews", None)
+    if mews:
+        clauses.append(f"MEWS risk {mews}")
+    for k in [k for k in r if k not in _VITAL_KEYS]:  # status / actual_condition / action / …
+        clauses.append(f"{_label(k)} {_fmt_value(k, r.pop(k))}")
+    if clauses:
+        text += ("; " if text else "") + "; ".join(clauses)
+
+    vitals = [f"{_SPOKEN_LABEL.get(k, k)} {_fmt_value(k, r[k])}" for k in _VITAL_KEYS if k in r]
+    if vitals:
+        text += ". The vitals at this event were " + "; ".join(vitals)
+
+    text = text.strip().strip(";").strip()
+    return (text + ".") if text else "a record with no details."
+
+
+def _answer_operational(rows: list[dict] | None) -> str:
+    """Deterministic, spoken-friendly answer for a structured graph result (no LLM).
+
+    Operational queries return exact rows, so we voice/print them directly — accurate every time, no
+    model latency or hallucination. Each row becomes a natural sentence; multiple rows are one
+    sentence per line so TTS pauses between them (a hard pause would need backend-specific SSML).
+    """
+    rows = rows or []
+    if not rows:
+        return "No matching records."
+    sentences = [_row_to_sentence(r) for r in rows]
+    if len(sentences) == 1:
+        return sentences[0]
+    return f"{len(sentences)} matching records.\n" + "\n".join(sentences)
 
 
 class Orchestrator:
@@ -94,6 +184,7 @@ class Orchestrator:
         *,
         guardrails: Guardrails | None = None,
         llm_retries: int = 1,
+        episodic_recall: bool = False,
     ) -> None:
         self.working = working
         self.hybrid = hybrid
@@ -102,6 +193,7 @@ class Orchestrator:
         self.driver = driver
         self.guardrails = guardrails or Guardrails()
         self.llm_retries = llm_retries
+        self.episodic_recall = episodic_recall  # gate recalled "past interactions" in free-text answers
 
     def _generate(self, prompt: str) -> tuple[str, bool]:
         """Generate with one retry on transient failure; return (text, failed). Never raises."""
@@ -141,13 +233,25 @@ class Orchestrator:
             return TurnResult(answer=decision.message, mode="refused", refused=True,
                               trace=tracer.as_dicts())
 
+        # --- "repeat that" -> re-voice the last answer from working memory (no KB/LLM) ---
+        if _REPEAT.search(user_text):
+            with tracer.span("repeat"):
+                last = next((t.text for t in reversed(state.turns) if t.role == "assistant"), None)
+                answer_text = last or _NOTHING_TO_REPEAT
+                self.working.append_turn(
+                    session_id, ChatTurn(role="assistant", text=answer_text, timestamp=now + 0.001)
+                )
+            return TurnResult(answer=answer_text, mode="repeat", trace=tracer.as_dicts())
+
         # --- intent: operational template vs hybrid KB ---
+        operational_rows: list[dict] | None = None
         with tracer.span("retrieve") as sp:
             intent = match_intent(user_text, now=now, patient_ref=state.patient_ref)
             if intent:
                 name, params = intent
-                rows = run_template(self.driver, name, **params)
-                kb_context, citations = _render_operational(name, rows), [f"graph:{name}"]
+                operational_rows = run_template(self.driver, name, **params)
+                kb_context = _render_operational(name, operational_rows)
+                citations = [f"graph:{name}"]
                 mode, declined = "operational", False
             else:
                 mode = "hybrid"
@@ -159,39 +263,48 @@ class Orchestrator:
                 declined = not relevant
             sp.attributes.update(mode=mode, declined=declined)
 
-        with tracer.span("build_context"):
-            history = "\n".join(f"{t.role}: {t.text}" for t in state.turns[-_MAX_HISTORY:])
-            episodes = self.episodic.recall(user_text, k=3, patient_ref=state.patient_ref)
-            episodic_ctx = "\n".join(f"- {e.text}" for e in episodes) or "(none)"
-            prompt = (
-                f"## Conversation so far\n{history}\n\n"
-                f"## Relevant past interactions\n{episodic_ctx}\n\n"
-                f"{kb_context}\n\nQuestion: {user_text}\nAnswer:"
-            )
-
         # --- output policy: answer / decline / escalate ---
         action = self.guardrails.decide_output(user_text, declined=declined)
         escalated = action == "escalate"
+        model_input = ""  # what the model received, de-identified (audit); "" when no model is called
         if action == "escalate":
             answer_text = self.guardrails.refusal_for_emergency
         elif action == "decline":
             answer_text = _DECLINE
+        elif mode == "operational":
+            # Structured graph result -> deterministic, crisp answer. No LLM is called, so NO prompt
+            # is built: conversation history and recalled past interactions never touch an operational
+            # answer. (They are only useful for free-text follow-ups, below.)
+            answer_text = _answer_operational(operational_rows)
+            model_input = self.llm.deidentifier.deidentify(kb_context)  # the rows that informed it
         else:
+            # Free-text/hybrid: the LLM needs conversation history (multi-turn follow-ups). Built ONLY
+            # here — only when the model is actually invoked. Recalled "past interactions" are added
+            # only when `episodic_recall` is on (off by default: grounded in live KB + this chat only).
+            with tracer.span("build_context"):
+                history = "\n".join(f"{t.role}: {t.text}" for t in state.turns[-_MAX_HISTORY:])
+                blocks = [_ANSWER_INSTRUCTIONS, f"## Conversation so far\n{history}"]
+                if self.episodic_recall:
+                    episodes = self.episodic.recall(user_text, k=3, patient_ref=state.patient_ref)
+                    episodic_ctx = "\n".join(f"- {e.text}" for e in episodes) or "(none)"
+                    blocks.append(f"## Relevant past interactions\n{episodic_ctx}")
+                blocks.append(f"{kb_context}\n\nQuestion: {user_text}\nAnswer:")
+                prompt = "\n\n".join(blocks)
             with tracer.span("generate") as sp:
                 answer_text, failed = self._generate(prompt)  # de-id'd + retried inside
                 sp.attributes["llm_failed"] = failed
+            model_input = self.llm.deidentifier.deidentify(prompt)
 
         with tracer.span("persist"):
             self.working.append_turn(
                 session_id, ChatTurn(role="assistant", text=answer_text, timestamp=now + 0.001)
             )
-            self.episodic.add(
-                f"Q: {user_text}\nA: {answer_text}", session_id=session_id,
-                patient_ref=state.patient_ref, timestamp=now,
-            )
+            if self.episodic_recall:  # only archive Q&A when it will actually be recalled
+                self.episodic.add(
+                    f"Q: {user_text}\nA: {answer_text}", session_id=session_id,
+                    patient_ref=state.patient_ref, timestamp=now,
+                )
 
-        # what the model actually received, after de-identification (for audit/verification)
-        model_input = self.llm.deidentifier.deidentify(prompt)
         return TurnResult(
             answer=answer_text, citations=list(dict.fromkeys(citations)),
             mode=mode, declined=(action == "decline"), escalated=escalated,

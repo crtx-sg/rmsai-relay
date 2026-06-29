@@ -10,13 +10,17 @@ from __future__ import annotations
 from .driver import GraphDriver, assert_read_only
 
 TEMPLATES: dict[str, str] = {
-    # T1 — Critical events in last N hours, by patient/bed/unit
+    # T1 — Critical events in last N hours, by patient/bed/unit. "Critical" here means the
+    # call-worthy events (criticality High or Critical, matching OUTBOUND_MIN_CRITICALITY's default),
+    # i.e. the ones that warranted an alert — not strictly the 'Critical' tier, which would exclude
+    # the High events clinicians are actually paged about.
     "critical_events_since": """
         MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
-        WHERE e.timestamp >= $since AND e.criticality = 'Critical'
+        WHERE e.timestamp >= $since AND e.criticality IN ['High', 'Critical']
         OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)-[:IN_UNIT]->(u:Unit)
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
-               e.event_type AS event, e.mews_risk AS mews, e.timestamp AS ts
+               e.event_type AS event, e.criticality AS criticality, e.mews_risk AS mews,
+               e.timestamp AS ts
         ORDER BY e.timestamp DESC
     """,
     # T2 — Positive (non-false-positive) events in last x minutes
@@ -53,10 +57,44 @@ TEMPLATES: dict[str, str] = {
     # event" chat intent, where "the event" is implicitly the latest one for the scoped patient.
     "vitals_at_patient_last_event": """
         MATCH (p:Patient {id: $patient_id})-[:HAD_EVENT]->(e:MonitoredEvent)
-        RETURN e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
+        WITH p, e ORDER BY e.timestamp DESC LIMIT 1
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
+        RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
+               e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
                e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
                e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
-        ORDER BY e.timestamp DESC LIMIT 1
+    """,
+    # Vitals snapshot for a bed's most recent event — the bed-scoped form of T5 ("vitals at the
+    # event for the patient in Bed xx", where "the event" is that bed's latest MonitoredEvent).
+    "vitals_for_bed_last_event": """
+        MATCH (b:Bed {label: $bed})<-[:AT_BED]-(e:MonitoredEvent)
+        WITH b, e ORDER BY e.timestamp DESC LIMIT 1
+        MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
+        RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
+               e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
+               e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+    """,
+    # "This patient" scoping (session patient) — critical (call-worthy) events for one patient.
+    "critical_events_for_patient": """
+        MATCH (p:Patient {id: $patient_id})-[:HAD_EVENT]->(e:MonitoredEvent)
+        WHERE e.criticality IN ['High', 'Critical']
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)-[:IN_UNIT]->(u:Unit)
+        RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
+               e.event_type AS event, e.criticality AS criticality, e.mews_risk AS mews,
+               e.timestamp AS ts
+        ORDER BY e.timestamp DESC
+    """,
+    # "This patient" scoping — every event for one patient (any criticality), newest first.
+    "events_for_patient": """
+        MATCH (p:Patient {id: $patient_id})-[:HAD_EVENT]->(e:MonitoredEvent)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)-[:IN_UNIT]->(u:Unit)
+        RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
+               e.event_type AS event, e.criticality AS criticality,
+               e.is_false_positive AS false_positive, e.timestamp AS ts
+        ORDER BY e.timestamp DESC
     """,
     # T6 — Outstanding action items across all patients
     "outstanding_action_items": """
@@ -106,6 +144,35 @@ TEMPLATES: dict[str, str] = {
         WITH e ORDER BY e.timestamp DESC LIMIT 1
         RETURN e.uuid AS event, e.timestamp AS ts,
                e.vitals_plot_ref AS vitals_plot, e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp
+    """,
+    # ECG strips for the patient with the most recent event of a given type, across ALL patients
+    # ("show ECG strips for the patient with the last reported AFib event"). The _of_type variants
+    # find the patient by event type rather than requiring one up front.
+    "ecg_strips_last_event_of_type": """
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        WHERE e.event_type = $event_type
+        WITH p, e ORDER BY e.timestamp DESC LIMIT 1
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event, e.timestamp AS ts,
+               e.signal_ref AS signal_ref, e.ecg_plot_ref AS ecg_plot
+    """,
+    # HR & BP trend for the patient with the most recent event of a given type, across ALL patients.
+    "trend_last_event_of_type": """
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        WHERE e.event_type = $event_type
+        WITH p, e ORDER BY e.timestamp DESC LIMIT 1
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event, e.timestamp AS ts,
+               e.vitals_plot_ref AS vitals_plot, e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp
+    """,
+    # All patients who have had an event of a given type ("show all patients with an AFib event").
+    "patients_with_event_type": """
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        WHERE e.event_type = $event_type
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)-[:IN_UNIT]->(u:Unit)
+        RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
+               e.timestamp AS ts, e.is_false_positive AS false_positive
+        ORDER BY e.timestamp DESC
     """,
     # Relationship lookup — co-morbidity neighborhood of a condition
     "comorbidity_neighborhood": """

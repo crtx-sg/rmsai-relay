@@ -237,7 +237,7 @@ text-to-Cypher is an allowlisted read-only fallback only):
 
 | # | Query | Store |
 |---|-------|-------|
-| 1 | Critical events last 24h by patient/bed/unit | graph |
+| 1 | Critical events last 24h by patient/bed/unit (criticality High+, i.e. call-worthy) | graph |
 | 2 | Positive (non-FP) events last *x* min | graph |
 | 3 | Event status on a bed (ts, event, FP?, actual condition) | graph |
 | 4 | Event analysis report for a patient/bed/unit | graph + vector |
@@ -272,6 +272,60 @@ retriever:
 > by **groundedness + citations**. Out-of-corpus / unknown-bed / unknown-patient questions are
 > expected to **decline**, never fabricate.
 
+Event names in the event-scoped questions (9, 10, "all patients with …") are **parameterized**:
+substitute any of the 16 classes — "AFib", "v-tach", "ST elevation", "mobitz 2", "SVT", … — and the
+same template runs with a different `event_type` (NL→class resolved by `event_type_from_text`).
+
+The matrix is wired identically for **voice and text** (the voice handler routes through the same
+`match_intent`). Spoken queries are normalized first (`kb/graph/spoken.py`) so STT phrasing resolves
+like typed: spelled-out acronyms collapse ("A V Block" → "AV Block", "S V T" → "SVT"), number-word
+bed labels rebuild ("bed unit one bed oh one" → "Unit1-Bed01"), and spoken counts become digits
+("twenty four hours" → 24). So bed/event-type/time-scoped questions work spoken, not just typed.
+
+**Answer style.** Operational (template-matched) questions are answered **deterministically** from the
+graph rows — crisp, exact, no LLM in the loop (so a small local model can't pad or garble them), and
+with no conversation history or recalled context in the path. Only free-text/hybrid questions go
+through the LLM, under a tight instruction to lead with the answer and drop preamble/disclaimers; that
+path includes the live conversation history (for follow-ups) but recalled cross-session "past
+interactions" only when `EPISODIC_RECALL=true` (off by default). Patient pseudonyms (`PT####`),
+clinical terms ("SVT"), and bed/unit labels are preserved through de-identification (presidio NER
+would otherwise scrub them as PII).
+
+### Managing & inspecting the KB
+
+Two stores hold an event: the **graph** (Neo4j) is the structured source of truth (the
+`MonitoredEvent` + vitals snapshot + links + a `Report` node whose `uri` points at the materialized
+`data/reports/<id>.md`); the **vector** store (Qdrant `rmsai_docs`) holds the report *narrative*
+(`doc_id=report:<id>`) plus the clinical-protocol corpus, for semantic Q&A.
+
+**Dump what's stored for one event** (graph node + vector chunks + report file, side by side):
+```bash
+uv run python -m cli.kb_dump --list             # recent event ids
+uv run python -m cli.kb_dump <event_id>          # graph + report file + vector chunks
+uv run python -m cli.kb_dump <event_id> --json   # raw {graph, vector, report_text}
+```
+Ad-hoc graph reads use `cli.graph` (templates or read-only Cypher); GUIs: Neo4j Browser
+`http://localhost:7474`, Qdrant dashboard `http://localhost:6333/dashboard`.
+
+**Indexing is append-by-default — re-indexing docs no longer wipes event narratives.**
+`cli.kb_vector index` upserts (idempotent); pass `--reset` only for a clean rebuild. The
+event-writing/serving paths (`cli.consume`, `cli.outbound`, and `build_orchestrator` — which runs on
+every text chat **and** every voice call) all **append**, so they preserve the report narratives that
+`consume` archives. Append requires a **matching embedder dimension**: the collection is built with
+one embedder (hashing=256 / BGE=384); re-index with the same `--embedder`, or `--reset` to rebuild —
+a clear error fires on mismatch.
+
+```bash
+uv run python -m cli.kb_vector index --dir docs              # append (preserves event reports)
+uv run python -m cli.kb_vector index --dir docs --reset      # full rebuild (wipes the collection)
+```
+
+> ⚠️ **Destructive ops to know about.** Graph/orchestrator pytest fixtures
+> (`tests/test_graph_templates.py`, `tests/test_orchestrator.py`) run against the **live** Neo4j and
+> `reset_all()` on teardown — running them wipes ingested data; **re-ingest afterwards**.
+> `cli.kb_vector index --reset` and `cli.kb_eval` rebuild the Qdrant collection. After any such wipe,
+> re-run the `ingest → consume` flow to repopulate events (and their report narratives).
+
 ---
 
 ## POC configuration & stubs
@@ -295,6 +349,7 @@ touching callers.
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
 | `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word so audio follow-ups needn't repeat it (audio only — does not affect text chat) |
+| `EPISODIC_RECALL` | `false` | condition free-text answers on recalled cross-session past Q&A; off keeps answers grounded in the live KB + current conversation only |
 | `DEID_BACKEND` | `auto` | `auto` / `regex` / `presidio` |
 
 **Stubs (POC → production):** `PatientHistory` (synthetic, seeded by `patient_id` → EMR/FHIR) ·
@@ -521,6 +576,7 @@ uv run python -m cli.gen_synthetic ...     # synthetic signal/event generation
 uv run python -m cli.kb_vector index --dir docs/   # index the clinical corpus (vector)
 uv run python -m cli.graph migrate         # graph schema migrate / seed
 uv run python -m cli.kb ask "..."          # hybrid (vector + graph) KB query
+uv run python -m cli.kb_dump <event_id>    # dump one event: graph node + report file + vector chunks
 uv run python -m cli.kb_eval               # vector vs hybrid over the gold question set
 uv run python -m cli.memory demo           # working + episodic + semantic memory round-trip
 uv run python -m cli.speech_check          # offline Piper TTS → Whisper STT round-trip

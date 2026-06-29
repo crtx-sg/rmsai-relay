@@ -87,10 +87,11 @@ def _tpl(graph, name, **params):
 
 
 def test_t1_critical_events(graph):
+    # "Critical" = call-worthy (High or Critical): VF (Critical) + AFib (High), both on PT8001/bed01.
     rows = _tpl(graph, "critical_events_since", since=NOW - 24 * 3600)
-    assert len(rows) == 1
-    assert rows[0]["event"] == "VENTRICULAR_FIBRILLATION"
-    assert rows[0]["bed"] == "Unit1-Bed01" and rows[0]["unit"] == "Unit1"
+    assert {r["event"] for r in rows} == {"VENTRICULAR_FIBRILLATION", "ATRIAL_FIBRILLATION"}
+    assert all(r["bed"] == "Unit1-Bed01" and r["unit"] == "Unit1" for r in rows)
+    assert {r["criticality"] for r in rows} == {"Critical", "High"}
 
 
 def test_t2_positive_events(graph):
@@ -123,6 +124,48 @@ def test_vitals_at_patient_last_event(graph):
 def test_vitals_at_patient_last_event_unknown_patient(graph):
     # Resilience: no event for the patient -> empty rows, not an error.
     assert _tpl(graph, "vitals_at_patient_last_event", patient_id="PT_NOPE") == []
+
+
+def test_vitals_for_bed_last_event(graph):
+    # Bed01 has evt-vf (older) + evt-afib (newer) -> "last event" resolves to evt-afib.
+    rows = _tpl(graph, "vitals_for_bed_last_event", bed="Unit1-Bed01")
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "ATRIAL_FIBRILLATION"
+    assert rows[0]["hr"] == 170 and rows[0]["spo2"] == 92
+
+
+def test_ecg_strips_last_event_of_type(graph):
+    # Find the patient with the latest AFib event across all patients (no patient given).
+    rows = _tpl(graph, "ecg_strips_last_event_of_type", event_type="ATRIAL_FIBRILLATION")
+    assert len(rows) == 1
+    assert rows[0]["patient"] == "PT8001" and rows[0]["bed"] == "Unit1-Bed01"
+    assert rows[0]["signal_ref"] == "hdf5://PT8001/evt-afib"
+
+
+def test_trend_last_event_of_type(graph):
+    rows = _tpl(graph, "trend_last_event_of_type", event_type="VENTRICULAR_FIBRILLATION")
+    assert len(rows) == 1
+    assert rows[0]["patient"] == "PT8001" and rows[0]["hr"] == 170
+
+
+def test_patients_with_event_type(graph):
+    rows = _tpl(graph, "patients_with_event_type", event_type="ATRIAL_FIBRILLATION")
+    assert {r["patient"] for r in rows} == {"PT8001"}
+    assert _tpl(graph, "patients_with_event_type", event_type="NORMAL_SINUS")[0]["patient"] == "PT8002"
+
+
+def test_critical_events_for_patient(graph):
+    # PT8001 has VF (Critical) + AFib (High) -> both call-worthy; PT8002's NORMAL_SINUS is not.
+    rows = _tpl(graph, "critical_events_for_patient", patient_id="PT8001")
+    assert {r["event"] for r in rows} == {"VENTRICULAR_FIBRILLATION", "ATRIAL_FIBRILLATION"}
+    assert all(r["patient"] == "PT8001" for r in rows)
+    assert _tpl(graph, "critical_events_for_patient", patient_id="PT8002") == []
+
+
+def test_events_for_patient(graph):
+    rows = _tpl(graph, "events_for_patient", patient_id="PT8001")
+    assert {r["event"] for r in rows} == {"VENTRICULAR_FIBRILLATION", "ATRIAL_FIBRILLATION"}
+    assert _tpl(graph, "events_for_patient", patient_id="PT8002")[0]["event"] == "NORMAL_SINUS"
 
 
 def test_t6_outstanding_action_items(graph):

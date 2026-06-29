@@ -51,16 +51,22 @@ class StubSTT(STTAdapter):
 class WhisperSTT(STTAdapter):
     """Self-hosted Whisper STT (lazy). Biased with clinical vocabulary (G15)."""
 
-    def __init__(self, model: str = "base.en", initial_prompt: str | None = None) -> None:
+    def __init__(self, model: str = "base.en", initial_prompt: str | None = None,
+                 language: str | None = "en") -> None:
         from faster_whisper import WhisperModel  # noqa: PLC0415
 
         self._model = WhisperModel(model)
         self._initial_prompt = initial_prompt
+        # None / "" / "auto" -> let Whisper auto-detect; else pin the language (skips detection so it
+        # never "hears" another language on noise). `.en` models are English-only regardless.
+        self._language = language if language and language != "auto" else None
 
     def transcribe(self, audio: bytes) -> str:
         import io  # noqa: PLC0415
 
-        segments, _ = self._model.transcribe(io.BytesIO(audio), initial_prompt=self._initial_prompt)
+        segments, _ = self._model.transcribe(
+            io.BytesIO(audio), language=self._language, initial_prompt=self._initial_prompt
+        )
         return " ".join(s.text.strip() for s in segments).strip()
 
 
@@ -128,6 +134,29 @@ def _multipart(fields: dict[str, str], file_field: str, filename: str,
     return b"".join(parts), f"multipart/form-data; boundary={_BOUNDARY}"
 
 
+def _elevenlabs_request(req, *, timeout: int = 60) -> bytes:
+    """Send an ElevenLabs request, raising a *legible* error (with the API's message) on failure.
+
+    ElevenLabs returns the reason in a JSON body (e.g. 402 `paid_plan_required`: "Free users cannot
+    use library voices…"); surfacing it beats a bare `HTTPError 402` traceback in the worker log.
+    """
+    import json  # noqa: PLC0415
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            payload = json.loads(exc.read()).get("detail", {})
+            detail = payload.get("message") or payload.get("code") or ""
+        except Exception:  # noqa: BLE001 - body may be empty/non-JSON
+            pass
+        raise RuntimeError(f"ElevenLabs API error {exc.code}: {detail or exc.reason}") from exc
+
+
 class ElevenLabsTTS(TTSAdapter):
     """Cloud TTS via ElevenLabs (stdlib HTTP). Requests raw PCM so the LiveKit worker can stream it.
 
@@ -153,8 +182,7 @@ class ElevenLabsTTS(TTSAdapter):
         req = urllib.request.Request(url, data=body, headers={
             "xi-api-key": self._key, "Content-Type": "application/json", "Accept": "audio/pcm",
         })
-        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
-            return resp.read()
+        return _elevenlabs_request(req)
 
     def synthesize(self, text: str) -> bytes:
         return _pcm_to_wav(self._request_pcm(text), self.sample_rate)
@@ -168,22 +196,26 @@ class ElevenLabsSTT(STTAdapter):
 
     _URL = "https://api.elevenlabs.io/v1/speech-to-text"
 
-    def __init__(self, api_key: str, model: str = "scribe_v1") -> None:
+    def __init__(self, api_key: str, model: str = "scribe_v1", language: str | None = "en") -> None:
         if not api_key:
             raise ValueError("ELEVENLABS_API_KEY is not set (required for STT_BACKEND=elevenlabs)")
         self._key = api_key
         self._model = model
+        # None / "" / "auto" -> let Scribe auto-detect; else pin it via `language_code`.
+        self._language = language if language and language != "auto" else None
 
     def transcribe(self, audio: bytes) -> str:
         import json  # noqa: PLC0415
         import urllib.request  # noqa: PLC0415
 
-        body, ctype = _multipart({"model_id": self._model}, "file", "audio.wav", audio, "audio/wav")
+        fields = {"model_id": self._model}
+        if self._language:
+            fields["language_code"] = self._language
+        body, ctype = _multipart(fields, "file", "audio.wav", audio, "audio/wav")
         req = urllib.request.Request(self._URL, data=body, headers={
             "xi-api-key": self._key, "Content-Type": ctype,
         })
-        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
-            return json.loads(resp.read()).get("text", "").strip()
+        return json.loads(_elevenlabs_request(req)).get("text", "").strip()
 
 
 class DeidentifyingTTS(TTSAdapter):
@@ -220,9 +252,11 @@ def build_stt(config: Config = DEFAULT) -> STTAdapter:
     materially helps small models like `tiny.en` transcribe arrhythmia/drug/ack terms.
     """
     if config.stt_backend == "whisper":
-        return WhisperSTT(model=config.whisper_model, initial_prompt=config.stt_initial_prompt)
+        return WhisperSTT(model=config.whisper_model, initial_prompt=config.stt_initial_prompt,
+                          language=config.stt_language)
     if config.stt_backend == "elevenlabs":
-        return ElevenLabsSTT(config.elevenlabs_api_key, config.elevenlabs_stt_model)
+        return ElevenLabsSTT(config.elevenlabs_api_key, config.elevenlabs_stt_model,
+                             language=config.stt_language)
     return StubSTT()
 
 

@@ -4,8 +4,38 @@ from __future__ import annotations
 
 import pytest
 
-from common.deid import DeidError, Deidentifier, RegexDeidentifier, deidentify, get_deidentifier
+from common.deid import (
+    DeidError,
+    Deidentifier,
+    RegexDeidentifier,
+    _is_safe_span,
+    deidentify,
+    get_deidentifier,
+)
 from common.providers import DeidentifyingLLM, EchoLLM
+
+
+# --- presidio allow-list: pseudonyms / clinical terms / bed-unit labels are NOT PHI ---
+
+
+@pytest.mark.parametrize("span", ["PT4543", "patient PT99", "SVT", "ATRIAL_FIBRILLATION",
+                                   "atrial fibrillation", "MEWS", "High", "Unit1", "Unit1-Bed01",
+                                   "Bed01"])
+def test_is_safe_span_true_for_non_phi(span):
+    assert _is_safe_span(span) is True
+
+
+@pytest.mark.parametrize("span", ["John Doe", "Jane Smith", "Springfield General", "Dr. House"])
+def test_is_safe_span_false_for_real_phi(span):
+    assert _is_safe_span(span) is False
+
+
+def test_regex_keeps_dates_and_vitals_scrubs_phones():
+    d = RegexDeidentifier()
+    out = d.deidentify("At 2026-06-29 06:14 UTC, hr 68; sbp 118; spo2 97; call 212-555-0000")
+    assert "2026-06-29" in out and "06:14" in out          # ISO date / time not a phone
+    assert "68" in out and "118" in out and "97" in out      # vitals not phones
+    assert "212-555-0000" not in out and "<PHONE>" in out    # a real 10-digit phone is scrubbed
 
 
 # --- regex de-id ---

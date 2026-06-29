@@ -9,6 +9,7 @@ is importable, so the two can never silently diverge.
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 # Order matches `ecg_transcovnet.simulator.conditions.Condition` (== model output index order).
@@ -82,6 +83,42 @@ class EventType(str, Enum):
     AV_BLOCK_2_TYPE1 = "AV_BLOCK_2_TYPE1"
     AV_BLOCK_2_TYPE2 = "AV_BLOCK_2_TYPE2"
     ST_ELEVATION = "ST_ELEVATION"
+
+
+# Natural-language phrases -> class name, for chat queries like "the last AFib event". Ordered:
+# more specific phrases first so "ventricular tachycardia" wins over a bare "tachycardia", and the
+# `\b` on "ventricular" avoids matching inside "supraventricular".
+_NL_EVENT_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"\bventricular tachycardia\b|\bv[\s-]?tach\b|\bvt\b", "VENTRICULAR_TACHYCARDIA"),
+    (r"\bventricular fibrillation\b|\bv[\s-]?fib\b|\bvf\b", "VENTRICULAR_FIBRILLATION"),
+    (r"\bsupraventricular tachycardia\b|\bsvt\b", "SVT"),
+    (r"\bsinus tachycardia\b|\btachycardia\b|\btachy\b", "SINUS_TACHYCARDIA"),
+    (r"\bsinus bradycardia\b|\bbradycardia\b|\bbrady\b", "SINUS_BRADYCARDIA"),
+    (r"\batrial fibrillation\b|\ba[\s-]?fib\b|\bafib\b", "ATRIAL_FIBRILLATION"),
+    (r"\batrial flutter\b|\ba[\s-]?flutter\b|\baflutter\b|\bafl\b", "ATRIAL_FLUTTER"),
+    (r"\bpvc\b|premature ventricular", "PVC"),
+    (r"\bpac\b|premature atrial", "PAC"),
+    (r"\bleft bundle\b|\blbbb\b", "LBBB"),
+    (r"\bright bundle\b|\brbbb\b", "RBBB"),
+    (r"\bmobitz (?:ii|2|type 2)\b|av block 2 type 2|second degree.*type 2", "AV_BLOCK_2_TYPE2"),
+    (r"\bmobitz (?:i|1|type 1)\b|\bwenckebach\b|av block 2 type 1|second degree.*type 1",
+     "AV_BLOCK_2_TYPE1"),
+    (r"first[\s-]?degree(?: av)? block|av block 1|1st degree|\bavb1\b|\bav block\b", "AV_BLOCK_1"),
+    (r"\bst[\s-]?elevation\b|\bstemi\b|\bste\b", "ST_ELEVATION"),
+    (r"\bnormal sinus\b|\bnormal rhythm\b", "NORMAL_SINUS"),
+)
+
+
+def event_type_from_text(text: str) -> str | None:
+    """Resolve a natural-language phrase to one of the 16 class names ('AFib' -> ATRIAL_FIBRILLATION).
+
+    Returns None when no arrhythmia term is present. Specific phrases win over general ones.
+    """
+    t = text.lower()
+    for pattern, cls in _NL_EVENT_PATTERNS:
+        if re.search(pattern, t):
+            return cls
+    return None
 
 
 def is_valid_event_type(event_type: str) -> bool:

@@ -104,12 +104,16 @@ class Config:
     stt_backend: str = "stub"  # stub | whisper | elevenlabs
     tts_backend: str = "stub"  # stub | piper | elevenlabs
     whisper_model: str = "base.en"
+    stt_language: str = "en"  # force STT language (ISO 639-1); "" / "auto" = auto-detect
     stt_initial_prompt: str = CLINICAL_STT_PROMPT  # Whisper vocab biasing (G15)
     piper_voice_path: str = ""  # path to a Piper .onnx voice
     # ElevenLabs (cloud STT "Scribe" + TTS) — for accuracy/latency benchmarking on SYNTHETIC data
     # only. Sends audio/text to a third party, so it must NEVER carry real PHI (hard rules #4/#5).
     elevenlabs_api_key: str = ""
-    elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # default public voice ("Rachel")
+    # Default premade voice usable on the free tier ("Adam"). NOTE: ElevenLabs moves voices behind
+    # paid plans over time (e.g. "Rachel"/library voices now 402 `paid_plan_required`); set
+    # ELEVENLABS_VOICE_ID to a premade voice your plan allows.
+    elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"
     elevenlabs_tts_model: str = "eleven_flash_v2_5"  # low-latency TTS model
     elevenlabs_stt_model: str = "scribe_v1"
     elevenlabs_tts_sample_rate: int = 22050  # PCM rate; ElevenLabs supports 16000/22050/24000/44100
@@ -124,6 +128,10 @@ class Config:
     # after each wake word so follow-ups don't repeat it. Text-chat turns are never gated.
     audio_wake_word: str = "hey vios"
     audio_wake_window_s: float = 30.0
+    # Episodic recall: when on, free-text answers are conditioned on recalled past Q&A ("Relevant
+    # past interactions"). Off by default — keeps answers grounded only in the live KB + this
+    # conversation, and avoids a small model parroting stale recalled text.
+    episodic_recall: bool = False
 
     # Audit log
     audit_log_path: str = "data/audit.jsonl"
@@ -163,6 +171,7 @@ class Config:
             stt_backend=os.environ.get("STT_BACKEND", "stub"),
             tts_backend=os.environ.get("TTS_BACKEND", "stub"),
             whisper_model=os.environ.get("WHISPER_MODEL", "base.en"),
+            stt_language=os.environ.get("STT_LANGUAGE", "en"),
             stt_initial_prompt=os.environ.get("STT_INITIAL_PROMPT", CLINICAL_STT_PROMPT),
             piper_voice_path=os.environ.get("PIPER_VOICE_PATH", ""),
             elevenlabs_api_key=os.environ.get("ELEVENLABS_API_KEY", ""),
@@ -177,6 +186,7 @@ class Config:
             livekit_sip_room=os.environ.get("LIVEKIT_SIP_ROOM", "rmsai-outbound"),
             audio_wake_word=os.environ.get("AUDIO_WAKE_WORD", "hey vios"),
             audio_wake_window_s=_f("AUDIO_WAKE_WINDOW_S", 30.0),
+            episodic_recall=_b("EPISODIC_RECALL", False),
             audit_log_path=os.environ.get("AUDIT_LOG_PATH", "data/audit.jsonl"),
             report_dir=os.environ.get("REPORT_DIR", "data/reports"),
         )

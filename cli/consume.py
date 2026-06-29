@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         episodic=EpisodicMemory.from_config(embedder_name=args.embedder),
         llm=DeidentifyingLLM(get_llm_provider(config.llm_provider, config),
                              get_deidentifier(config.deid_backend)), driver=driver,
+        episodic_recall=config.episodic_recall,
     )
     caller_factory = None
     alert_store = None
