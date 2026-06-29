@@ -12,6 +12,7 @@ Given a Phase 1 `DeviceEvent`, this:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from common.config import DEFAULT, Config
 from common.criticality import event_criticality
@@ -54,6 +55,19 @@ def _action_items(event: DeviceEvent, crit: str) -> list[dict]:
             for g in event.analysis.care_guidance]
 
 
+def write_report(report_md: str, event_id: str, *, config: Config = DEFAULT) -> str:
+    """Materialize the report markdown to `{report_dir}/{event_id}.md`. Returns the file path (uri).
+
+    The directory is gitignored (`data/` by default, like the audit log). Idempotent: a replayed
+    event simply overwrites its own report. This is the durable source artifact behind the graph
+    `Report` node; the vector index is the searchable copy.
+    """
+    path = Path(config.report_dir) / f"{event_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report_md, encoding="utf-8")
+    return str(path)
+
+
 def process_device_event(
     event: DeviceEvent,
     driver: GraphDriver,
@@ -84,10 +98,13 @@ def process_device_event(
     report_md = build_event_report(event, ctx)
     report_id = f"report:{w.event_id}"
 
-    # 4. archive: Report node (pending) then index narrative into the vector store, then mark indexed
+    # 4. archive: materialize the report markdown to disk (durable, human-readable, survives a
+    #    vector-store rebuild), record a Report node pointing at it, index the narrative for search,
+    #    then mark indexed. The file is the source artifact; the vector index is the search copy.
+    uri = write_report(report_md, w.event_id, config=config)
     persist_report(
         driver, event_uuid=w.event_id, report_id=report_id,
-        uri=f"reports/{w.event_id}.md", summary=report_summary(event),
+        uri=uri, summary=report_summary(event),
         generated_at=generated_at, index_status="pending",
     )
     vector.add_document(report_id, report_md)

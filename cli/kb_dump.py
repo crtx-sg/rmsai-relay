@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from common.config import DEFAULT
 from kb.graph.driver import GraphDriver
@@ -49,8 +50,9 @@ def _fmt_vitals(ev: dict) -> str:
             f"RR {g('rr')}, Temp {g('temp')}")
 
 
-def render_dump(event_id: str, graph: dict | None, chunks: list[dict]) -> str:
-    """Pure renderer: format the graph row + vector chunks into a readable side-by-side dump."""
+def render_dump(event_id: str, graph: dict | None, chunks: list[dict],
+                report_text: str | None = None) -> str:
+    """Pure renderer: format graph row + report file + vector chunks into a readable dump."""
     out = [f"=== EVENT {event_id} ===", ""]
 
     out.append("GRAPH (Neo4j)")
@@ -73,12 +75,19 @@ def render_dump(event_id: str, graph: dict | None, chunks: list[dict]) -> str:
             f"  plots      : ecg={ev.get('ecg_plot_ref')}  vitals={ev.get('vitals_plot_ref')}",
         ]
         if rep:
+            uri = rep.get("uri")
+            exists = report_text is not None
             out += [
-                f"  report     : {rep.get('id')}  (index_status {rep.get('index_status')})"
-                f"  {rep.get('uri')}",
+                f"  report     : {rep.get('id')}  (index_status {rep.get('index_status')})",
+                f"  report uri : {uri}  ({'exists' if exists else 'MISSING on disk'})",
                 f"               summary: {rep.get('summary')!r}",
             ]
     out.append("")
+
+    if report_text is not None:
+        out.append("REPORT FILE (markdown)")
+        out += [f"  {line}" for line in report_text.rstrip().splitlines()]
+        out.append("")
 
     out.append(f"VECTOR (Qdrant)  doc_id=report:{event_id}")
     if not chunks:
@@ -111,10 +120,19 @@ def main(argv: list[str] | None = None) -> int:
         store = QdrantStore.connect(DEFAULT.qdrant_url)
         chunks = store.chunks_for_doc(f"report:{args.event_id}")
 
+    # Read the materialized report file if the graph points at one that exists on disk.
+    report_text = None
+    rep = (graph or {}).get("report") or {}
+    if rep.get("uri"):
+        p = Path(rep["uri"])
+        if p.is_file():
+            report_text = p.read_text(encoding="utf-8")
+
     if args.json:
-        print(json.dumps({"graph": graph, "vector": chunks}, default=str, indent=2))
+        print(json.dumps({"graph": graph, "vector": chunks, "report_text": report_text},
+                         default=str, indent=2))
     else:
-        print(render_dump(args.event_id, graph, chunks))
+        print(render_dump(args.event_id, graph, chunks, report_text))
     return 0
 
 

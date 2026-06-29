@@ -33,6 +33,7 @@ def _load_dotenv() -> None:
 # Clinical vocabulary that biases Whisper STT (G15) — helps small models (e.g. tiny.en) recognise
 # arrhythmia/drug/vitals terms and the acknowledgement words.
 CLINICAL_STT_PROMPT = (
+    "Hey Vios. Vios. "  # wake word — prime Whisper so it mis-hears the brand word less often
     "Arrhythmia, atrial fibrillation, ventricular tachycardia, ventricular fibrillation, "
     "bradycardia, tachycardia, SVT, PVC, AV block, ST elevation, MEWS, SpO2, systolic, diastolic, "
     "beta-blocker, anticoagulant, amiodarone, defibrillation, cardioversion, escalate, acknowledge, "
@@ -127,6 +128,10 @@ class Config:
     # Audit log
     audit_log_path: str = "data/audit.jsonl"
 
+    # Report archive — full event-report markdown is materialized here (gitignored, like the audit
+    # log). The graph `Report.uri` points at the written file; the vector index is the search copy.
+    report_dir: str = "data/reports"
+
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
@@ -173,6 +178,7 @@ class Config:
             audio_wake_word=os.environ.get("AUDIO_WAKE_WORD", "hey vios"),
             audio_wake_window_s=_f("AUDIO_WAKE_WINDOW_S", 30.0),
             audit_log_path=os.environ.get("AUDIT_LOG_PATH", "data/audit.jsonl"),
+            report_dir=os.environ.get("REPORT_DIR", "data/reports"),
         )
 
 

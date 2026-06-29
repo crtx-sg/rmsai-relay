@@ -6,13 +6,16 @@ in-memory Qdrant + the hashing embedder, so they need no live server.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from cli.kb_dump import render_dump
+from common.config import DEFAULT
 from kb.vector.retriever import VectorRetriever
 from kb.vector.store import QdrantStore
+from orchestrator.event_flow import write_report
 
 _DOCS = Path(__file__).resolve().parents[1] / "docs"
 
@@ -50,6 +53,32 @@ def test_render_dump_missing_event():
     out = render_dump("nope", None, [])
     assert "no MonitoredEvent with this id" in out
     assert "chunks: 0" in out
+
+
+def test_render_dump_shows_report_file_when_present():
+    out = render_dump("evt1", _GRAPH_ROW, [], report_text="# Report\n\nAlert for PT4543. SVT.")
+    assert "REPORT FILE (markdown)" in out
+    assert "Alert for PT4543. SVT." in out
+    assert "exists" in out
+
+
+def test_render_dump_flags_missing_report_file():
+    out = render_dump("evt1", _GRAPH_ROW, [], report_text=None)
+    assert "MISSING on disk" in out
+    assert "REPORT FILE (markdown)" not in out
+
+
+# --- write_report materialization ---
+
+
+def test_write_report_materializes_file(tmp_path):
+    cfg = replace(DEFAULT, report_dir=str(tmp_path))
+    uri = write_report("# Report\n\nAlert for PT9 SVT.\n", "evt1", config=cfg)
+    p = Path(uri)
+    assert p.is_file() and p.name == "evt1.md"
+    assert "Alert for PT9 SVT." in p.read_text(encoding="utf-8")
+    write_report("# Report v2\n", "evt1", config=cfg)  # replay overwrites its own report
+    assert "v2" in p.read_text(encoding="utf-8")
 
 
 # --- vector store: append vs reset + chunks_for_doc ---
