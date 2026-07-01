@@ -31,6 +31,39 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
+def _b64url_decode(seg: str) -> bytes:
+    return base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4))
+
+
+def verify_access_token(token: str, config: Config = DEFAULT, *, now: int | None = None) -> dict | None:
+    """Verify a LiveKit HS256 token minted by `access_token` (our API secret). Returns the payload
+    dict when the signature is valid and it is within nbf/exp, else `None`.
+
+    Used to authorize companion-app HTTP calls (e.g. `/ack`): possessing a valid inbox token proves
+    the caller cleared the PIN gate, since tokens are only minted after `POST /session` succeeds.
+    """
+    if not token or not config.livekit_api_secret:
+        return None
+    try:
+        header_b64, payload_b64, sig_b64 = token.split(".")
+    except ValueError:
+        return None
+    signing_input = f"{header_b64}.{payload_b64}"
+    expected = _b64url(
+        hmac.new(config.livekit_api_secret.encode(), signing_input.encode(), hashlib.sha256).digest()
+    )
+    if not hmac.compare_digest(expected, sig_b64):
+        return None
+    try:
+        payload = json.loads(_b64url_decode(payload_b64))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    ts = int(now if now is not None else time.time())
+    if int(payload.get("exp", 0)) < ts or int(payload.get("nbf", 0)) > ts:
+        return None
+    return payload
+
+
 def access_token(
     *,
     identity: str,

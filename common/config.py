@@ -80,6 +80,16 @@ class Config:
     outbound_max_retries: int = 2
     outbound_retry_delay_s: int = 30
 
+    # Dispatch surface for a critical event (Phase 9). The criticality gate is unchanged; this
+    # only chooses where a critical event is delivered:
+    #   app       -> push a notification into the per-hospital inbox room only
+    #   call      -> the existing per-event SIP/voice (or text) alert only (today's behaviour)
+    #   app+call  -> both fire
+    dispatch_mode: str = "app+call"  # app | call | app+call
+    # Facility the inbox room is scoped to. The companion app joins `rmsai-inbox-<hospital_id>`.
+    # POC: a single configured facility; production fan-out to an on-call clinician is out of scope.
+    hospital_id: str = ""
+
     # Datastore endpoints (lean services)
     redis_url: str = "redis://localhost:6379/0"
     neo4j_uri: str = "bolt://localhost:7687"
@@ -161,6 +171,8 @@ class Config:
             outbound_min_criticality=os.environ.get("OUTBOUND_MIN_CRITICALITY", "High"),
             outbound_max_retries=_i("OUTBOUND_MAX_RETRIES", 2),
             outbound_retry_delay_s=_i("OUTBOUND_RETRY_DELAY_S", 30),
+            dispatch_mode=os.environ.get("DISPATCH_MODE", "app+call"),
+            hospital_id=os.environ.get("HOSPITAL_ID", ""),
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             neo4j_uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
             neo4j_user=os.environ.get("NEO4J_USER", "neo4j"),

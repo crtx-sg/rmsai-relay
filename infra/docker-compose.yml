@@ -94,10 +94,16 @@ services:
   livekit:
     image: livekit/livekit-server:latest
     profiles: ["later"]
-    command: ["--dev"]
+    # Use a config file (not bare `--dev`) so the server binds all interfaces AND advertises a
+    # host-reachable RTC node IP — otherwise the WebRTC data channel never forms and the browser
+    # worklist stays empty. See infra/livekit.yaml.
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    volumes:
+      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
     ports:
       - "${LIVEKIT_PORT:-7880}:7880"
       - "${LIVEKIT_RTC_PORT:-7881}:7881"
+      - "7882:7882/udp"     # muxed UDP media (rtc.udp_port); TCP 7881 is the fallback
     healthcheck:
       test: ["CMD-SHELL", "true"]
       interval: 15s

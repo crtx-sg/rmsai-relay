@@ -16,14 +16,21 @@ from dataclasses import dataclass
 
 from common.bed_assignment import BedAssignmentStub
 from common.config import DEFAULT, Config
+from common.criticality import event_criticality
 from inference.serialize import dict_to_event
 from kb.graph.driver import GraphDriver
 from kb.vector.retriever import VectorRetriever
+from live.inbox import artifact_kinds_for, build_event_message, mint_artifact_links
 from orchestrator.event_flow import process_device_event
 from orchestrator.outbound_flow import OutboundResult, run_outbound, run_text_notify, should_call
 from orchestrator.patient_bootstrap import ensure_patient
 from orchestrator.report import spoken_report
 from voice.outbound_alert import OutboundAlert
+
+
+def _mode_includes(mode: str, surface: str) -> bool:
+    """True when `DISPATCH_MODE` (e.g. "app+call") includes a given surface ("app"/"call")."""
+    return surface in {m.strip() for m in mode.split("+")}
 
 
 @dataclass
@@ -38,6 +45,7 @@ class ConsumeResult:
     called: bool
     decision_reason: str
     outbound: OutboundResult | None = None
+    app_dispatched: bool = False  # a worklist notification was pushed to the hospital inbox
 
 
 def process_bus_event(
@@ -55,6 +63,8 @@ def process_bus_event(
     config: Config = DEFAULT,
     caller_factory=None,
     alert_store=None,
+    inbox_publisher=None,
+    token_store=None,
 ) -> ConsumeResult:
     """Reconstruct, persist, and (if the gate clears) alert for one bus payload.
 
@@ -65,6 +75,11 @@ def process_bus_event(
     per-event room is created, the alert is staged in the store for the worker, and the call is
     placed without scripting the conversation (the worker drives the real STT/TTS loop). Without
     them, the voice path uses the supplied `caller` and the offline scripted loop.
+
+    `DISPATCH_MODE` (config) chooses the surface(s) a critical event is delivered on — it does NOT
+    change the criticality gate. `app`/`app+call` push a worklist notification (with scoped artifact
+    links) into the hospital inbox via `inbox_publisher` (+ `token_store`); `call`/`app+call` run the
+    existing per-event SIP/voice (or text) alert. `call` never pushes to the inbox.
     """
     event = dict_to_event(payload)
     w = event.window
@@ -89,6 +104,37 @@ def process_bus_event(
         print(f"[consume] FALSE-POSITIVE OVERRIDE: ECG classified {event.event_type} "
               f"(false positive), but the patient's vitals warrant a call [{reason}]. "
               f"Calling anyway — vitals/MEWS-driven escalation, not the rhythm.", flush=True)
+
+    mode = config.dispatch_mode
+    # App surface: push a worklist notification (pseudonym + scoped artifact links) for every
+    # critical event. Independent of any worker/chat session being present.
+    app_dispatched = False
+    if _mode_includes(mode, "app") and inbox_publisher is not None:
+        kinds = artifact_kinds_for(event, config=config)
+        links = mint_artifact_links(w.event_id, kinds, token_store) if token_store is not None else {}
+        message = build_event_message(
+            event_id=w.event_id, patient=w.patient_ref, unit=unit, bed=bed,
+            event_type=event.event_type, ts=w.event_timestamp,
+            criticality=event_criticality(event, config), status="reported", links=links,
+        )
+        # Best-effort: the event is already persisted, and the worklist is live-push-only, so a
+        # transient LiveKit hiccup (or no app connected yet) must not poison a persisted event.
+        try:
+            inbox_publisher.publish_event(message)
+            app_dispatched = True
+            print(f"[consume] dispatch=app: pushed inbox event {w.event_id} -> "
+                  f"{inbox_publisher.room} (kinds={kinds})", flush=True)
+        except Exception as exc:  # noqa: BLE001 - notification is best-effort; do not fail the event
+            print(f"[consume] dispatch=app: inbox push failed for {w.event_id}: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
+    # Call surface: unchanged per-event SIP/voice (or text) alert. Skipped for app-only mode.
+    if not _mode_includes(mode, "call"):
+        return ConsumeResult(
+            event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
+            bed=bed_label, persisted=True, called=False, decision_reason=reason,
+            app_dispatched=app_dispatched,
+        )
 
     to = to or config.outbound_call_number
     if channel == "text":
@@ -118,5 +164,5 @@ def process_bus_event(
     return ConsumeResult(
         event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
         bed=bed_label, persisted=True, called=result.called, decision_reason=reason,
-        outbound=result,
+        outbound=result, app_dispatched=app_dispatched,
     )

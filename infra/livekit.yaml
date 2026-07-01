@@ -1,0 +1,22 @@
+# LiveKit dev config for local/browser access through Docker (replaces bare `--dev`).
+#
+# `--dev` binds loopback-only and auto-detects the container IP as the RTC node address, which a
+# browser on the host (esp. Windows/WSL2) cannot reach — so the WebSocket signaling connects but the
+# WebRTC data channel (how LiveKit delivers data messages) never establishes and the worklist stays
+# empty. Advertising 127.0.0.1 + forwarding the media ports fixes it for a same-host browser.
+port: 7880
+bind_addresses:
+  - ""          # all interfaces (reachable via Docker's published ports)
+
+rtc:
+  tcp_port: 7881       # ICE/TCP fallback (always works through a single forwarded TCP port)
+  udp_port: 7882       # single muxed UDP media port (forwarded below)
+  use_external_ip: false
+  node_ip: 127.0.0.1   # advertise a host-reachable address (localhost forwards to the container)
+
+# Placeholder dev keys (same as `--dev`); tokens are signed with these.
+keys:
+  devkey: secret
+
+logging:
+  level: info

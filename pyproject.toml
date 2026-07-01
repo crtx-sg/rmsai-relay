@@ -54,6 +54,13 @@ livekit = [
     "livekit-agents>=0.12",
     "livekit-plugins-silero>=0.7",  # voice-activity detection (endpointing + barge-in)
 ]
+# Companion-app gateway (Phase 9): FastAPI serves session/PIN, the artifact + ack endpoints, and
+# the static worklist app. Opt-in to keep the base install light (httpx pulls the test client).
+app = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "httpx>=0.27",
+]
 
 # Keep torch on the CPU wheel index — no GPU needed for the POC stub path,
 # and it keeps the install small.

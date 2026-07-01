@@ -123,6 +123,47 @@ def set_event_status(driver: GraphDriver, uuid: str, status: str) -> None:
     )
 
 
+def get_event_patient(driver: GraphDriver, uuid: str) -> str | None:
+    """Return the patient pseudonym owning a MonitoredEvent, or None if the event is unknown.
+
+    Doubles as an existence check (an acknowledge for an unknown event is refused) and yields the
+    pseudonym the acknowledge is audited against (never the event uuid as a subject).
+    """
+    rows = driver.run_read(
+        "MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent {id:$uuid}) RETURN p.id AS pid",
+        uuid=uuid,
+    )
+    return rows[0]["pid"] if rows else None
+
+
+def get_event_artifacts(driver: GraphDriver, uuid: str) -> dict | None:
+    """Resolve an event's materialized artifact refs + owning pseudonym, or None if unknown.
+
+    Backs the authenticated artifact endpoint: the ECG-strip path (`ecg_plot_ref`), the HR series
+    (`hr_history`/`hr_history_ts`), and the report file (`Report.uri`). The pseudonym is what the
+    view is audited against.
+    """
+    rows = driver.run_read(
+        """
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent {id:$uuid})
+        OPTIONAL MATCH (e)-[:HAS_REPORT]->(r:Report)
+        RETURN p.id AS patient, e.ecg_plot_ref AS ecg_plot_ref,
+               e.hr_history AS hr_history, e.hr_history_ts AS hr_history_ts, r.uri AS report_uri
+        """,
+        uuid=uuid,
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "patient": r["patient"],
+        "ecg_plot_ref": r["ecg_plot_ref"],
+        "hr_history": r["hr_history"],
+        "hr_history_ts": r["hr_history_ts"],
+        "report_uri": r["report_uri"],
+    }
+
+
 def get_patient_context(driver: GraphDriver, patient_id: str) -> dict:
     """Fetch a patient's demographics + history from the graph (for grounding event reports)."""
     rows = driver.run_read(

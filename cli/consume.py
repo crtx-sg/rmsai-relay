@@ -33,7 +33,7 @@ from kb.vector.retriever import VectorRetriever
 from kb.vector.store import QdrantStore
 from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
-from orchestrator.bus_consumer import process_bus_event
+from orchestrator.bus_consumer import _mode_includes, process_bus_event
 from orchestrator.orchestrator import Orchestrator
 from voice.outbound import CallOutcome, SimulatedCaller, get_caller
 
@@ -126,6 +126,24 @@ def main(argv: list[str] | None = None) -> int:
     else:
         notifier = SimulatedSmsNotifier()
 
+    # Phase 9 app surface: when DISPATCH_MODE includes `app`, push a worklist notification (with
+    # scoped artifact links) into the hospital inbox room per critical event. The token store is
+    # always minted for `app` modes; the publisher needs LiveKit configured.
+    inbox_publisher = None
+    token_store = None
+    if _mode_includes(config.dispatch_mode, "app"):
+        from live.artifact_tokens import ArtifactTokenStore  # noqa: PLC0415
+        from live.inbox import InboxPublisher, inbox_room  # noqa: PLC0415
+        from voice.livekit_cloud import is_configured  # noqa: PLC0415
+
+        token_store = ArtifactTokenStore.from_config(config)
+        if is_configured(config):
+            inbox_publisher = InboxPublisher.from_config(config)
+            print(f"[consume] dispatch={config.dispatch_mode}; inbox room {inbox_room(config)}")
+        else:
+            print(f"[consume] dispatch={config.dispatch_mode} includes app but LiveKit is not "
+                  f"configured; inbox push disabled (set LIVEKIT_*)")
+
     # socket_timeout must outlive the server-side BLOCK window, else an idle blocking read
     # (no new messages) raises redis TimeoutError instead of returning nil. Give it headroom.
     client = redis.Redis.from_url(args.redis_url, socket_timeout=args.block_ms / 1000 + 5)
@@ -162,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
                             utterances=utterances, channel=args.channel, caller=caller,
                             notifier=notifier, to=args.number, config=config,
                             caller_factory=caller_factory, alert_store=alert_store,
+                            inbox_publisher=inbox_publisher, token_store=token_store,
                         )
                         _report(result)
                         if args.transport == "webrtc" and result.called:
@@ -207,7 +226,8 @@ def _print_webrtc_join(config, event_uuid: str) -> None:
 def _report(result) -> None:
     tag = f"{result.patient_ref}/{result.event_type}"
     if not result.called:
-        print(f"[skip] {tag} @ {result.bed}: {result.decision_reason}")
+        extra = " [app worklist pushed]" if result.app_dispatched else ""
+        print(f"[skip] {tag} @ {result.bed}: {result.decision_reason}{extra}")
         return
     ob = result.outbound
     print(f"[{result.bed}] {tag} -> {ob.outcome} (attempts {ob.attempts}) status={ob.status}")

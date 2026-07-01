@@ -251,11 +251,15 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0):
     class HandlerAgent(Agent):
         """LiveKit `Agent` that answers via a `Handler` instead of an LLM (no LLM in the path)."""
 
-        def __init__(self, handler: Handler, session_id: str, greeting: str | None) -> None:
+        def __init__(
+            self, handler: Handler, session_id: str, greeting: str | None,
+            *, push_to_talk: bool = False,
+        ) -> None:
             super().__init__(instructions="")  # unused: llm_node is overridden
             self._handler = handler
             self._session_id = session_id
             self._greeting = greeting
+            self._push_to_talk = push_to_talk  # in-app chat: app controls the mic, so no wake gate
             self._awake_until = 0.0  # monotonic deadline; audio Q&A is open until then
 
         async def on_enter(self) -> None:
@@ -265,6 +269,8 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0):
 
         async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
             """Wake-word gate for follow-up audio (raise StopResponse to drop a turn silently)."""
+            if self._push_to_talk:
+                return  # push-to-talk (in-app): every captured turn is intended, answer it
             is_auth = getattr(self._handler, "is_authenticated", None)
             # Only the post-alert (authenticated) Q&A phase is gated. PIN/alert/ack pass through.
             if not (is_auth and is_auth(self._session_id)):
@@ -300,6 +306,48 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0):
     return HandlerAgent
 
 
+def _build_inbox_room(ctx, config, loop):  # pragma: no cover - needs a live LiveKit room
+    """Wire the persistent inbox room: selection-scoped chat handler + inline-artifact push.
+
+    Returns `(handler, greeting, cleanup)`. Registers a data-message listener so a `type:"select"`
+    from the app scopes the conversation to that event, and gives the handler an `on_show` callback
+    that mints a fresh scoped artifact token and pushes a `type:"show"` message so the app renders
+    the artifact inline. Runs against the configured backends (Ollama LLM + the KB's embedder).
+    """
+    import json  # noqa: PLC0415
+
+    from live.artifact_tokens import ArtifactTokenStore  # noqa: PLC0415
+
+    from .handlers import build_inbox_handler  # noqa: PLC0415
+
+    try:
+        token_store = ArtifactTokenStore.from_config(config)
+    except Exception:  # noqa: BLE001 - no redis -> chat still works, just no inline artifacts
+        token_store = None
+
+    def _on_show(event_id: str, kind: str) -> None:
+        if token_store is None:
+            return
+        token, expires = token_store.mint(event_id, kind)
+        payload = json.dumps({"type": "show", "event_id": event_id, "kind": kind,
+                              "url": f"/artifact/{token}", "expires": expires}).encode("utf-8")
+        # respond() runs in an executor thread; hop back to the loop to publish.
+        asyncio.run_coroutine_threadsafe(
+            ctx.room.local_participant.publish_data(payload, reliable=True), loop
+        )
+        print(f"[worker] inbox show -> {kind} for event {event_id}", flush=True)
+
+    handler, greeting, cleanup = build_inbox_handler(
+        embedder=DEFAULT.embedder, llm=DEFAULT.llm_provider, on_show=_on_show
+    )
+
+    # NOTE: in the agents worker only the lk.chat text path (text_input_cb) reliably delivers
+    # inbound messages — raw data packets (room.on("data_received")) and custom text-stream topics
+    # are swallowed by the framework. So the app scopes the conversation by sending a
+    # "/select <event_id>" control message on lk.chat, handled in InboxHandler.respond.
+    return handler, greeting, cleanup
+
+
 async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit room
     """Worker job: join the room, then run STT -> Handler -> TTS until the call ends."""
     from livekit.agents import AgentSession, RoomInputOptions, TurnHandlingOptions  # noqa: PLC0415
@@ -315,15 +363,23 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
     tts_adapter = build_tts(config)
     sample_rate = getattr(tts_adapter, "sample_rate", _FALLBACK_SAMPLE_RATE)
 
-    try:
-        alert_store = OutboundAlertStore.from_config(config)
-    except Exception:  # noqa: BLE001 - no redis -> inbound-only worker still functions
-        alert_store = None
-    # Outbound (relay-initiated) call if an alert is waiting for this room; else inbound.
-    kind = "OUTBOUND (event alert staged)" if (
-        alert_store is not None and _has_alert(alert_store, ctx.room.name)
-    ) else "INBOUND (KB query)"
-    handler, greeting, cleanup = resolve_handler(ctx.room.name, alert_store, mode=mode)
+    loop = asyncio.get_running_loop()
+    # The per-hospital inbox room is a persistent, long-lived room for in-app chat (text + voice),
+    # scoped to the worklist event the clinician selects. Everything else keeps the per-event
+    # behaviour: an outbound (relay-initiated) SIP call if an alert is staged, else an inbound query.
+    is_inbox = ctx.room.name.startswith("rmsai-inbox-")
+    if is_inbox:
+        handler, greeting, cleanup = _build_inbox_room(ctx, config, loop)
+        kind = "INBOX (in-app chat, push-to-talk)"
+    else:
+        try:
+            alert_store = OutboundAlertStore.from_config(config)
+        except Exception:  # noqa: BLE001 - no redis -> inbound-only worker still functions
+            alert_store = None
+        kind = "OUTBOUND (event alert staged)" if (
+            alert_store is not None and _has_alert(alert_store, ctx.room.name)
+        ) else "INBOUND (KB query)"
+        handler, greeting, cleanup = resolve_handler(ctx.room.name, alert_store, mode=mode)
     if cleanup is not None:
         async def _shutdown() -> None:
             cleanup()
@@ -357,11 +413,14 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         reply = await loop.run_in_executor(
             None, partial(handler.respond, text, session_id=ctx.room.name)
         )
+        if not reply:  # control messages (e.g. /select) produce no chat bubble
+            return
         print(f"[worker] text chat reply: {reply!r}", flush=True)
         await ctx.room.local_participant.send_text(reply, topic="lk.chat")
 
     await session.start(
-        agent=HandlerAgent(handler, session_id=ctx.room.name, greeting=greeting),
+        agent=HandlerAgent(handler, session_id=ctx.room.name, greeting=greeting,
+                           push_to_talk=is_inbox),
         room=ctx.room,
         room_input_options=RoomInputOptions(text_input_cb=_text_only_reply),
     )
