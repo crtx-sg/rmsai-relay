@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from common.audit import AuditLog
 from common.config import DEFAULT, Config
 from kb.graph.events import get_event_artifacts, get_event_patient, set_event_status
+from live.artifact_tokens import ARTIFACT_KINDS
 from live.inbox import inbox_room
 from voice.auth import PinAuthGate
 from voice.livekit_cloud import access_token, is_configured, verify_access_token
@@ -57,6 +58,15 @@ class AckRequest(BaseModel):
     session: str
 
 
+class ArtifactLinkRequest(BaseModel):
+    """`POST /artifact-link` body: mint a FRESH scoped token for `(event_id, kind)` at click time.
+    `session` is the inbox join token (proof of PIN), same gate as `/ack`."""
+
+    event_id: str
+    kind: str
+    session: str
+
+
 def create_app(
     config: Config = DEFAULT,
     *,
@@ -64,13 +74,15 @@ def create_app(
     driver=None,
     publisher=None,
     token_store=None,
+    dispatcher=None,
     app_dir: Path | None = None,
 ):
     """Build the gateway FastAPI app.
 
     `driver` (a `GraphDriver`) + `publisher` (an `InboxPublisher`) back the acknowledge round-trip;
-    `token_store` (an `ArtifactTokenStore`) backs the artifact endpoint. All are injectable so tests
-    drive the app with fakes.
+    `token_store` (an `ArtifactTokenStore`) backs the artifact endpoint; `dispatcher` (a
+    `room -> None` callable) explicitly dispatches the voice agent into the inbox room on `/session`.
+    All are injectable so tests drive the app with fakes.
     """
     from fastapi import FastAPI, HTTPException  # noqa: PLC0415
     from fastapi.responses import FileResponse, JSONResponse  # noqa: PLC0415
@@ -102,8 +114,19 @@ def create_app(
         )
         audit.write(actor="app", action="inbox_session", subject=subject, outcome="authorized",
                     identity=identity)
+        # Ensure the voice agent is dispatched into the inbox room so in-app chat/voice Q&A reaches
+        # the worker. Best-effort: the worklist + artifacts work regardless; only Q&A needs the agent.
+        if dispatcher is not None:
+            try:
+                dispatcher(room)
+            except Exception as exc:  # noqa: BLE001 - never fail the session on a dispatch hiccup
+                print(f"[gateway] agent dispatch to {room} failed: {exc}")
+                audit.write(actor="app", action="agent_dispatch", subject=subject,
+                            outcome="failed", room=room)
         return {
-            "url": config.livekit_url,
+            # Browser-facing URL: the public LiveKit ingress when set, else the internal URL. The
+            # server API (send_data) always uses config.livekit_url regardless.
+            "url": config.livekit_public_url or config.livekit_url,
             "room": room,
             "identity": identity,
             "token": token,
@@ -144,6 +167,31 @@ def create_app(
             except Exception as exc:  # noqa: BLE001 - status is already persisted; push is best-effort
                 print(f"[gateway] ack status push failed for {req.event_id}: {exc}")
         return {"event_id": req.event_id, "status": "acknowledged"}
+
+    @api.post("/artifact-link")
+    def artifact_link(req: ArtifactLinkRequest) -> dict:
+        """Mint a fresh, short-lived scoped token for `(event_id, kind)` on demand.
+
+        The worklist links carried in an inbox `event` message are minted at publish time and expire
+        fast (they only need to survive a quick click), so a link clicked minutes later 404s. The app
+        instead calls this at click time to get a token that's fresh *now*. Same fail-closed session
+        gate as `/ack`: no token without a valid inbox session (proof of PIN). Bytes are still only
+        released by `GET /artifact/{token}`, which re-checks event existence + audits the pseudonym.
+        """
+        payload = verify_access_token(req.session, config)
+        room = inbox_room(config)
+        if not payload or (payload.get("video") or {}).get("room") != room:
+            audit.write(actor="app", action="mint_artifact_link", subject="-",
+                        outcome="unauthorized", event_id=req.event_id, kind=req.kind)
+            raise HTTPException(status_code=401, detail="invalid session")
+        if token_store is None:
+            raise HTTPException(status_code=503, detail="artifacts not configured")
+        if req.kind not in ARTIFACT_KINDS:
+            raise HTTPException(status_code=400, detail="unknown artifact kind")
+        token, expires = token_store.mint(req.event_id, req.kind)
+        audit.write(actor="app", action="mint_artifact_link", subject="-", outcome="minted",
+                    event_id=req.event_id, kind=req.kind)
+        return {"url": f"/artifact/{token}", "expires": expires}
 
     @api.get("/artifact/{token}")
     def artifact(token: str):

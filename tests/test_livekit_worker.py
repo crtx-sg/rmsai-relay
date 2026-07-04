@@ -52,6 +52,14 @@ def test_build_worker_options_maps_config():
     assert callable(opts.entrypoint_fnc)
 
 
+def test_worker_uses_named_explicit_dispatch():
+    # A named agent => EXPLICIT dispatch only (no auto-join). Rooms must request it via
+    # create_agent_dispatch (gateway/consumer/token CLI). An empty name would revert to fragile
+    # automatic dispatch, so guard the name is actually set from config.
+    assert build_worker_options(_CONFIGURED).agent_name == _CONFIGURED.livekit_agent_name
+    assert build_worker_options(_CONFIGURED).agent_name  # non-empty
+
+
 def test_run_agent_requires_livekit_config():
     with pytest.raises(SystemExit, match="LiveKit is not configured"):
         run_agent(_UNCONFIGURED)

@@ -1,0 +1,35 @@
+# Public LiveKit (+ optional standalone coturn) for the go-public step. NOT used in local testing.
+# Stand up where public WebRTC terminates. Requires: a public IP (ideally a domain), TLS certs, and
+# the firewall opened for the media/TURN ports below.
+#
+#   cd deploy/livekit && cp .env.example .env   # set keys, domain, public IP
+#   # edit livekit.public.yaml (# EDIT lines) and, if using coturn, coturn/turnserver.conf
+#   docker compose -f docker-compose.public.yml up -d
+
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    network_mode: host        # simplest correct WebRTC (host advertises real ports/IP); or map the
+                              # ranges below explicitly if you can't use host networking.
+    environment:
+      # Keys via env so they're not committed in the yaml. "APIkey: secret" (space after colon).
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.public.yaml:/etc/livekit/livekit.yaml:ro
+      - ./certs:/etc/livekit/certs:ro          # fullchain.pem / privkey.pem
+    restart: unless-stopped
+    # If NOT using host networking, expose instead:
+    #   ports: ["7880:7880","7881:7881","5349:5349","50000-50100:50000-50100/udp"]
+
+  # Optional standalone TURN. Omit if you use LiveKit's built-in `turn:` (livekit.public.yaml).
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./certs:/etc/coturn/certs:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    restart: unless-stopped
+    # Non-host networking alternative:
+    #   ports: ["3478:3478/udp","3478:3478/tcp","5349:5349","49160-49200:49160-49200/udp"]

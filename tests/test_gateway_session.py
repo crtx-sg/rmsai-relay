@@ -80,3 +80,47 @@ def test_root_serves_worklist_app(tmp_path):
     client, _ = _client(tmp_path)
     res = client.get("/")
     assert res.status_code == 200 and "rmsai worklist" in res.text
+
+
+def test_session_url_defaults_to_internal_livekit_url(tmp_path):
+    # No LIVEKIT_PUBLIC_URL ⇒ browser gets the internal URL (identical to pre-deploy behavior).
+    client, _ = _client(tmp_path)
+    assert client.post("/session", json={"pin": "1234"}).json()["url"] == "ws://lk:7880"
+
+
+def test_session_url_uses_public_livekit_url_when_set(tmp_path):
+    # Behind the public edge, the browser gets the public ingress URL; server API still uses internal.
+    cfg = replace(_CFG, livekit_public_url="wss://livekit.example.com")
+    client = TestClient(create_app(cfg, audit=AuditLog(str(tmp_path / "a.jsonl"))))
+    assert client.post("/session", json={"pin": "1234"}).json()["url"] == "wss://livekit.example.com"
+
+
+def test_session_dispatches_agent_into_inbox_room(tmp_path):
+    # A successful PIN must explicitly dispatch the voice agent into the inbox room, so in-app Q&A
+    # reaches the worker regardless of start order.
+    dispatched: list[str] = []
+    client = TestClient(create_app(
+        _CFG, audit=AuditLog(str(tmp_path / "a.jsonl")), dispatcher=dispatched.append))
+    res = client.post("/session", json={"pin": "1234"})
+    assert res.status_code == 200
+    assert dispatched == ["rmsai-inbox-h1"]
+
+
+def test_session_not_dispatched_on_bad_pin(tmp_path):
+    # Fail-closed: a wrong PIN mints no token AND dispatches no agent.
+    dispatched: list[str] = []
+    client = TestClient(create_app(
+        _CFG, audit=AuditLog(str(tmp_path / "a.jsonl")), dispatcher=dispatched.append))
+    assert client.post("/session", json={"pin": "9999"}).status_code == 401
+    assert dispatched == []
+
+
+def test_session_survives_dispatch_failure(tmp_path):
+    # A dispatch hiccup must not fail the session (worklist/artifacts work without the agent).
+    def _boom(room):
+        raise RuntimeError("livekit down")
+
+    client = TestClient(create_app(
+        _CFG, audit=AuditLog(str(tmp_path / "a.jsonl")), dispatcher=_boom))
+    res = client.post("/session", json={"pin": "1234"})
+    assert res.status_code == 200 and "token" in res.json()

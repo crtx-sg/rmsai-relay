@@ -97,3 +97,36 @@ def test_false_positive_overridden_by_vitals_calls(patched):
     assert res.persisted and res.called
     assert res.decision_reason.startswith("fp_override")
     assert patched["voice"] == ["ICU/3"]
+
+
+class _FakeAlertStore:
+    def __init__(self):
+        self.staged = []
+
+    def put(self, alert):
+        self.staged.append(alert.session_id)
+
+
+def test_livekit_path_dispatches_agent_into_event_room(patched):
+    # The live LiveKit path stages the alert AND explicitly dispatches the (named) agent into the
+    # per-event room, so the worker is present when the call connects / clinician joins.
+    store = _FakeAlertStore()
+    dispatched = []
+    res = _run(event_to_dict(_event(_Afib())), patched, channel="voice",
+               caller_factory=lambda room: object(), dispatch_fn=dispatched.append,
+               alert_store=store)
+    assert res.called
+    room = f"rmsai-outbound-{res.event_uuid}"
+    assert dispatched == [room]        # agent requested for the event room
+    assert store.staged == [room]      # alert staged for the same room
+
+
+def test_dispatch_failure_does_not_abort_the_call(patched):
+    # Best-effort: a dispatch hiccup must not stop the (already gated + staged) call from proceeding.
+    def _boom(room):
+        raise RuntimeError("livekit down")
+
+    res = _run(event_to_dict(_event(_Afib())), patched, channel="voice",
+               caller_factory=lambda room: object(), dispatch_fn=_boom,
+               alert_store=_FakeAlertStore())
+    assert res.persisted and res.called

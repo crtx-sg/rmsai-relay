@@ -84,7 +84,11 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None) -> t
     if patient_ref and _THIS_PATIENT.search(q):
         if "critical" in q and "event" in q:
             return "critical_events_for_patient", {"patient_id": patient_ref}
-        if "event" in q:  # "events for this patient", "this patient's events"
+        # "events for this patient", "this patient's events", and history phrasings ("what is the
+        # history of this patient?", "past/prior events") — all resolve to the patient's event list.
+        # Routing these to the deterministic graph template keeps them off the free-text LLM path,
+        # where a small model can false-refuse a benign clinical question ("history … patient").
+        if "event" in q or "history" in q or "past" in q or "prior" in q:
             return "events_for_patient", {"patient_id": patient_ref}
 
     # T1 — critical events in the last N hours.

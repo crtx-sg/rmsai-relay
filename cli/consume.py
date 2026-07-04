@@ -100,8 +100,10 @@ def main(argv: list[str] | None = None) -> int:
         episodic_recall=config.episodic_recall,
     )
     caller_factory = None
+    dispatch_fn = None
     alert_store = None
     if args.channel == "voice" and args.caller == "livekit":
+        from voice.livekit_cloud import create_agent_dispatch  # noqa: PLC0415
         from voice.outbound import LiveKitCaller  # noqa: PLC0415
         from voice.outbound_alert import OutboundAlertStore  # noqa: PLC0415
 
@@ -112,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
             caller_factory = lambda room: SimulatedCaller([CallOutcome.ANSWERED])  # noqa: E731
         else:
             caller_factory = lambda room: LiveKitCaller(config, room=room)  # noqa: E731
+        # Explicit dispatch: the worker registers under a name and won't auto-join, so request it
+        # into the per-event room (before the call is placed / the clinician joins over WebRTC).
+        dispatch_fn = lambda room: create_agent_dispatch(room, config=config)  # noqa: E731
         caller = None
     else:
         caller = SimulatedCaller([CallOutcome.ANSWERED] * max(args.count, 1))
@@ -179,7 +184,8 @@ def main(argv: list[str] | None = None) -> int:
                             payload, driver=driver, vector=vector, orchestrator=orch, beds=beds,
                             utterances=utterances, channel=args.channel, caller=caller,
                             notifier=notifier, to=args.number, config=config,
-                            caller_factory=caller_factory, alert_store=alert_store,
+                            caller_factory=caller_factory, dispatch_fn=dispatch_fn,
+                            alert_store=alert_store,
                             inbox_publisher=inbox_publisher, token_store=token_store,
                         )
                         _report(result)

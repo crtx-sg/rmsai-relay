@@ -32,6 +32,11 @@ _NUM = r"(?:" + "|".join(sorted({*_ONES, *_TEENS}, key=len, reverse=True)) + r")
 # rebuilt label isn't doubled.
 _BED_SPOKEN = re.compile(
     rf"\b(?:bed\s+)?(?:unit\s+({_NUM})\s+)?bed\s+((?:{_NUM})(?:\s+{_NUM})*)\b", re.IGNORECASE)
+# Typed bed shorthand: "Bed01", "bed 1", "bed01" (digit label, no unit prefix) -> canonical
+# "bed Unit1-Bed01" (default single POC unit, 2-digit label), so it matches the graph Bed node the
+# same way the app's "Unit1 / Bed01" worklist label reads. The negative lookbehind keeps it from
+# firing on the "Bed" inside an already-canonical "Unit1-Bed01" label (that "Bed" follows a "-").
+_BED_TYPED = re.compile(r"(?<![-\w])bed\s*0*(\d{1,2})\b", re.IGNORECASE)
 # A spoken count before hours/minutes ("twenty four hours", "thirty minutes") -> additive digits.
 _TIME_SPOKEN = re.compile(
     rf"\b((?:(?:{'|'.join(_TENS)})\s+)?(?:{_NUM})|(?:{'|'.join(_TENS)}))\s+(hours?|minutes?|mins?)\b",
@@ -98,6 +103,10 @@ def _bed_sub(m: re.Match) -> str:
     return f"bed Unit{unit}-Bed{bed}"
 
 
+def _bed_typed_sub(m: re.Match) -> str:
+    return f"bed Unit1-Bed{int(m.group(1)):02d}"        # "Bed01"/"bed 1" -> "bed Unit1-Bed01"
+
+
 def _time_sub(m: re.Match) -> str:
     val = _additive(m.group(1))
     return f"{val} {m.group(2)}" if val is not None else m.group(0)
@@ -106,6 +115,7 @@ def _time_sub(m: re.Match) -> str:
 def normalize_spoken_query(query: str) -> str:
     """Collapse spelled acronyms + rebuild bed labels / numbers from a spoken (STT) query."""
     q = _collapse_acronyms(query)
-    q = _BED_SPOKEN.sub(_bed_sub, q)
+    q = _BED_SPOKEN.sub(_bed_sub, q)          # spoken words -> "bed Unit1-Bed01"
+    q = _BED_TYPED.sub(_bed_typed_sub, q)     # typed shorthand "Bed01" -> "bed Unit1-Bed01"
     q = _TIME_SPOKEN.sub(_time_sub, q)
     return q

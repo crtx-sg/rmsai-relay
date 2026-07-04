@@ -1,0 +1,24 @@
+# Public edge — the ONLY companion-app piece that goes on the public host.
+# Serves the static app and reverse-proxies /session,/ack,/artifact to the on-prem gateway.
+# It is stateless and PHI-free: no datastore, no artifact files, no secrets live here.
+#
+#   cd deploy/edge && cp .env.example .env   # adjust GATEWAY_UPSTREAM
+#   docker compose up -d                      # then browse http://localhost:${EDGE_HTTP_PORT}/
+
+services:
+  edge:
+    image: nginx:1.27-alpine
+    ports:
+      - "${EDGE_HTTP_PORT:-8081}:80"
+      # - "${EDGE_HTTPS_PORT:-8443}:443"      # uncomment for the TLS step
+    environment:
+      # Where the on-prem gateway (cli.gateway) is reachable FROM the edge container.
+      # Local test: host.docker.internal -> the host's :8080. Public: the gateway's VPN/tunnel address.
+      GATEWAY_UPSTREAM: ${GATEWAY_UPSTREAM:-http://host.docker.internal:8080}
+    volumes:
+      - ../../app:/srv/app:ro                 # the static companion app (index.html/app.js/vendor)
+      - ./templates:/etc/nginx/templates:ro   # envsubst'd -> /etc/nginx/conf.d/default.conf
+      # - ./certs:/etc/nginx/certs:ro         # uncomment for the TLS step (fullchain.pem/privkey.pem)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets the container reach the host's gateway on Linux
+    restart: unless-stopped

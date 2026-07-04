@@ -15,7 +15,7 @@ import argparse
 from common.config import Config
 from live.gateway import create_app
 from live.inbox import InboxPublisher, inbox_room
-from voice.livekit_cloud import is_configured
+from voice.livekit_cloud import create_agent_dispatch, is_configured
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -39,14 +39,19 @@ def main(argv: list[str] | None = None) -> int:
     driver = GraphDriver.from_config(config)
     token_store = ArtifactTokenStore.from_config(config)  # shares Redis with the consumer's minter
     publisher = None
+    dispatcher = None
     if is_configured(config):
         publisher = InboxPublisher.from_config(config)
+        # Explicitly dispatch the voice agent into the inbox room on every /session, so in-app Q&A
+        # reaches the worker regardless of start order (worker registers under LIVEKIT_AGENT_NAME).
+        dispatcher = lambda room: create_agent_dispatch(room, config=config)  # noqa: E731
     else:
         print("[gateway] LiveKit not configured; /session + inbox status push disabled")
 
     import uvicorn  # noqa: PLC0415
 
-    app = create_app(config, driver=driver, publisher=publisher, token_store=token_store)
+    app = create_app(config, driver=driver, publisher=publisher, token_store=token_store,
+                     dispatcher=dispatcher)
     try:
         uvicorn.run(app, host=args.host, port=args.port)
     finally:

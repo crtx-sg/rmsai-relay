@@ -21,6 +21,11 @@ from kb.graph.spoken import normalize_spoken_query as N
         ("on bed unit one bed oh one", "on bed Unit1-Bed01"),
         ("the patient in bed one", "the patient in bed Unit1-Bed01"),
         ("bed oh five", "bed Unit1-Bed05"),
+        # typed bed shorthand (what a clinician types after seeing "Unit1 / Bed01" in the app)
+        # rebuilds to the same canonical label so it routes to the bed templates.
+        ("status of events on Bed01", "status of events on bed Unit1-Bed01"),
+        ("events on bed 1", "events on bed Unit1-Bed01"),
+        ("bed05 protocol", "bed Unit1-Bed05 protocol"),
         # spoken counts before time units become digits (additive)
         ("the last twenty four hours", "the last 24 hours"),
         ("the last thirty minutes", "the last 30 minutes"),

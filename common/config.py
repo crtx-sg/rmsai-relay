@@ -129,10 +129,19 @@ class Config:
     elevenlabs_tts_sample_rate: int = 22050  # PCM rate; ElevenLabs supports 16000/22050/24000/44100
     # LiveKit (self-hosted ws://localhost:7880 or LiveKit Cloud wss://<project>.livekit.cloud)
     livekit_url: str = "ws://localhost:7880"
+    # Browser-facing LiveKit URL handed to the companion app by `POST /session`. Differs from
+    # `livekit_url` only when the app runs behind a public edge and reaches LiveKit via a public
+    # ingress (Phase 9 deploy) — the server API keeps using `livekit_url`. Empty ⇒ same as `livekit_url`.
+    livekit_public_url: str = ""
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
     livekit_sip_trunk_id: str = ""  # outbound SIP trunk id (LiveKit Cloud Telephony)
     livekit_sip_room: str = "rmsai-outbound"
+    # Named-agent for EXPLICIT dispatch. The worker registers under this name and no longer auto-joins
+    # new rooms; instead every room that needs the agent (inbox on /session, outbound per event,
+    # inbound KB demo) requests it explicitly via create_agent_dispatch. Removes the "worker must
+    # start before the app / restart re-dispatch" fragility of automatic dispatch.
+    livekit_agent_name: str = "rmsai-agent"
     # Wake word: after the alert, follow-up *audio* Q&A must start with this phrase (so room noise
     # and Whisper hallucinations don't trigger replies). The agent stays "awake" for the window
     # after each wake word so follow-ups don't repeat it. Text-chat turns are never gated.
@@ -197,10 +206,12 @@ class Config:
             elevenlabs_stt_model=os.environ.get("ELEVENLABS_STT_MODEL", "scribe_v1"),
             elevenlabs_tts_sample_rate=_i("ELEVENLABS_TTS_SAMPLE_RATE", 22050),
             livekit_url=os.environ.get("LIVEKIT_URL", "ws://localhost:7880"),
+            livekit_public_url=os.environ.get("LIVEKIT_PUBLIC_URL", ""),
             livekit_api_key=os.environ.get("LIVEKIT_API_KEY", ""),
             livekit_api_secret=os.environ.get("LIVEKIT_API_SECRET", ""),
             livekit_sip_trunk_id=os.environ.get("LIVEKIT_SIP_TRUNK_ID", ""),
             livekit_sip_room=os.environ.get("LIVEKIT_SIP_ROOM", "rmsai-outbound"),
+            livekit_agent_name=os.environ.get("LIVEKIT_AGENT_NAME", "rmsai-agent"),
             audio_wake_word=os.environ.get("AUDIO_WAKE_WORD", "hey vios"),
             audio_wake_window_s=_f("AUDIO_WAKE_WINDOW_S", 30.0),
             episodic_recall=_b("EPISODIC_RECALL", False),

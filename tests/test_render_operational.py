@@ -42,7 +42,8 @@ def test_answer_operational_single_row_prose():
     assert "{" not in out and "note" not in out               # no objects / null fields
 
 
-def test_answer_operational_multi_row_one_sentence_per_line():
+def test_answer_operational_multi_row_no_shared_context():
+    # Rows with nothing in common (different patient + bed) -> generic header, one record per line.
     out = _answer_operational([
         {"patient": "PT1", "bed": "Unit1-Bed01", "event": "VENTRICULAR_FIBRILLATION",
          "criticality": "Critical", "ts": 1782627240.0},
@@ -50,10 +51,29 @@ def test_answer_operational_multi_row_one_sentence_per_line():
          "ts": 1782627240.0},
     ])
     lines = out.splitlines()
-    assert lines[0] == "2 matching records."
+    assert lines[0] == "2 matching records:"
+    assert lines[1].startswith("- ") and lines[2].startswith("- ")
     assert "patient PT1 on bed Unit1-Bed01 had an event type VENTRICULAR FIBRILLATION" in lines[1]
     assert "patient PT2 on bed Unit1-Bed02 had an event type SVT" in lines[2]
-    assert all(line.endswith(".") for line in lines[1:])      # each its own sentence -> TTS pause
+    assert all(line.endswith(".") for line in lines[1:])      # each its own line -> TTS pause
+
+
+def test_answer_operational_hoists_shared_context_into_header():
+    # All rows share patient/bed/unit -> hoist them into a compact header, and DON'T repeat them on
+    # every line. Each event still lists its own time + type + criticality/MEWS.
+    out = _answer_operational([
+        {"patient": "PT3561", "bed": "Unit1-Bed01", "unit": "Unit1",
+         "event": "VENTRICULAR_FIBRILLATION", "criticality": "Critical", "mews_risk": "High",
+         "ts": 1783054963.0},
+        {"patient": "PT3561", "bed": "Unit1-Bed01", "unit": "Unit1",
+         "event": "SVT", "criticality": "High", "mews_risk": "Medium", "ts": 1783054348.0},
+    ])
+    lines = out.splitlines()
+    assert lines[0] == "2 records for patient PT3561, bed Unit1-Bed01, unit Unit1:"
+    # per-row lines omit the hoisted patient/bed/unit, keeping only the distinguishing fields
+    assert lines[1].startswith("- At 2026-") and "patient PT3561" not in lines[1]
+    assert "had an event type VENTRICULAR FIBRILLATION; criticality Critical; MEWS risk High" in lines[1]
+    assert "had an event type SVT; criticality High; MEWS risk Medium" in lines[2]
 
 
 def test_answer_operational_hr_trend():

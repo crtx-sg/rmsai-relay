@@ -455,6 +455,11 @@ def build_worker_options(config: Config | None = None):
     return WorkerOptions(
         entrypoint_fnc=_entrypoint,
         prewarm_fnc=_prewarm,
+        # Register under a name => EXPLICIT dispatch only (no auto-join of new rooms). Every room that
+        # needs the agent requests it via voice.livekit_cloud.create_agent_dispatch: the gateway on
+        # /session (inbox), the consumer per outbound event, and cli.livekit_token (inbound demo). An
+        # empty name here would revert to automatic dispatch and its restart-ordering fragility.
+        agent_name=config.livekit_agent_name,
         ws_url=config.livekit_url,
         api_key=config.livekit_api_key,
         api_secret=config.livekit_api_secret,

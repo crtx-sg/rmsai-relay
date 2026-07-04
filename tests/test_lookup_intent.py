@@ -68,6 +68,17 @@ def test_spoken_queries_route_like_typed(spoken, expected):
     assert match_intent(spoken, now=NOW) == expected
 
 
+@pytest.mark.parametrize("query", [
+    "What is the status of patient events reported on Bed01",
+    "status of events on bed 1",
+    "what happened on Bed01",
+])
+def test_typed_bed_shorthand_routes_to_bed_status(query):
+    # A clinician typing the app's short "Bed01" (not the full "Unit1-Bed01") must still resolve to
+    # the deterministic bed template — else it falls to the LLM and can drop events.
+    assert match_intent(query, now=NOW) == ("event_status_on_bed", {"bed": "Unit1-Bed01"})
+
+
 def test_pattern_wins_over_comorbidity_when_both_present():
     # "pattern ... co-morbidities" must hit the cohort analytic, not the comorbidity-of-X traversal.
     assert match_intent("any pattern of co-morbidities leading to events?", now=NOW) == (

@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 
 from common.config import Config
-from voice.livekit_cloud import access_token, is_configured
+from voice.livekit_cloud import access_token, create_agent_dispatch, is_configured
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,6 +28,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--identity", default="clinician", help="Participant identity.")
     parser.add_argument("--name", default="clinician", help="Display name.")
     parser.add_argument("--ttl", type=int, default=3600, help="Token lifetime (seconds).")
+    parser.add_argument("--no-dispatch", action="store_true",
+                        help="Don't explicitly dispatch the agent into the room (default: do). The "
+                             "worker registers under a name and won't auto-join, so dispatch is "
+                             "needed for it to be present when you join.")
     args = parser.parse_args(argv)
 
     config = Config.from_env()
@@ -41,6 +45,15 @@ def main(argv: list[str] | None = None) -> int:
         identity=args.identity, room=args.room, name=args.name,
         ttl_seconds=args.ttl, config=config,
     )
+    if not args.no_dispatch:
+        try:
+            dispatched = create_agent_dispatch(args.room, config=config)
+            print(f"[dispatch] agent {config.livekit_agent_name!r} "
+                  f"{'requested for' if dispatched else 'already in'} room {args.room}")
+        except Exception as exc:  # noqa: BLE001 - token still works; warn if dispatch couldn't be sent
+            print(f"[dispatch] WARNING: could not dispatch agent into {args.room}: "
+                  f"{type(exc).__name__}: {exc}")
+
     print(f"URL:   {config.livekit_url}")
     print(f"Room:  {args.room}")
     print(f"Token: {token}")

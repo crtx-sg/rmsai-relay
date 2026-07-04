@@ -62,6 +62,7 @@ def process_bus_event(
     to: str | None = None,
     config: Config = DEFAULT,
     caller_factory=None,
+    dispatch_fn=None,
     alert_store=None,
     inbox_publisher=None,
     token_store=None,
@@ -150,6 +151,15 @@ def process_bus_event(
             session_id=room, patient_ref=w.patient_ref, event_id=w.event_id,
             spoken_alert=spoken_report(event, bed=bed_label, config=config), bed=bed_label,
         ))
+        # Explicitly dispatch the agent into this room BEFORE placing the call, so the worker is
+        # present when the callee answers (SIP) or the clinician joins over WebRTC. Best-effort:
+        # a dispatch hiccup must not abort a persisted, gated event.
+        if dispatch_fn is not None:
+            try:
+                dispatch_fn(room)
+            except Exception as exc:  # noqa: BLE001 - the call can still connect; only Q&A needs the agent
+                print(f"[consume] agent dispatch to {room} failed: "
+                      f"{type(exc).__name__}: {exc}", flush=True)
         print(f"[consume] alert staged in Redis; placing call -> worker will join room {room}",
               flush=True)
         result = run_outbound(

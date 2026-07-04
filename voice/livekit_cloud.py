@@ -27,6 +27,62 @@ def is_configured(config: Config = DEFAULT) -> bool:
     return bool(config.livekit_url and config.livekit_api_key and config.livekit_api_secret)
 
 
+def _http_url(url: str) -> str:
+    """The LiveKit *server API* (RoomService/AgentDispatch/twirp) is HTTP, not the WS signal URL."""
+    if url.startswith("ws://"):
+        return "http://" + url[len("ws://"):]
+    if url.startswith("wss://"):
+        return "https://" + url[len("wss://"):]
+    return url
+
+
+#: A LiveKit participant with `kind == AGENT` (protocol ParticipantInfo.Kind.AGENT).
+_AGENT_KIND = 4
+
+
+def create_agent_dispatch(
+    room: str, *, config: Config = DEFAULT, agent_name: str | None = None, metadata: str = "",
+) -> bool:  # pragma: no cover - needs the SDK + a live LiveKit server
+    """Explicitly dispatch the named agent worker into `room`. Returns True if a dispatch was created.
+
+    Idempotent by design: if an AGENT participant is already in the room this is a no-op (so repeated
+    `/session` calls or reloads don't spawn duplicate agents). If the room doesn't exist yet, the
+    dispatch creates it and the agent joins when a worker is available — so this is safe to call
+    *before* the app/clinician joins (inbox) or before the SIP call is placed (outbound).
+
+    Fail-closed for duplicates, best-effort for delivery: callers should wrap in try/except — a failed
+    dispatch must not break the surrounding action (auth, call placement), just leaves Q&A unwired.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from livekit import api  # noqa: PLC0415
+
+    name = agent_name or config.livekit_agent_name
+
+    async def _go() -> bool:
+        lk = api.LiveKitAPI(
+            url=_http_url(config.livekit_url),
+            api_key=config.livekit_api_key,
+            api_secret=config.livekit_api_secret,
+        )
+        try:
+            # Skip if an agent is already present (room exists + has an AGENT participant).
+            try:
+                parts = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
+                if any(p.kind == _AGENT_KIND for p in parts.participants):
+                    return False
+            except Exception:  # noqa: BLE001 - room not found (yet) -> no agent -> dispatch below
+                pass
+            await lk.agent_dispatch.create_dispatch(
+                api.CreateAgentDispatchRequest(room=room, agent_name=name, metadata=metadata)
+            )
+            return True
+        finally:
+            await lk.aclose()
+
+    return asyncio.run(_go())
+
+
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 

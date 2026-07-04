@@ -153,6 +153,10 @@ def _row_to_sentence(row: dict) -> str:
         mews = r.pop("mews", None)
     if mews:
         clauses.append(f"MEWS risk {mews}")
+    # `false_positive` is a bool: voice "flagged as a false positive" only when True; a bare
+    # "false positive False" reads as noise, so drop it otherwise.
+    if r.pop("false_positive", None) is True:
+        clauses.append("flagged as a false positive")
     for k in [k for k in r if k not in _VITAL_KEYS]:  # status / actual_condition / action / …
         clauses.append(f"{_label(k)} {_fmt_value(k, r.pop(k))}")
     if clauses:
@@ -184,20 +188,41 @@ def _trend_word(values: list) -> str:
     return "stable" if abs(delta) < 1 else ("rising" if delta > 0 else "falling")
 
 
-def _answer_operational(rows: list[dict] | None) -> str:
-    """Deterministic, spoken-friendly answer for a structured graph result (no LLM).
+# The "who/where" fields hoisted into the multi-row header when every row shares them. Deliberately
+# only these (not arbitrary shared fields) so the header stays a clean context line, never noise like
+# "false positive False".
+_CONTEXT_KEYS = ("patient", "bed", "unit")
 
-    Operational queries return exact rows, so we voice/print them directly — accurate every time, no
-    model latency or hallucination. Each row becomes a natural sentence; multiple rows are one
-    sentence per line so TTS pauses between them (a hard pause would need backend-specific SSML).
+
+def _describe_context(shared: dict) -> str:
+    """Readable noun phrase for fields common to every row: 'patient PT3561, bed Unit1-Bed01, unit …'."""
+    return ", ".join(f"{_label(k)} {_fmt_value(k, shared[k])}" for k in _CONTEXT_KEYS if k in shared)
+
+
+def _answer_operational(rows: list[dict] | None) -> str:
+    """Deterministic, readable answer for a structured graph result (no LLM).
+
+    Operational queries return exact rows, so we render them directly — accurate every time, no model
+    latency or hallucination. A single row is one natural sentence. For multiple rows we hoist the
+    fields shared by every row (patient/bed/unit/…) into a one-line header, then list each record on
+    its own line ('- …') with only its distinguishing fields — compact, no repeated boilerplate, and
+    the newlines give TTS a pause between records.
     """
-    rows = rows or []
+    rows = [{k: v for k, v in r.items() if v is not None} for r in (rows or [])]
     if not rows:
         return "No matching records."
-    sentences = [_row_to_sentence(r) for r in rows]
-    if len(sentences) == 1:
-        return sentences[0]
-    return f"{len(sentences)} matching records.\n" + "\n".join(sentences)
+    if len(rows) == 1:
+        return _row_to_sentence(rows[0])
+    # Context fields (patient/bed/unit) identical across every row are hoisted into the header.
+    shared = {
+        k: rows[0][k]
+        for k in _CONTEXT_KEYS
+        if k in rows[0] and all(r.get(k) == rows[0].get(k) for r in rows)
+    }
+    per_row = [_row_to_sentence({k: v for k, v in r.items() if k not in shared}) for r in rows]
+    context = _describe_context(shared)
+    header = f"{len(rows)} records for {context}:" if context else f"{len(rows)} matching records:"
+    return header + "\n" + "\n".join(f"- {s}" for s in per_row)
 
 
 class Orchestrator:

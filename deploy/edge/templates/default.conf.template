@@ -1,0 +1,63 @@
+# Public edge for the rmsai companion app.
+#   /                       -> the static app (served here)
+#   /session /ack /artifact -> reverse-proxied to the on-prem gateway (kept private)
+#
+# The nginx image envsubst's ${GATEWAY_UPSTREAM} at startup; nginx's own $host/$remote_addr/etc.
+# are NOT in the environment, so they survive untouched.
+
+server {
+    listen 80;
+    server_name _;
+
+    root /srv/app;
+    index index.html;
+
+    # Static companion app (index.html, app.js, vendor/livekit-client…).
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Gateway API. The gateway stays private on-prem; the browser reaches it ONLY through this proxy.
+    # (Artifact links in inbox messages are relative "/artifact/<token>", so they resolve here.)
+    location ~ ^/(session|ack|artifact)(/|$) {
+        proxy_pass ${GATEWAY_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}
+
+# --- TLS (public step) --------------------------------------------------------------------------
+# Uncomment, provide certs in ./certs (fullchain.pem/privkey.pem), expose 443 in docker-compose.yml,
+# and redirect 80 -> 443. For real PHI this is mandatory.
+#
+# Rate-limit the auth endpoint (a 4-digit PIN on a public /session is brute-forceable):
+#   put this at http{} scope (a separate templates/*.conf) — shown here for reference:
+#   limit_req_zone $binary_remote_addr zone=auth:10m rate=5r/m;
+#
+# server {
+#     listen 443 ssl;
+#     server_name your.domain.or.public.ip;
+#     ssl_certificate     /etc/nginx/certs/fullchain.pem;
+#     ssl_certificate_key /etc/nginx/certs/privkey.pem;
+#     root /srv/app;
+#     index index.html;
+#     location / { try_files $uri $uri/ /index.html; }
+#     location = /session {
+#         limit_req zone=auth burst=3 nodelay;   # throttle PIN guessing
+#         proxy_pass ${GATEWAY_UPSTREAM};
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#     }
+#     location ~ ^/(ack|artifact)(/|$) {
+#         proxy_pass ${GATEWAY_UPSTREAM};
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#     }
+# }

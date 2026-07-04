@@ -60,8 +60,10 @@ function render() {
     tr.dataset.eventId = r.event_id || "";
     const bed = [r.unit, r.bed].filter(Boolean).join(" / ");
     const links = r.links || {};
+    // Which artifact kinds this event has (from the inbox message); the URL is minted fresh on click
+    // (openArtifact), not taken from links[k].url — those publish-time links expire in ~5 min.
     const viewBtns = Object.keys(links).map((k) =>
-      `<button data-view="${esc(k)}" data-url="${esc(links[k].url)}">${esc(ARTIFACT_LABELS[k] || k)}</button>`
+      `<button data-view="${esc(k)}">${esc(ARTIFACT_LABELS[k] || k)}</button>`
     ).join("");
     const ackBtn = acked || !r.event_id ? ""
       : `<button data-ack="${esc(r.event_id)}">Acknowledge</button>`;
@@ -74,6 +76,26 @@ function render() {
       <td><span class="badge ${acked ? "acknowledged" : "new"}">${esc(r.status || "new")}</span></td>
       <td>${viewBtns}${ackBtn}</td>`;
     tbody.appendChild(tr);
+  }
+}
+
+// Mint a FRESH scoped link at click time, then view it. Worklist links carried in the inbox message
+// expire ~5 min after publish, so we don't reuse them — we ask the gateway (POST /artifact-link, PIN
+// proven by the session token) for a token that's fresh now. The chat "show" path already gets a
+// fresh URL from the worker, so it calls viewArtifact directly.
+async function openArtifact(kind, eventId) {
+  if (!session || !eventId) return;
+  try {
+    const res = await fetch("/artifact-link", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event_id: eventId, kind, session: session.token }),
+    });
+    if (!res.ok) return artifactError(kind, res.status);
+    const { url } = await res.json();
+    viewArtifact(kind, url);
+  } catch (e) {
+    artifactError(kind, e);
   }
 }
 
@@ -310,7 +332,11 @@ document.getElementById("rows").addEventListener("click", (e) => {
   const ackId = t.getAttribute("data-ack");
   if (ackId) { ackEvent(ackId); return; }
   const view = t.getAttribute("data-view");
-  if (view) { viewArtifact(view, t.getAttribute("data-url")); return; }
+  if (view) {
+    const rowEl = t.closest("tr");
+    openArtifact(view, rowEl && rowEl.dataset.eventId);
+    return;
+  }
   // A click anywhere else on the row selects that event for chat.
   const rowEl = t.closest("tr");
   if (rowEl && rowEl.dataset.eventId) selectEvent(rowEl.dataset.eventId);

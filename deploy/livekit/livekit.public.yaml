@@ -1,0 +1,29 @@
+# Public LiveKit config for remote-clinician WebRTC (Phase 9 go-public, choice 2c). Real config —
+# NOT `--dev`. Stand this up on the host that terminates public traffic (or on-prem behind ingress).
+# Keys come from the LIVEKIT_KEYS env (see docker-compose.public.yml); edit the `# EDIT` lines.
+# Validate on the actual public host — NAT/ICE/TURN behaviour depends on the network.
+
+port: 7880
+bind_addresses:
+  - ""                       # all interfaces
+
+rtc:
+  tcp_port: 7881             # ICE/TCP fallback (works through a single forwarded TCP port)
+  port_range_start: 50000    # UDP media range — forward this range on the firewall
+  port_range_end: 50100
+  use_external_ip: true      # advertise the host's PUBLIC IP in ICE candidates (needed behind NAT)
+  # node_ip: 203.0.113.10    # EDIT: set explicitly instead of use_external_ip if auto-detect is wrong
+
+# Built-in TURN over TLS — the simplest self-hosted relay for browsers that can't reach media
+# directly. Use EITHER this OR the standalone coturn (deploy/livekit/coturn), not both on 5349.
+turn:
+  enabled: true
+  domain: livekit.example.com   # EDIT: the public FQDN the TLS cert matches
+  tls_port: 5349
+  # LiveKit terminates TLS with these certs (mount them, see compose). For coturn instead, set
+  # `enabled: false` here and run the coturn service.
+  cert_file: /etc/livekit/certs/fullchain.pem
+  key_file: /etc/livekit/certs/privkey.pem
+
+logging:
+  level: info
