@@ -30,7 +30,7 @@ from functools import partial
 
 from common.config import DEFAULT, Config
 
-from .adapters import STTAdapter, TTSAdapter, build_stt, build_tts
+from .adapters import STTAdapter, TTSAdapter, build_stt, build_tts, speakable
 from .handlers import EchoHandler, Handler, build_handler, build_outbound_handler
 from .livekit_cloud import is_configured
 from .outbound_alert import OutboundAlertStore
@@ -210,7 +210,9 @@ def make_speech_bridges():
             self._adapter = adapter
 
         def synthesize(self, text: str, *, conn_options=DEFAULT_API_CONNECT_OPTIONS):
-            return LocalTTSStream(tts=self, input_text=text, conn_options=conn_options)
+            # Single TTS boundary for the live call: normalize machine tokens (e.g. NORMAL_SINUS ->
+            # "NORMAL SINUS") so no underscore is spoken, across greeting/select/Q&A and any backend.
+            return LocalTTSStream(tts=self, input_text=speakable(text), conn_options=conn_options)
 
     return LocalSTT, LocalTTS
 
@@ -236,17 +238,20 @@ def make_stub_llm():
     return _StubLLM()
 
 
-def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0):
+def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
+                     wake_required: bool = True):
     """Define and return a `HandlerAgent` whose 'LLM' node is our conversation `Handler` (lazy).
 
     `wake_word`/`awake_window_s` gate follow-up *audio* Q&A: after the alert (once the session is
     authenticated), an audio turn is only answered if it starts with the wake word or arrives within
-    `awake_window_s` of the last wake word. PIN entry, the spoken alert, and the verbal ack run
-    before auth and are never gated; text-chat turns bypass this hook entirely.
+    `awake_window_s` of the last wake word. Set `wake_required=False` (config `AUDIO_WAKE_REQUIRED`)
+    to answer every authenticated audio turn — the escape hatch when STT mishears the brand word.
+    PIN entry, the spoken alert, and the verbal ack run before auth and are never gated; text-chat
+    turns bypass this hook entirely.
     """
     from livekit.agents import Agent, StopResponse  # noqa: PLC0415
 
-    from .wake import detect_wake_word  # noqa: PLC0415
+    from .wake import gate_audio_turn  # noqa: PLC0415
 
     class HandlerAgent(Agent):
         """LiveKit `Agent` that answers via a `Handler` instead of an LLM (no LLM in the path)."""
@@ -276,22 +281,17 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0):
             if not (is_auth and is_auth(self._session_id)):
                 return
             text = (new_message.text_content or "").strip()
-            now = time.monotonic()
-            matched, remainder = detect_wake_word(text, wake_word)
-            if matched:
-                self._awake_until = now + awake_window_s
-                if remainder:
-                    new_message.content = [remainder]  # strip wake phrase; LLM sees the question
-                    print(f"[worker] wake word -> awake {awake_window_s:.0f}s; q={remainder!r}",
-                          flush=True)
-                    return
-                print("[worker] wake word (no question) -> listening for follow-up", flush=True)
-                raise StopResponse()  # nothing to answer yet, but now awake
-            if now < self._awake_until:
-                self._awake_until = now + awake_window_s  # refresh window on each follow-up
-                return
-            print(f"[worker] ignoring audio (no wake word): {text!r}", flush=True)
-            raise StopResponse()
+            action, question, self._awake_until = gate_audio_turn(
+                text, wake_word=wake_word, wake_required=wake_required,
+                awake_until=self._awake_until, now=time.monotonic(), awake_window_s=awake_window_s,
+            )
+            if action == "drop":
+                print(f"[worker] dropping audio turn (wake gate): {text!r}", flush=True)
+                raise StopResponse()
+            if question is not None:
+                new_message.content = [question]  # strip wake phrase; LLM sees only the question
+                print(f"[worker] wake word -> awake {awake_window_s:.0f}s; q={question!r}",
+                      flush=True)
 
         async def llm_node(self, chat_ctx, tools, model_settings):
             text = last_user_text(chat_ctx)
@@ -357,7 +357,8 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
     mode = os.environ.get("VOICE_MODE", "orchestrator")
 
     LocalSTT, LocalTTS = make_speech_bridges()
-    HandlerAgent = make_agent_class(config.audio_wake_word, config.audio_wake_window_s)
+    HandlerAgent = make_agent_class(config.audio_wake_word, config.audio_wake_window_s,
+                                    config.audio_wake_required)
 
     stt_adapter = build_stt(config)
     tts_adapter = build_tts(config)
@@ -413,6 +414,16 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         reply = await loop.run_in_executor(
             None, partial(handler.respond, text, session_id=ctx.room.name)
         )
+        # Companion-app worklist: selecting a row voices that event's stored report aloud (in
+        # addition to scoping chat). Inbox room only, gated by config; spoken via TTS (session.say),
+        # which is independent of the text reply below. Fails silent (select_spoken_line -> None).
+        if (is_inbox and config.inbox_speak_on_select
+                and text.startswith("/select ") and hasattr(handler, "select_spoken_line")):
+            event_id = text[len("/select "):].strip()
+            line = await loop.run_in_executor(None, partial(handler.select_spoken_line, event_id))
+            if line:
+                print(f"[worker] speaking selected event {event_id}: {line!r}", flush=True)
+                session.say(line)
         if not reply:  # control messages (e.g. /select) produce no chat bubble
             return
         print(f"[worker] text chat reply: {reply!r}", flush=True)
@@ -466,6 +477,39 @@ def build_worker_options(config: Config | None = None):
     )
 
 
+def _start_auto_redispatch(config: Config) -> None:  # pragma: no cover - needs a live LiveKit server
+    """Re-wire live inbox rooms to this worker after it (re)starts, without an app re-login.
+
+    A worker registered under a name does NOT auto-join rooms; the gateway only dispatches at
+    `/session`. So a restarted worker leaves already-connected inbox rooms agent-less. This runs in a
+    daemon thread and, once the worker has registered, dispatches the agent into every live
+    `rmsai-inbox-*` room that lacks one. Retries a few times to ride out the registration race, with a
+    per-room cooldown longer than the agent's cold-start so a still-joining room isn't dispatched
+    twice (which would put two agents in the room). Idempotent and best-effort.
+    """
+    import threading  # noqa: PLC0415
+
+    from voice.livekit_cloud import redispatch_existing_rooms  # noqa: PLC0415
+
+    first_delay_s, interval_s, attempts, cooldown_s = 15.0, 15.0, 8, 75.0
+
+    def _work() -> None:
+        recent: dict[str, float] = {}  # room -> monotonic time we last dispatched it
+        time.sleep(first_delay_s)  # let the worker register before the first dispatch
+        for _ in range(attempts):
+            now = time.monotonic()
+            skip = {r for r, t in recent.items() if now - t < cooldown_s}  # still cold-starting
+            try:
+                for room in redispatch_existing_rooms(config, skip=skip):
+                    recent[room] = now
+                    print(f"[worker] auto-redispatch -> room {room}", flush=True)
+            except Exception as exc:  # noqa: BLE001 - a background retry must never crash the worker
+                print(f"[worker] auto-redispatch error: {type(exc).__name__}: {exc}", flush=True)
+            time.sleep(interval_s)
+
+    threading.Thread(target=_work, daemon=True, name="rmsai-redispatch").start()
+
+
 def run_agent(config: Config | None = None) -> None:  # pragma: no cover - needs live infra
     """Run the LiveKit agent worker (delegates to `livekit.agents.cli`; pass a subcommand).
 
@@ -505,5 +549,8 @@ def run_agent(config: Config | None = None) -> None:  # pragma: no cover - needs
             "WARNING: STT_BACKEND=elevenlabs (cloud). RAW caller AUDIO is sent to a third party and "
             "CANNOT be de-identified first — use SYNTHETIC speech ONLY, never real PHI (rules #4/#5)."
         )
+
+    if config.livekit_redispatch_on_start:
+        _start_auto_redispatch(config)
 
     cli.run_app(build_worker_options(config))

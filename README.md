@@ -361,6 +361,9 @@ touching callers.
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
 | `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word so audio follow-ups needn't repeat it (audio only — does not affect text chat) |
+| `AUDIO_WAKE_REQUIRED` | `true` | require the wake word to open a follow-up audio turn (SIP/playground Q&A). Set `false` to answer **every** authenticated audio turn — the escape hatch when STT mishears the out-of-vocab brand word. The companion app already bypasses the gate (it controls the mic) |
+| `INBOX_SPEAK_ON_SELECT` | `true` | companion app: selecting a worklist row speaks that event's stored report summary aloud (in addition to scoping chat). Spoken text is the `Report.summary` — no model call |
+| `LIVEKIT_REDISPATCH_ON_START` | `true` | on worker startup, auto re-dispatch the agent into live `rmsai-inbox-*` rooms that lost their agent (e.g. after a worker restart), so the app doesn't need a re-login. On-demand equivalent: `cli.dispatch` |
 | `EPISODIC_RECALL` | `false` | condition free-text answers on recalled cross-session past Q&A; off keeps answers grounded in the live KB + current conversation only |
 | `STT_LANGUAGE` | `en` | force the STT language (ISO 639-1); blank/`auto` = auto-detect. Stops Whisper/Scribe "hearing" other languages on noise |
 | `ECG_PLOT_ENABLED` / `PLOT_DIR` | `true` / `data/plots` | producer renders each event's ECG lead to `{PLOT_DIR}/<event_id>.png` (gitignored); path persisted as `MonitoredEvent.ecg_plot_ref` |
@@ -426,30 +429,44 @@ Set `CRITICALITY_FP_OVERRIDE_ON_VITALS=false` to revert to the strict spec-D10 b
 # 1. Vendor the ECG model + simulator (gitignored; see external/ecgtranscnn/PLACEHOLDER.md)
 git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn
 
-# 2. Install (uv). The vendored package is installed editable separately — `uv sync` does not
-#    track it (it is gitignored), so re-run the second line after any `uv sync`.
-uv sync --extra dev
-uv pip install -e external/ecgtranscnn
+# 2. Install everything (recommended for a demo). `make setup-all` = all extras
+#    (rag, deid, voice, livekit, app) + the vendored ecgtranscnn editable + the spaCy model.
+make setup-all
+#    Lean alternative (core + dev only): `make setup`.
+#    Re-run `make external` after ANY hand-run `uv sync` — the vendored package is gitignored, so
+#    `uv sync` uninstalls it and it must be reinstalled editable.
 
-# 3. Bring up the lean datastores
+# 3. Bring up the lean datastores (LiveKit is `later`-profiled — add it explicitly for voice; see
+#    "Demo bring-up sequence" under End-to-end testing)
 docker compose -f infra/docker-compose.yml up -d redis neo4j qdrant
 
 # 4. Run tests
 uv run pytest
 ```
 
-### Optional extras
+### Make targets
+
+| Target | What it does |
+|---|---|
+| `make setup` | `uv sync --extra dev` + `make external` (core + dev only) |
+| `make setup-all` | all extras (rag, deid, voice, livekit, app) + `make external` + spaCy `en_core_web_sm` |
+| `make external` | (re)install the vendored `external/ecgtranscnn` editable — run after any manual `uv sync` |
+| `make test` / `make lint` | `uv run pytest -q` / linters |
+
+### Optional extras (à la carte, if you skipped `make setup-all`)
 
 ```bash
 uv sync --extra rag                                   # real BGE embeddings + reranker
 uv sync --extra deid && uv run python -m spacy download en_core_web_sm   # Presidio de-id
 uv sync --extra voice                                 # faster-whisper STT + Piper TTS
 uv sync --extra livekit                               # LiveKit agent worker + SIP/WebRTC
+# NOTE: any bare `uv sync` uninstalls the vendored ecgtranscnn — follow with `make external`.
 ```
 
 `.env` keys that matter: `REDIS_URL`, `NEO4J_*`, `QDRANT_URL`, `DEID_BACKEND`, `STT_BACKEND`/
-`TTS_BACKEND`, `INBOUND_AUTH_PIN`, and for live calls `LIVEKIT_URL` / `LIVEKIT_API_KEY` /
-`LIVEKIT_API_SECRET` plus `OUTBOUND_ENABLED=true`.
+`TTS_BACKEND`, `INBOUND_AUTH_PIN`, `AUDIO_WAKE_REQUIRED` (wake-word gate on/off),
+`INBOX_SPEAK_ON_SELECT` (voice the event on worklist select), and for live calls `LIVEKIT_URL` /
+`LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` plus `OUTBOUND_ENABLED=true`.
 
 **Swappable speech backends.** STT/TTS sit behind `STTAdapter`/`TTSAdapter` (`voice/adapters.py`),
 selected by `STT_BACKEND` / `TTS_BACKEND`: self-hosted **whisper**/**piper** (default), or cloud
@@ -476,6 +493,41 @@ PHI handling differs by direction (the two cloud legs are **not** symmetric):
 ---
 
 ## End-to-end testing
+
+### 0. Demo bring-up sequence (do this in order)
+
+The datastores and the **LiveKit server** are separate concerns. `redis/neo4j/qdrant` are the always-on
+lean stores; **LiveKit is `later`-profiled**, so a plain `up` skips it and you must start it explicitly.
+A voice worker started against a missing LiveKit server just retry-loops on `:7880`
+(`Connect call failed ('127.0.0.1', 7880)`) — that error means *the server isn't running*, not a bug in
+the worker.
+
+```bash
+# 1. Datastores (always needed)
+docker compose -f infra/docker-compose.yml up -d redis neo4j qdrant
+
+# 2. LiveKit media server (needed ONLY for voice: steps 5 & 6). Start it explicitly.
+docker compose -f infra/docker-compose.yml up -d livekit
+#    verify: healthy + listening on 7880
+docker ps --filter name=livekit --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+# 3. (voice) agent worker — joins rooms, runs STT → Handler → TTS. Leave running in its own terminal.
+uv run python -m cli.voice_worker dev
+
+# 4. Drive a scenario (separate terminals): produce an event, then consume/dial. See steps 2–6 below.
+```
+
+> Start order matters for in-app chat: the **worker must be running before** a room is created, or
+> the `/session` dispatch won't reach it. If you **restart the worker** while the app is connected,
+> the existing room is left agent-less (chat/select hit an empty room → no reply, no speech). The
+> worker auto re-dispatches into live `rmsai-inbox-*` rooms on startup (`LIVEKIT_REDISPATCH_ON_START`,
+> default on); to re-wire immediately without waiting or re-logging in:
+>
+> ```bash
+> uv run python -m cli.dispatch --all-inbox        # every live inbox room lacking an agent
+> uv run python -m cli.dispatch --room rmsai-inbox-h1   # one specific room
+> ```
+> The agent joins a few seconds later (cold-start loads STT/TTS/orchestrator).
 
 ### 1. Tests (offline, no infra)
 
@@ -523,6 +575,10 @@ uv run python -m cli.consume --channel text --once
 ### 5. Real WebRTC audio loop (browser, no phone)
 
 ```bash
+# PREREQ — the LiveKit media server must be running (it is `later`-profiled; a plain `up` skips it).
+# Skip this only if `docker ps` already shows infra-livekit-1 healthy on :7880.
+docker compose -f infra/docker-compose.yml up -d livekit
+
 # TERMINAL A — agent worker (joins rooms; runs Whisper STT → Handler → Piper TTS)
 uv run python -m cli.voice_worker dev
 ```
@@ -555,6 +611,9 @@ alert, you can interact two ways and the response matches the input modality:
   *"hey vios, what were the vitals at the time of the event?"* → **spoken** answer. The agent then
   stays "awake" for `AUDIO_WAKE_WINDOW_S` (default 30 s), so immediate follow-ups don't need to
   repeat the wake word. Audio with no wake word (and outside the window) is silently ignored.
+  If the wake word keeps mishearing (it's out-of-vocab, so STT mangles it), set
+  `AUDIO_WAKE_REQUIRED=false` to answer every authenticated audio turn, and/or route STT to a
+  stronger model with `STT_BACKEND=elevenlabs` (synthetic voice only — raw audio leaves the host).
 - **Type** — a message in the LiveKit **chat box** gets a **text-only** reply on the chat channel
   (no TTS/audio). Typed turns are never wake-word gated.
 

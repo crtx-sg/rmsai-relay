@@ -18,6 +18,18 @@ from common.config import DEFAULT, Config
 _SEP = b"\x00"
 
 
+def speakable(text: str) -> str:
+    """Normalize text for TTS so machine tokens aren't spoken literally.
+
+    Event/condition labels are stored with underscores (e.g. ``NORMAL_SINUS``); spoken verbatim a TTS
+    voice reads the underscore or stumbles. Replacing them with spaces makes it read as words
+    ("normal sinus"). Applied at the worker's TTS boundary so it covers every spoken string — the
+    greeting, the speak-on-select summary, and Q&A answers — regardless of backend. Case is preserved
+    (the voice pronounces "NORMAL SINUS" naturally); only the underscores change.
+    """
+    return text.replace("_", " ") if text else text
+
+
 class STTAdapter(ABC):
     @abstractmethod
     def transcribe(self, audio: bytes) -> str: ...

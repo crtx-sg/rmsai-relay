@@ -75,3 +75,38 @@ def detect_wake_word(text: str, wake_word: str = "hey vios") -> tuple[bool, str]
                 dropped += 1
             return True, " ".join(rest)
     return False, ""
+
+
+def gate_audio_turn(
+    text: str,
+    *,
+    wake_word: str = "hey vios",
+    wake_required: bool = True,
+    awake_until: float = 0.0,
+    now: float = 0.0,
+    awake_window_s: float = 30.0,
+) -> tuple[str, str | None, float]:
+    """Decide what to do with one authenticated follow-up *audio* turn (pure; no I/O).
+
+    Returns `(action, question, new_awake_until)`:
+      - `action` ∈ {"answer", "drop"} — answer the turn or drop it silently.
+      - `question` — the text to answer with when the wake phrase was stripped off the front
+        (`None` means answer the turn as-is; only meaningful when `action == "answer"`).
+      - `new_awake_until` — the refreshed "stay awake" deadline the caller should store.
+
+    The caller has already handled push-to-talk and the PIN/auth gate. When `wake_required` is False
+    (config escape hatch for STT that mishears the out-of-vocab brand word) every turn is answered.
+    Otherwise a turn is answered iff it opens with the wake word or arrives inside the awake window;
+    a bare wake word ("hey vios") opens the window but has nothing to answer yet, so it drops.
+    """
+    if not wake_required:
+        return "answer", None, awake_until
+    matched, remainder = detect_wake_word(text, wake_word)
+    if matched:
+        awake = now + awake_window_s  # wake word (even alone) opens/refreshes the window
+        if remainder:
+            return "answer", remainder, awake
+        return "drop", None, awake  # awake now, but no question to answer
+    if now < awake_until:
+        return "answer", None, now + awake_window_s  # inside the window; refresh on each follow-up
+    return "drop", None, awake_until  # no wake word, window closed -> ignore (noise/hallucination)

@@ -18,5 +18,8 @@ artifact links in inbox messages resolve here.
   (`Handler` → de-id → KB/graph). Asking to *see* an artifact pushes a `type:"show"` message that
   renders it inline. Voice needs the worker running with real STT/TTS (`--extra voice`,
   `STT_BACKEND=whisper`/`TTS_BACKEND=piper`); text chat works regardless.
+- **Speak-on-select** — with `INBOX_SPEAK_ON_SELECT=true` (default), selecting a row also **speaks**
+  that event's stored report summary aloud via TTS (in addition to scoping chat). No wake word / mic
+  needed; disable to keep selection silent.
 
 Out of scope: bedside MQTT live waveforms and camera.

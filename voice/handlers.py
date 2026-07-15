@@ -209,6 +209,21 @@ class InboxHandler(OrchestratorHandler):
               flush=True)
         return patient_ref
 
+    def select_spoken_line(self, event_id: str) -> str | None:
+        """Line to speak aloud when this event is selected (companion app / SIP), or None.
+
+        Speaks the event's stored `Report.summary` verbatim — no model call. Resilient: no driver,
+        no report yet, or a graph hiccup returns None so the caller simply stays silent (rule #8).
+        """
+        if self.driver is None:
+            return None
+        try:
+            from kb.graph.events import get_event_report_summary  # noqa: PLC0415
+
+            return get_event_report_summary(self.driver, event_id)
+        except Exception:  # noqa: BLE001 - a graph hiccup must not break selection/speech
+            return None
+
     def respond(self, text: str, *, session_id: str) -> str:
         stripped = (text or "").strip()
         # Selection control message (only the lk.chat text path reliably reaches the agent worker,

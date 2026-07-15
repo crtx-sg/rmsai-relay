@@ -122,3 +122,33 @@ def test_selection_without_driver_falls_back_to_event_id(tmp_path):
     h = InboxHandler(_FakeOrch(), _FakeWorking(), driver=None,
                      audit=AuditLog(str(tmp_path / "a.jsonl")))
     assert h.set_selection(ROOM, "evt-xyz") == "evt-xyz"
+
+
+# --- speak-on-select: the line spoken aloud when a worklist row is selected --------------------
+
+def test_select_spoken_line_returns_stored_report_summary(handler, monkeypatch):
+    h, *_ = handler
+    summary = "AFIB for PT1155, MEWS 3 (Medium), confidence 0.82"
+    monkeypatch.setattr(events_mod, "get_event_report_summary", lambda drv, uid: summary)
+    assert h.select_spoken_line("evt-1") == summary
+
+
+def test_select_spoken_line_none_without_driver():
+    h = InboxHandler(_FakeOrch(), _FakeWorking(), driver=None)
+    assert h.select_spoken_line("evt-1") is None
+
+
+def test_select_spoken_line_none_when_no_report_yet(handler, monkeypatch):
+    h, *_ = handler
+    monkeypatch.setattr(events_mod, "get_event_report_summary", lambda drv, uid: None)
+    assert h.select_spoken_line("evt-1") is None
+
+
+def test_select_spoken_line_resilient_to_graph_error(handler, monkeypatch):
+    h, *_ = handler
+
+    def boom(drv, uid):
+        raise RuntimeError("neo4j down")
+
+    monkeypatch.setattr(events_mod, "get_event_report_summary", boom)
+    assert h.select_spoken_line("evt-1") is None  # stays silent, never raises

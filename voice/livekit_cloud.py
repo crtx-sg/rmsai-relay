@@ -40,6 +40,58 @@ def _http_url(url: str) -> str:
 _AGENT_KIND = 4
 
 
+#: LiveKit `JobStatus` enum values that mean a job is still live (livekit.api.JobStatus).
+_JS_PENDING, _JS_RUNNING = 0, 1
+#: A dispatched agent joins within ~40s (cold-start: STT/TTS/VAD/orchestrator load). A PENDING/RUNNING
+#: job newer than this is "an agent is coming"; an OLDER one whose agent never became a participant is
+#: a zombie (dead/removed worker — LiveKit leaves the job RUNNING) and must NOT block re-dispatch.
+_JOB_FRESH_NS = 75 * 1_000_000_000
+
+
+def _has_fresh_active_job(dispatches, *, now_ns: int, fresh_ns: int = _JOB_FRESH_NS) -> bool:
+    """Pure: True if any dispatch has a PENDING/RUNNING job that started within `fresh_ns` of now.
+
+    "Fresh + active" = an agent just dispatched and still cold-starting, so a concurrent dispatch
+    (gateway `/session` + worker auto-redispatch) would add a *second* agent and every reply would be
+    spoken twice (an echo). Recency is essential: a RUNNING job left behind by a dead/removed worker
+    keeps its status forever but has an OLD `started_at`, so it ages out and stops blocking — which is
+    what lets a worker restart re-wire the room. `started_at` is unix nanoseconds; a job with no
+    timestamp (0) is treated as just-created (fresh). Unit-tested with duck-typed fakes; real inputs
+    are LiveKit proto `AgentDispatch` objects.
+    """
+    for d in dispatches:
+        for j in getattr(getattr(d, "state", None), "jobs", None) or []:
+            js = getattr(j, "state", None)
+            if getattr(js, "status", None) not in (_JS_PENDING, _JS_RUNNING):
+                continue
+            started = getattr(js, "started_at", 0) or 0
+            if started == 0 or (now_ns - started) < fresh_ns:
+                return True
+    return False
+
+
+async def _room_has_agent_or_pending(lk, api, room: str) -> bool:  # pragma: no cover - live SDK
+    """True if `room` has an agent participant OR a **fresh** pending/running agent-dispatch job.
+
+    The fresh-job check catches an agent dispatched but not yet joined (cold-start) so we never
+    double-dispatch (echo), while ignoring zombie RUNNING jobs from dead workers so a restart can
+    re-wire. Best-effort: any lookup error is treated as "no agent" (fail toward dispatching, since a
+    missing agent is the failure we're fixing)."""
+    import time  # noqa: PLC0415
+
+    try:
+        parts = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
+        if any(p.kind == _AGENT_KIND for p in parts.participants):
+            return True
+    except Exception:  # noqa: BLE001 - room not found yet -> no agent present
+        pass
+    try:
+        disp = await lk.agent_dispatch.list_dispatch(room_name=room)
+        return _has_fresh_active_job(disp, now_ns=time.time_ns())
+    except Exception:  # noqa: BLE001 - no dispatch history / transient -> treat as none
+        return False
+
+
 def create_agent_dispatch(
     room: str, *, config: Config = DEFAULT, agent_name: str | None = None, metadata: str = "",
 ) -> bool:  # pragma: no cover - needs the SDK + a live LiveKit server
@@ -66,13 +118,10 @@ def create_agent_dispatch(
             api_secret=config.livekit_api_secret,
         )
         try:
-            # Skip if an agent is already present (room exists + has an AGENT participant).
-            try:
-                parts = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
-                if any(p.kind == _AGENT_KIND for p in parts.participants):
-                    return False
-            except Exception:  # noqa: BLE001 - room not found (yet) -> no agent -> dispatch below
-                pass
+            # Skip if an agent is already present OR a dispatch job is pending/running (an agent
+            # that's been dispatched but is still cold-starting). Prevents a duplicate agent (echo).
+            if await _room_has_agent_or_pending(lk, api, room):
+                return False
             await lk.agent_dispatch.create_dispatch(
                 api.CreateAgentDispatchRequest(room=room, agent_name=name, metadata=metadata)
             )
@@ -81,6 +130,96 @@ def create_agent_dispatch(
             await lk.aclose()
 
     return asyncio.run(_go())
+
+
+def _should_dispatch(
+    room_name: str,
+    participant_kinds,
+    *,
+    prefix: str,
+    require_human: bool,
+    skip=frozenset(),
+) -> bool:
+    """Pure predicate: should the agent be dispatched into `room_name`? (see redispatch_existing_rooms)
+
+    True iff the room matches `prefix`, is not in `skip` (a per-run cooldown set), has **no** agent
+    already, and — when `require_human` — has at least one non-agent participant (don't spawn an
+    agent into an empty/stale room). `participant_kinds` is the room's `ParticipantInfo.Kind` list.
+    """
+    if room_name in skip:
+        return False
+    if prefix and not room_name.startswith(prefix):
+        return False
+    if _AGENT_KIND in participant_kinds:
+        return False  # an agent is already serving this room
+    if require_human and not any(k != _AGENT_KIND for k in participant_kinds):
+        return False  # nobody to serve
+    return True
+
+
+def redispatch_existing_rooms(
+    config: Config = DEFAULT,
+    *,
+    prefix: str = "rmsai-inbox-",
+    require_human: bool = True,
+    skip=frozenset(),
+    agent_name: str | None = None,
+) -> list[str]:  # pragma: no cover - needs the SDK + a live LiveKit server
+    """Dispatch the agent into every live room matching `prefix` that currently lacks an agent.
+
+    Backs worker-startup auto-redispatch (a restarted worker re-joins live inbox rooms without an app
+    re-login) and `cli.dispatch --all-inbox`. Idempotent: rooms that already have an agent (or are in
+    `skip`) are left alone. Returns the list of room names a dispatch was created for.
+
+    Best-effort: any failure (no server, SDK missing) yields `[]` rather than raising, so a worker
+    start never fails on this.
+    """
+    import asyncio  # noqa: PLC0415
+
+    try:
+        from livekit import api  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - livekit extra not installed -> nothing to do
+        return []
+
+    name = agent_name or config.livekit_agent_name
+
+    async def _go() -> list[str]:
+        lk = api.LiveKitAPI(
+            url=_http_url(config.livekit_url),
+            api_key=config.livekit_api_key,
+            api_secret=config.livekit_api_secret,
+        )
+        out: list[str] = []
+        try:
+            rooms = await lk.room.list_rooms(api.ListRoomsRequest())
+            for r in rooms.rooms:
+                try:
+                    parts = await lk.room.list_participants(
+                        api.ListParticipantsRequest(room=r.name)
+                    )
+                    kinds = [p.kind for p in parts.participants]
+                except Exception:  # noqa: BLE001 - transient; treat as unknown, skip this room
+                    continue
+                if not _should_dispatch(r.name, kinds, prefix=prefix, require_human=require_human,
+                                        skip=skip):
+                    continue
+                # Authoritative dedupe: skip if a dispatch job is already pending/running (e.g. the
+                # gateway /session dispatch is in flight and the agent is still cold-starting) — else
+                # we'd add a second agent and every reply would be spoken twice.
+                if await _room_has_agent_or_pending(lk, api, r.name):
+                    continue
+                await lk.agent_dispatch.create_dispatch(
+                    api.CreateAgentDispatchRequest(room=r.name, agent_name=name)
+                )
+                out.append(r.name)
+        finally:
+            await lk.aclose()
+        return out
+
+    try:
+        return asyncio.run(_go())
+    except Exception:  # noqa: BLE001 - never let a background/CLI redispatch crash the caller
+        return []
 
 
 def _b64url(data: bytes) -> str:

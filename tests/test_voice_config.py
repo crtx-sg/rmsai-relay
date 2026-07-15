@@ -5,12 +5,25 @@ from __future__ import annotations
 from dataclasses import replace
 
 from common.config import CLINICAL_STT_PROMPT, DEFAULT
-from voice.adapters import StubSTT, StubTTS, build_stt, build_tts
+from voice.adapters import StubSTT, StubTTS, build_stt, build_tts, speakable
 
 
 def test_default_backends_are_stub():
     assert isinstance(build_stt(), StubSTT)
     assert isinstance(build_tts(), StubTTS)
+
+
+def test_speakable_strips_underscores_from_event_names():
+    assert speakable("NORMAL_SINUS") == "NORMAL SINUS"           # spoken as words, no "underscore"
+    assert speakable("AV_BLOCK_2_TYPE2") == "AV BLOCK 2 TYPE2"
+    # a whole spoken line: only the machine token changes, the rest is untouched
+    assert speakable("NORMAL_SINUS for PT8861, MEWS 0 (Low)") == "NORMAL SINUS for PT8861, MEWS 0 (Low)"
+
+
+def test_speakable_is_a_noop_without_underscores():
+    assert speakable("the heart rate is 92") == "the heart rate is 92"
+    assert speakable("") == ""
+    assert speakable(None) is None
 
 
 def test_clinical_prompt_default_has_arrhythmia_vocab():

@@ -142,11 +142,24 @@ class Config:
     # inbound KB demo) requests it explicitly via create_agent_dispatch. Removes the "worker must
     # start before the app / restart re-dispatch" fragility of automatic dispatch.
     livekit_agent_name: str = "rmsai-agent"
+    # On worker startup, re-dispatch the agent into live `rmsai-inbox-*` rooms that lost their agent
+    # (e.g. after a worker restart) so the companion app doesn't need a re-login to re-wire chat/voice.
+    # Runs in a background thread; idempotent (skips rooms that already have an agent). See cli.dispatch.
+    livekit_redispatch_on_start: bool = True
     # Wake word: after the alert, follow-up *audio* Q&A must start with this phrase (so room noise
     # and Whisper hallucinations don't trigger replies). The agent stays "awake" for the window
     # after each wake word so follow-ups don't repeat it. Text-chat turns are never gated.
     audio_wake_word: str = "hey vios"
     audio_wake_window_s: float = 30.0
+    # Require the wake word to open a follow-up audio turn (post-alert Q&A on SIP/playground). On by
+    # default; set false to answer every authenticated audio turn (like push-to-talk) — the escape
+    # hatch when STT mishears the out-of-vocab brand word. The companion app already bypasses this
+    # (the app controls the mic), so this only affects the outbound/inbound voice flows.
+    audio_wake_required: bool = True
+    # Companion app (inbox room): on selecting a worklist event, speak that event's stored report
+    # summary aloud (in addition to scoping chat). Especially wanted for the SIP phone flow. The
+    # spoken text is the Report node's `summary` (no model call); disable to keep selection silent.
+    inbox_speak_on_select: bool = True
     # Episodic recall: when on, free-text answers are conditioned on recalled past Q&A ("Relevant
     # past interactions"). Off by default — keeps answers grounded only in the live KB + this
     # conversation, and avoids a small model parroting stale recalled text.
@@ -212,8 +225,11 @@ class Config:
             livekit_sip_trunk_id=os.environ.get("LIVEKIT_SIP_TRUNK_ID", ""),
             livekit_sip_room=os.environ.get("LIVEKIT_SIP_ROOM", "rmsai-outbound"),
             livekit_agent_name=os.environ.get("LIVEKIT_AGENT_NAME", "rmsai-agent"),
+            livekit_redispatch_on_start=_b("LIVEKIT_REDISPATCH_ON_START", True),
             audio_wake_word=os.environ.get("AUDIO_WAKE_WORD", "hey vios"),
             audio_wake_window_s=_f("AUDIO_WAKE_WINDOW_S", 30.0),
+            audio_wake_required=_b("AUDIO_WAKE_REQUIRED", True),
+            inbox_speak_on_select=_b("INBOX_SPEAK_ON_SELECT", True),
             episodic_recall=_b("EPISODIC_RECALL", False),
             audit_log_path=os.environ.get("AUDIT_LOG_PATH", "data/audit.jsonl"),
             report_dir=os.environ.get("REPORT_DIR", "data/reports"),

@@ -136,6 +136,20 @@ def get_event_patient(driver: GraphDriver, uuid: str) -> str | None:
     return rows[0]["pid"] if rows else None
 
 
+def get_event_report_summary(driver: GraphDriver, uuid: str) -> str | None:
+    """Return the stored one-line `Report.summary` for an event, or None if absent.
+
+    Backs the companion app's speak-on-select (and the SIP flow): the summary is the concise text
+    `report_summary()` persisted on the Report node — spoken as-is, no model call. Returns None for
+    an unknown event or one with no report yet, so the caller simply stays silent (hard rule #8).
+    """
+    rows = driver.run_read(
+        "MATCH (e:MonitoredEvent {id:$uuid})-[:HAS_REPORT]->(r:Report) RETURN r.summary AS summary",
+        uuid=uuid,
+    )
+    return (rows[0]["summary"] or None) if rows else None
+
+
 def get_event_artifacts(driver: GraphDriver, uuid: str) -> dict | None:
     """Resolve an event's materialized artifact refs + owning pseudonym, or None if unknown.
 

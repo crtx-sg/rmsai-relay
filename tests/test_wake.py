@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from voice.wake import detect_wake_word
+from voice.wake import detect_wake_word, gate_audio_turn
 
 
 @pytest.mark.parametrize(
@@ -50,3 +50,42 @@ def test_custom_wake_word():
         "whats the heart rate",
     )
     assert detect_wake_word("hey vios what's up", "computer") == (False, "")
+
+
+# --- gate_audio_turn: the pure decision behind on_user_turn_completed ---------------------------
+
+def test_gate_answers_when_wake_word_leads():
+    action, question, awake = gate_audio_turn(
+        "hey vios what were the vitals", now=100.0, awake_window_s=30.0)
+    assert action == "answer"
+    assert question == "what were the vitals"  # wake phrase stripped
+    assert awake == 130.0                       # window opened
+
+
+def test_gate_bare_wake_word_opens_window_but_drops():
+    action, question, awake = gate_audio_turn("hey vios", now=100.0, awake_window_s=30.0)
+    assert action == "drop" and question is None
+    assert awake == 130.0  # awake now, nothing to answer yet
+
+
+def test_gate_answers_inside_open_window_without_wake_word():
+    # A follow-up with no wake word, still inside the awake window, is answered and refreshes it.
+    action, question, awake = gate_audio_turn(
+        "and the blood pressure", awake_until=130.0, now=110.0, awake_window_s=30.0)
+    assert action == "answer" and question is None  # answered as-is (no phrase to strip)
+    assert awake == 140.0                            # window refreshed
+
+
+def test_gate_drops_noise_when_window_closed():
+    action, question, awake = gate_audio_turn(
+        "it's been a lot of years", awake_until=100.0, now=200.0)
+    assert action == "drop" and question is None
+    assert awake == 100.0  # unchanged; stays asleep
+
+
+def test_gate_bypassed_when_wake_not_required():
+    # AUDIO_WAKE_REQUIRED=false: every authenticated audio turn is answered, no wake word needed.
+    action, question, awake = gate_audio_turn(
+        "what were the vitals", wake_required=False, awake_until=0.0, now=200.0)
+    assert action == "answer" and question is None  # answered as-is
+    assert awake == 0.0                              # window logic irrelevant when disabled
