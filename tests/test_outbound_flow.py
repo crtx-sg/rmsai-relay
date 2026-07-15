@@ -64,6 +64,54 @@ def test_should_call_gate():
     assert not should_call(ev, replace(_CFG, outbound_min_criticality="Critical"))[0]
 
 
+# --- arrhythmia confidence gate: a low-confidence (non-normal) prediction doesn't dial out --------
+
+
+def _arrhythmia_event(confidence, *, event_type="ATRIAL_FIBRILLATION",
+                      mews_score=0, mews_risk="Low", deteriorating=False) -> DeviceEvent:
+    """A non-normal (arrhythmia) event with controllable model confidence + vitals."""
+    w = SignalWindow(patient_ref="PT0002", event_id="E-ARR", start_timestamp=0.0,
+                     event_timestamp=6.0, window=WindowGeometry(before_s=6.0, after_s=6.0))
+    trends = {"HR": VitalTrend(direction="deteriorating")} if deteriorating else {}
+    return DeviceEvent(
+        window=w, event_type=event_type, confidence=confidence, is_false_positive=False,
+        analysis=ClinicalAnalysis(mews=MEWS(score=mews_score, risk=mews_risk), vital_trends=trends),
+    )
+
+
+def test_low_confidence_arrhythmia_does_not_call():
+    call, reason = should_call(_arrhythmia_event(0.45), _CFG)  # High AFib, but only 45% confident
+    assert not call
+    assert reason.startswith("low_confidence_arrhythmia") and "45%" in reason
+
+
+def test_confident_arrhythmia_calls():
+    assert should_call(_arrhythmia_event(0.92), _CFG)[0]  # 92% >= 60% threshold
+
+
+def test_arrhythmia_confidence_at_threshold_calls():
+    # Boundary: exactly at the threshold is "confident enough" (>= is call).
+    assert should_call(_arrhythmia_event(0.60), _CFG)[0]
+
+
+def test_threshold_is_configurable():
+    ev = _arrhythmia_event(0.70)
+    assert should_call(ev, _CFG)[0]                                              # 70% >= 60% default
+    assert not should_call(ev, replace(_CFG, outbound_min_arrhythmia_confidence=0.80))[0]  # 70% < 80%
+
+
+def test_low_confidence_arrhythmia_still_calls_on_deteriorating_vitals():
+    # Vitals override the confidence gate: a deteriorating patient calls even at low confidence.
+    call, reason = should_call(_arrhythmia_event(0.30, deteriorating=True), _CFG)
+    assert call and reason == "ok"
+
+
+def test_low_confidence_arrhythmia_still_calls_on_high_mews():
+    call, reason = should_call(
+        _arrhythmia_event(0.30, mews_score=4, mews_risk="Medium"), _CFG)
+    assert call and reason == "ok"
+
+
 def test_false_positive_never_calls():
     w = next(read_hdf5_file(_FIXTURE))
 

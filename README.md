@@ -68,6 +68,9 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
 
 ## High-level data-flow architecture
 
+> For a plain-language walkthrough of the end-to-end control flow, data flow, and every model
+> (ECG classifier, LLM, STT/TTS, embeddings), see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 ```
                           ┌──────────────────────────────────────────────────────────────┐
                           │                      INGEST / DETECT                           │
@@ -356,6 +359,7 @@ touching callers.
 | `CRITICALITY_ESCALATE_ON_DETERIORATING` | `true` | any deteriorating vital trend ⇒ escalate criticality to High |
 | `CRITICALITY_FP_OVERRIDE_ON_VITALS` | `true` | call even on a confident false-positive ECG (NORMAL_SINUS) when vitals warrant it (MEWS ≥ threshold or deteriorating); overrides the spec-D10 no-call guard |
 | `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` | `false` / `High` | gate which events dial out |
+| `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` | `0.60` | a non-normal (arrhythmia) event only dials out if the model's confidence is at/above this — a low-confidence arrhythmia is likely a misdetection. Deteriorating vitals override it (still call) |
 | `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` | — | single hard-configured destination + caller ID |
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` | `2` / `30` | no-answer retry policy |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
@@ -394,6 +398,13 @@ outbound-call gate, and all of its inputs are configurable (table above). It is 
 3. **Call gate** (`should_call`) — dials out when `outbound_enabled` and the criticality is at or
    above `OUTBOUND_MIN_CRITICALITY` (default `High`). The event is **always persisted**; the gate
    only governs the call.
+
+**Arrhythmia confidence gate (the model must be sure).** A **non-normal (arrhythmia)** prediction only
+dials out when the model's confidence in it is at/above `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` (default
+`0.60`) — a low-confidence arrhythmia is likely a misdetection, not worth a call on the rhythm alone
+(decision reason → `low_confidence_arrhythmia (45% < 60%)`). This is the mirror image of the
+false-positive gate below, and the **same vitals-driven escalation overrides it**: a deteriorating
+patient (MEWS ≥ threshold or a deteriorating trend) still calls regardless of classifier confidence.
 
 **False-positive override (vitals beat the rhythm).** A confident `NORMAL_SINUS`
 (≥ `FP_SUPPRESS_MIN_CONFIDENCE`) is a false positive and normally does **not** call (spec D10). When
@@ -599,9 +610,11 @@ uv run python -m cli.consume --channel voice --caller livekit --transport webrtc
 ```
 
 > Each event gets its **own** room (`rmsai-outbound-<event_id>`) and a **fresh** join token, both
-> printed by `cli.consume`. The static `rmsai-outbound` name is for SIP phone dialing only. The
-> worker joins when you join (auto-dispatch); a worker started before a code change won't pick it up
-> for an already-live room — restart the worker **and** place a new call.
+> printed by `cli.consume` — this holds for **both** transports (SIP and WebRTC), so the room carries
+> that event's staged alert. The static `rmsai-outbound` name (`LIVEKIT_SIP_ROOM`) is only the
+> *default* for the standalone `cli.outbound` path (one call at a time), not the bus consumer. The
+> worker joins when the room is dispatched; a worker started before a code change won't pick it up for
+> an already-live room — restart the worker **and** place a new call.
 
 **Talking vs typing during a call (modality-matched replies).** Once past the PIN and the spoken
 alert, you can interact two ways and the response matches the input modality:

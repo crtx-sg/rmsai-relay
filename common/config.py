@@ -77,6 +77,11 @@ class Config:
     outbound_call_number: str = ""
     outbound_from: str = ""
     outbound_min_criticality: str = "High"
+    # Arrhythmia confidence gate: a non-normal (arrhythmia) prediction only dials out when the model's
+    # confidence in it is at/above this — a low-confidence arrhythmia is likely a misdetection. A
+    # vitals-driven escalation (MEWS >= threshold or deteriorating) overrides this, mirroring the
+    # false-positive override, so a deteriorating patient always calls regardless of classifier confidence.
+    outbound_min_arrhythmia_confidence: float = 0.60
     outbound_max_retries: int = 2
     outbound_retry_delay_s: int = 30
 
@@ -191,6 +196,7 @@ class Config:
             outbound_call_number=os.environ.get("OUTBOUND_CALL_NUMBER", ""),
             outbound_from=os.environ.get("OUTBOUND_FROM", ""),
             outbound_min_criticality=os.environ.get("OUTBOUND_MIN_CRITICALITY", "High"),
+            outbound_min_arrhythmia_confidence=_f("OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE", 0.60),
             outbound_max_retries=_i("OUTBOUND_MAX_RETRIES", 2),
             outbound_retry_delay_s=_i("OUTBOUND_RETRY_DELAY_S", 30),
             dispatch_mode=os.environ.get("DISPATCH_MODE", "app+call"),

@@ -47,6 +47,11 @@ def should_call(event: DeviceEvent, config: Config = DEFAULT) -> tuple[bool, str
     `criticality_fp_override_on_vitals` is on, a vitals-driven escalation (MEWS >= threshold or a
     deteriorating trend) **overrides** that guard — the patient is deteriorating regardless of the
     rhythm, so we still call. The returned reason names the override for the audit/console log.
+
+    Symmetric gate on the other side: a **non-normal (arrhythmia)** prediction only dials out when the
+    model's confidence in it is at/above `outbound_min_arrhythmia_confidence` — a low-confidence
+    arrhythmia is likely a misdetection, not worth a call on the rhythm alone. The same vitals-driven
+    escalation overrides this too, so a deteriorating patient always calls regardless of confidence.
     """
     if not config.outbound_enabled:
         return False, "outbound_disabled"
@@ -55,6 +60,11 @@ def should_call(event: DeviceEvent, config: Config = DEFAULT) -> tuple[bool, str
     fp_override = event.is_false_positive and config.criticality_fp_override_on_vitals and vitals_warn
     if event.is_false_positive and not fp_override:
         return False, "false_positive"
+    # Arrhythmia confidence gate (vitals override it, mirroring the FP override above).
+    is_arrhythmia = event.event_type != config.criticality_normal_event
+    if is_arrhythmia and not vitals_warn and event.confidence < config.outbound_min_arrhythmia_confidence:
+        return False, (f"low_confidence_arrhythmia ({event.confidence:.0%} < "
+                       f"{config.outbound_min_arrhythmia_confidence:.0%})")
     if not at_least(crit, config.outbound_min_criticality):
         return False, f"below_threshold ({crit} < {config.outbound_min_criticality})"
     return True, (f"fp_override ({why})" if fp_override else "ok")
