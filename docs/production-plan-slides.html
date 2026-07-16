@@ -1,0 +1,339 @@
+<title>rmsai-relay — Production Plan</title>
+<style>
+  :root{
+    --ink:#0e1a26; --surface:#eef2f6; --card:#ffffff; --card-2:#f5f8fa;
+    --line:#d7e0e8; --muted:#5b7186; --accent:#0d9488; --accent-soft:#d6f0ed;
+    --steel:#33566f; --warn:#c2410c; --warn-soft:#fbe6db; --shadow:rgba(15,30,45,.10);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ink:#e7eef5; --surface:#080f18; --card:#101d2c; --card-2:#152436;
+      --line:#233648; --muted:#8ba1b4; --accent:#2dd4bf; --accent-soft:#0f2f2c;
+      --steel:#6d95b2; --warn:#f59e0b; --warn-soft:#3a2410; --shadow:rgba(0,0,0,.45);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#e7eef5; --surface:#080f18; --card:#101d2c; --card-2:#152436;
+    --line:#233648; --muted:#8ba1b4; --accent:#2dd4bf; --accent-soft:#0f2f2c;
+    --steel:#6d95b2; --warn:#f59e0b; --warn-soft:#3a2410; --shadow:rgba(0,0,0,.45);
+  }
+  :root[data-theme="light"]{
+    --ink:#0e1a26; --surface:#eef2f6; --card:#ffffff; --card-2:#f5f8fa;
+    --line:#d7e0e8; --muted:#5b7186; --accent:#0d9488; --accent-soft:#d6f0ed;
+    --steel:#33566f; --warn:#c2410c; --warn-soft:#fbe6db; --shadow:rgba(15,30,45,.10);
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--surface); color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; line-height:1.4;
+    padding:clamp(16px,3vw,40px); display:flex; flex-direction:column;
+    align-items:center; gap:clamp(18px,2.4vw,30px);
+  }
+  .mono{font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    font-variant-numeric:tabular-nums;}
+
+  .slide{
+    width:100%; max-width:1160px; container-type:inline-size;
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    box-shadow:0 10px 34px var(--shadow); overflow:hidden;
+    display:flex; flex-direction:column;
+  }
+  .pad{padding:3.2cqw 3.6cqw 3cqw;}
+
+  /* ---- header ---- */
+  .head{display:flex; justify-content:space-between; align-items:flex-start; gap:2cqw;}
+  .eyebrow{font-size:clamp(9px,1.02cqw,12.5px); letter-spacing:.18em; text-transform:uppercase;
+    color:var(--accent); font-weight:600;}
+  h1{font-size:clamp(21px,3.05cqw,40px); line-height:1.04; margin:.35cqw 0 0;
+    font-weight:800; letter-spacing:-.015em; text-wrap:balance; max-width:26ch;}
+  .kicker{font-size:clamp(9px,1.02cqw,13px); color:var(--muted); text-align:right;
+    line-height:1.5; padding-top:.4cqw;}
+  .kicker b{color:var(--ink);}
+  .slideno{font-size:clamp(20px,3cqw,40px); font-weight:800; color:var(--line);}
+
+  /* ---- ecg divider ---- */
+  .ecg{display:block; width:100%; height:4.2cqw; margin:1.6cqw 0 0; opacity:.9;}
+  .ecg path{fill:none; stroke:var(--accent); stroke-width:2; stroke-linecap:round; stroke-linejoin:round;}
+
+  /* ---- context cards (slide 1) ---- */
+  .ctx{display:grid; grid-template-columns:1fr 1fr; gap:1.6cqw; margin-top:2cqw;}
+  .ctx .c{border:1px solid var(--line); border-radius:10px; padding:1.5cqw 1.7cqw; background:var(--card-2);}
+  .ctx .c.now{border-left:3px solid var(--steel);}
+  .ctx .c.goal{border-left:3px solid var(--accent);}
+  .ctx .lab{font-size:clamp(9px,.98cqw,12px); text-transform:uppercase; letter-spacing:.14em;
+    color:var(--muted); font-weight:600;}
+  .ctx .txt{font-size:clamp(10px,1.12cqw,14.5px); margin-top:.5cqw; color:var(--ink);}
+
+  /* ---- workstream grid ---- */
+  .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:1.15cqw; margin-top:2.2cqw;}
+  .ws{border:1px solid var(--line); border-radius:9px; padding:1.15cqw 1.3cqw; background:var(--card);
+    display:flex; flex-direction:column; gap:.35cqw;}
+  .ws.hot{border-color:var(--accent); background:var(--accent-soft);}
+  .ws .top{display:flex; align-items:baseline; gap:.6cqw;}
+  .ws .n{font-size:clamp(9px,1.02cqw,13px); color:var(--accent); font-weight:700; min-width:1.6cqw;}
+  .ws .nm{font-size:clamp(11px,1.24cqw,15.5px); font-weight:700; letter-spacing:-.01em; line-height:1.12;}
+  .ws .d{font-size:clamp(8.5px,.94cqw,12px); color:var(--muted); line-height:1.32;}
+  .ws .flag{display:inline-block; font-size:clamp(7.5px,.82cqw,10px); font-weight:700;
+    color:var(--warn); background:var(--warn-soft); border-radius:5px; padding:.1cqw .5cqw;
+    letter-spacing:.04em; margin-left:auto; text-transform:uppercase; white-space:nowrap;}
+
+  /* ---- slide 2 : timeline ---- */
+  .axis{display:flex; justify-content:space-between; margin:1.4cqw 0 .5cqw; padding-left:15cqw;
+    font-size:clamp(8.5px,.92cqw,11px); color:var(--muted);}
+  .tl{display:flex; flex-direction:column; gap:.7cqw;}
+  .row{display:grid; grid-template-columns:15cqw 1fr; align-items:center; gap:1cqw;}
+  .row .plab{font-size:clamp(9px,1.04cqw,13px); font-weight:600; text-align:right; line-height:1.1;}
+  .row .plab i{display:block; font-style:normal; color:var(--muted); font-weight:500;
+    font-size:clamp(8px,.86cqw,10.5px);}
+  .track{position:relative; height:2.5cqw; background:var(--card-2); border-radius:6px; border:1px solid var(--line);}
+  .gl{position:absolute; top:0; bottom:0; width:1px; background:var(--line);}
+  .bar{position:absolute; top:.35cqw; bottom:.35cqw; border-radius:5px;
+    background:linear-gradient(90deg,var(--accent),var(--steel));
+    display:flex; align-items:center; padding:0 .7cqw;
+    font-size:clamp(8px,.86cqw,11px); color:#fff; font-weight:600; white-space:nowrap; overflow:hidden;}
+
+  /* ---- slide 2 : bottom split ---- */
+  .split{display:grid; grid-template-columns:1.15fr 1fr; gap:2.2cqw; margin-top:2.4cqw;}
+  .blk h3{font-size:clamp(9px,.98cqw,12px); text-transform:uppercase; letter-spacing:.14em;
+    color:var(--muted); margin:0 0 1cqw; font-weight:700;}
+  .team{display:flex; flex-wrap:wrap; gap:.6cqw;}
+  .chip{font-size:clamp(9px,1.0cqw,13px); border:1px solid var(--line); border-radius:20px;
+    padding:.4cqw 1cqw; background:var(--card-2);}
+  .chip b{color:var(--accent);}
+  .chip.total{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:700;}
+  .chip.total b{color:#fff;}
+
+  .cost{width:100%; border-collapse:collapse; font-size:clamp(9px,1.02cqw,13px);}
+  .cost td{padding:.5cqw 0; border-bottom:1px solid var(--line);}
+  .cost td.n{text-align:right; color:var(--ink);}
+  .cost td.lbl{color:var(--muted);}
+  .cost tr.sub td{font-weight:800; color:var(--ink); border-bottom:2px solid var(--ink);}
+  .cost tr.sub td.lbl{color:var(--ink);}
+  .cost tr.one td{border-bottom:none; color:var(--muted);}
+
+  .risks{display:flex; align-items:center; flex-wrap:wrap; gap:.7cqw; margin-top:2.4cqw;
+    padding-top:1.8cqw; border-top:1px solid var(--line);}
+  .risks .rl{font-size:clamp(9px,.98cqw,12px); text-transform:uppercase; letter-spacing:.12em;
+    color:var(--muted); font-weight:700; margin-right:.4cqw;}
+  .rk{font-size:clamp(9px,1.0cqw,13px); border:1px solid var(--line); border-radius:6px;
+    padding:.35cqw .9cqw; background:var(--card-2);}
+  .rk.warn{color:var(--warn); border-color:var(--warn); background:var(--warn-soft); font-weight:600;}
+
+  .foot{font-size:clamp(9px,1.0cqw,12.5px); color:var(--muted); margin-top:1.8cqw; line-height:1.5;}
+  .foot b{color:var(--ink);}
+
+  /* ---- slide 3 : optimization tags + roi ---- */
+  .tag{display:inline-block; font-size:clamp(7px,.78cqw,9.5px); font-weight:700; text-transform:uppercase;
+    letter-spacing:.04em; border-radius:5px; padding:.06cqw .5cqw; margin-left:.5cqw; vertical-align:middle;}
+  .tag.hi{color:var(--accent); background:var(--accent-soft);}
+  .tag.mid{color:var(--steel); background:var(--card-2); border:1px solid var(--line);}
+  .tag.lo{color:var(--muted); background:var(--card-2); border:1px solid var(--line);}
+  .roi{margin-top:1.6cqw; border:1px solid var(--accent); border-radius:10px; overflow:hidden;
+    background:var(--accent-soft);}
+  .roi-row{display:flex; justify-content:space-between; align-items:baseline; gap:1cqw;
+    padding:.7cqw 1.3cqw; border-bottom:1px solid var(--line);
+    font-size:clamp(9px,1.02cqw,13px); color:var(--muted);}
+  .roi-row:last-child{border-bottom:none;}
+  .roi-row b{color:var(--ink); font-weight:700;}
+  .roi-row.big{background:var(--accent); }
+  .roi-row.big span{color:#eafffb;}
+  .roi-row.big b{color:#fff; font-size:clamp(13px,1.7cqw,22px); font-weight:800;}
+
+  .deck-cap{font-size:13px; color:var(--muted); text-align:center; max-width:1160px; line-height:1.5;}
+  .deck-cap b{color:var(--ink);}
+</style>
+
+<!-- ============================ SLIDE 1 ============================ -->
+<section class="slide">
+  <div class="pad">
+    <div class="head">
+      <div>
+        <div class="eyebrow">rmsai-relay · scaling plan</div>
+        <h1>From proof-of-concept to a multi-hospital platform</h1>
+      </div>
+      <div class="kicker"><b>100s of hospitals</b><br>high event &amp; call throughput<br>HIPAA-grade · self-healing</div>
+    </div>
+
+    <svg class="ecg" viewBox="0 0 1000 60" preserveAspectRatio="none" aria-hidden="true"><path></path></svg>
+
+    <div class="ctx">
+      <div class="c now">
+        <div class="lab">POC today</div>
+        <div class="txt">Full loop proven on <b>one node</b>, <b>one hospital</b>, synthetic data:
+          ECG classification → graph + vector KB → criticality-gated call → grounded Q&amp;A. Single-instance stores.</div>
+      </div>
+      <div class="c goal">
+        <div class="lab">Production target</div>
+        <div class="txt">Multi-tenant, observable, compliant platform — continuous <b>streaming telemetry</b>,
+          horizontal scale across sites &amp; beds, HA and self-healing throughout.</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="ws"><div class="top"><span class="n mono">01</span><span class="nm">Multi-tenancy &amp; isolation</span></div><div class="d">per-hospital tenancy, KB namespacing, PHI segregation, tenant routing</div></div>
+      <div class="ws hot"><div class="top"><span class="n mono">02</span><span class="nm">Streaming telemetry</span></div><div class="d">edge MQTT → partitioned stream bus, live waveform/vitals MQTT→WebRTC, store-and-forward, sliding-window inference</div></div>
+      <div class="ws"><div class="top"><span class="n mono">03</span><span class="nm">Event bus &amp; processing</span></div><div class="d">Kafka partitioned by hospital+patient, DLQ, idempotency, backpressure</div></div>
+      <div class="ws"><div class="top"><span class="n mono">04</span><span class="nm">Model serving</span></div><div class="d">ECG on Triton/GPU (batch, autoscale), LLM on vLLM cluster, model registry</div></div>
+      <div class="ws"><div class="top"><span class="n mono">05</span><span class="nm">Voice at scale</span></div><div class="d">LiveKit cluster, SIP capacity, K8s worker autoscaling (job-per-room)</div></div>
+      <div class="ws"><div class="top"><span class="n mono">06</span><span class="nm">Data stores HA</span></div><div class="d">Neo4j cluster, Qdrant sharding, time-series DB for waveforms, object store</div></div>
+      <div class="ws"><div class="top"><span class="n mono">07</span><span class="nm">Observability</span></div><div class="d">OpenTelemetry tracing, Prometheus/Grafana, SLOs, PHI-safe logs, drift + stream-lag</div></div>
+      <div class="ws"><div class="top"><span class="n mono">08</span><span class="nm">Reliability</span></div><div class="d">retries, circuit-breakers, graceful degradation, DR/backup, chaos + load tests</div></div>
+      <div class="ws"><div class="top"><span class="n mono">09</span><span class="nm">Security &amp; compliance</span></div><div class="d">HIPAA/SOC2, BAAs, KMS encryption, RBAC/SSO, de-id validation, pen-test</div></div>
+      <div class="ws"><div class="top"><span class="n mono">10</span><span class="nm">Clinical / regulatory</span><span class="flag">⚠ SaMD</span></div><div class="d">guardrail eval, red-team, clinical review, FDA-510(k) path if decision-support</div></div>
+      <div class="ws"><div class="top"><span class="n mono">11</span><span class="nm">Integration</span></div><div class="d">FHIR/HL7 EHR at scale, per-site device gateways, edge deploy for on-prem PHI</div></div>
+      <div class="ws"><div class="top"><span class="n mono">12</span><span class="nm">MLOps &amp; DevEx</span></div><div class="d">retraining, eval, drift detection, A/B; K8s + Terraform, CI/CD, multi-region</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ SLIDE 2 ============================ -->
+<section class="slide">
+  <div class="pad">
+    <div class="head">
+      <div>
+        <div class="eyebrow">rmsai-relay · scaling plan</div>
+        <h1>Phased plan, team &amp; run-rate</h1>
+      </div>
+      <div class="slideno mono">02</div>
+    </div>
+
+    <svg class="ecg" viewBox="0 0 1000 60" preserveAspectRatio="none" aria-hidden="true"><path></path></svg>
+
+    <div class="axis mono"><span>0</span><span>3</span><span>6</span><span>9</span><span>12</span><span>15 mo</span></div>
+    <div class="tl">
+      <div class="row"><div class="plab">Foundations<i>0–2</i></div><div class="track" data-gl></div></div>
+      <div class="row"><div class="plab">Scalable core<i>2–6</i></div><div class="track" data-gl></div></div>
+      <div class="row"><div class="plab">Voice + clinical loop<i>4–8</i></div><div class="track" data-gl></div></div>
+      <div class="row"><div class="plab">Obs · reliability · compliance<i>5–10</i></div><div class="track" data-gl></div></div>
+      <div class="row"><div class="plab">MLOps + EHR integration<i>7–12</i></div><div class="track" data-gl></div></div>
+      <div class="row"><div class="plab">Pilot → GA<i>10–15</i></div><div class="track" data-gl></div></div>
+    </div>
+
+    <div class="split">
+      <div class="blk">
+        <h3>Team · ~18–24 cross-functional</h3>
+        <div class="team">
+          <span class="chip">Platform / SRE <b>5</b></span>
+          <span class="chip">Backend <b>5</b></span>
+          <span class="chip">ML / MLOps <b>3</b></span>
+          <span class="chip">Voice <b>2</b></span>
+          <span class="chip">Data eng <b>2</b></span>
+          <span class="chip">Security <b>2</b></span>
+          <span class="chip">Frontend <b>2</b></span>
+          <span class="chip">QA <b>2</b></span>
+          <span class="chip">EM / PM / Arch <b>3</b></span>
+          <span class="chip">Clinical SME <b>1–2</b></span>
+          <span class="chip total">≈ 18–24</span>
+        </div>
+      </div>
+      <div class="blk">
+        <h3>Monthly run-rate · 100s-hospital scale</h3>
+        <table class="cost mono">
+          <tr><td class="lbl">GPU — LLM + Whisper STT + ECG</td><td class="n">$40–90k</td></tr>
+          <tr><td class="lbl">Managed data + time-series</td><td class="n">$15–35k</td></tr>
+          <tr><td class="lbl">Streaming / edge bandwidth</td><td class="n">$5–15k</td></tr>
+          <tr><td class="lbl">Telephony / LiveKit</td><td class="n">$5–20k</td></tr>
+          <tr><td class="lbl">Observability</td><td class="n">$5–15k</td></tr>
+          <tr class="sub"><td class="lbl">Infra subtotal</td><td class="n">~$70–175k/mo</td></tr>
+          <tr class="one"><td class="lbl">Dev AI tooling · one-time audit + pen-test</td><td class="n">~$2k · $50–150k</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="risks">
+      <span class="rl">Long poles</span>
+      <span class="rk warn">⚠ SaMD / regulatory</span>
+      <span class="rk">Clinical validation</span>
+      <span class="rk">PHI compliance sign-off</span>
+      <span class="rk">Self-hosted AI only → GPU cost</span>
+    </div>
+    <div class="foot">Order-of-magnitude for planning; assumes the POC de-risked the core loop. <b>De-risk with a 2–3 hospital pilot before GA.</b></div>
+  </div>
+</section>
+
+<!-- ============================ SLIDE 3 ============================ -->
+<section class="slide">
+  <div class="pad">
+    <div class="head">
+      <div>
+        <div class="eyebrow">rmsai-relay · scaling plan</div>
+        <h1>AI-tooling headcount optimization &amp; dev-tool NRE</h1>
+      </div>
+      <div class="slideno mono">03</div>
+    </div>
+
+    <svg class="ecg" viewBox="0 0 1000 60" preserveAspectRatio="none" aria-hidden="true"><path></path></svg>
+
+    <div class="split">
+      <div class="blk">
+        <h3>Per-area optimization · baseline → net</h3>
+        <table class="cost mono">
+          <tr><td class="lbl">Backend services <span class="tag hi">high</span></td><td class="n">5 → 3–3.5</td></tr>
+          <tr><td class="lbl">Platform / Infra / SRE <span class="tag mid">med-hi</span></td><td class="n">5 → 4</td></tr>
+          <tr><td class="lbl">ML / MLOps <span class="tag lo">low-med</span></td><td class="n">3 → 2.5</td></tr>
+          <tr><td class="lbl">QA / automation <span class="tag hi">high</span></td><td class="n">2 → 1</td></tr>
+          <tr><td class="lbl">Frontend <span class="tag hi">high</span></td><td class="n">2 → 1–1.5</td></tr>
+          <tr><td class="lbl">Data eng <span class="tag hi">high</span></td><td class="n">2 → 1.5</td></tr>
+          <tr><td class="lbl">Voice / telephony <span class="tag mid">med</span></td><td class="n">2 → 1.5</td></tr>
+          <tr><td class="lbl">Security / Compliance <span class="tag lo">low</span></td><td class="n">2 → 1.5</td></tr>
+          <tr><td class="lbl">EM / PM / Architect <span class="tag lo">low</span></td><td class="n">3 → 2.5</td></tr>
+          <tr><td class="lbl">Clinical / Regulatory SME <span class="tag lo">none</span></td><td class="n">1–2 → 1–2</td></tr>
+          <tr class="sub"><td class="lbl">Team · optimized</td><td class="n">~27 → ~19–20</td></tr>
+        </table>
+      </div>
+      <div class="blk">
+        <h3>Dev-tool NRE · per annum</h3>
+        <table class="cost mono">
+          <tr><td class="lbl">Claude Code · Max seat (light)</td><td class="n">~$100/mo</td></tr>
+          <tr><td class="lbl">Claude Code · Max 20x (heavy, capped)</td><td class="n">~$200/mo</td></tr>
+          <tr><td class="lbl">Dual-stack / metered overage</td><td class="n">~$300–400/mo</td></tr>
+          <tr class="sub"><td class="lbl">~20 seats · NRE / yr</td><td class="n">~$30–75k</td></tr>
+        </table>
+        <div class="roi">
+          <div class="roi-row"><span>FTE offset</span><b>~7–8 × ~$200k ≈ $1.4–1.6M/yr</b></div>
+          <div class="roi-row"><span>Tool NRE</span><b>~$50k/yr mid-case</b></div>
+          <div class="roi-row big"><span>Return</span><b>≈ 30×</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="foot">Biggest wins: <b>Backend, QA, Frontend, Data eng, Infra.</b> ~Zero in
+      <b>Clinical/Regulatory</b> and little in <b>EM/PM</b> and <b>Security-audit</b> — the same long
+      poles that dominate this product's risk. Saved FTE isn't free: AI code raises the senior-review load.
+      Planning-grade estimates.</div>
+  </div>
+</section>
+
+<div class="deck-cap">rmsai-relay production plan · full detail in <b>docs/production-plan.md</b></div>
+
+<script>
+  // ECG trace divider — generated so it tiles cleanly at any width.
+  function ecgPath(w, h, beats){
+    const m = h*0.5, bw = w/beats; let d = `M0 ${m}`;
+    for(let i=0;i<beats;i++){
+      const x = i*bw;
+      d += ` L${x+bw*0.16} ${m}`;
+      d += ` Q${x+bw*0.23} ${m-h*0.15} ${x+bw*0.30} ${m}`;      // P
+      d += ` L${x+bw*0.40} ${m}`;
+      d += ` L${x+bw*0.43} ${m+h*0.16} L${x+bw*0.46} ${m-h*0.46} L${x+bw*0.49} ${m+h*0.26} L${x+bw*0.52} ${m}`; // QRS
+      d += ` L${x+bw*0.64} ${m} Q${x+bw*0.75} ${m-h*0.24} ${x+bw*0.86} ${m} L${x+bw} ${m}`; // T
+    }
+    return d;
+  }
+  document.querySelectorAll('svg.ecg path').forEach(p=>p.setAttribute('d', ecgPath(1000,60,9)));
+
+  // Timeline bars over a 0–15 month axis.
+  const phases = [[0,2],[2,6],[4,8],[5,10],[7,12],[10,15]];
+  const labels = ['','','','','','GA'];
+  const MAX = 15;
+  document.querySelectorAll('.track[data-gl]').forEach((t,i)=>{
+    for(let mo=0; mo<=MAX; mo+=3){ const g=document.createElement('div'); g.className='gl';
+      g.style.left=(mo/MAX*100)+'%'; t.appendChild(g); }
+    const [s,e]=phases[i]; const b=document.createElement('div'); b.className='bar';
+    b.style.left=(s/MAX*100)+'%'; b.style.width=((e-s)/MAX*100)+'%'; b.textContent=labels[i];
+    t.appendChild(b);
+  });
+</script>
