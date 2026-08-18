@@ -82,6 +82,15 @@ def test_root_serves_worklist_app(tmp_path):
     assert res.status_code == 200 and "rmsai worklist" in res.text
 
 
+def test_worklist_app_is_never_cached(tmp_path):
+    # The SPA is served from disk with no build step or content hash, so a cached app.js silently
+    # runs stale client code against a current worker — a failure mode that leaves no trace in any
+    # log and survives a reload.
+    client, _ = _client(tmp_path)
+    for path in ("/", "/app.js"):
+        assert client.get(path).headers["cache-control"] == "no-store", path
+
+
 def test_session_url_defaults_to_internal_livekit_url(tmp_path):
     # No LIVEKIT_PUBLIC_URL ⇒ browser gets the internal URL (identical to pre-deploy behavior).
     client, _ = _client(tmp_path)

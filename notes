@@ -1,4 +1,5 @@
 Demo POC Setup:
+Date: 19, Aug 2026
 Date: 29, June 2026
 ===================
 Open 3 terminals, On all terminals:
@@ -6,34 +7,36 @@ Open 3 terminals, On all terminals:
 conda activate rmsrelay_env
 
 Terminal A:
-under infra directory
+
+#under infra directory
 
 docker compose restart
 docker ps => ensure qdrant, redis, neo4j
 
-under project dir
+#under project dir
+#start livekit also
+
+docker compose -f infra/docker-compose.yml up -d livekit
+make setup-all
 uv run python -m cli.voice_worker dev
 
 Terminal B:
-for generating hdf5 and publishing
+uv run --extra app --extra livekit python -m cli.gateway --port 8080
+
+#Now launch/refresh browser (Use MS Edge):
+http://localhost:8080/
+#Give permissions to MIC and Unmute the Mic
+#PIN: 1234 (Configurable in .env)
+
+Terminal C:
+#for generating hdf5 and publishing
 
 uv run python external/ecgtranscnn/scripts/generate_inference_data.py
 uv run python -m cli.ingest     --file data/inference/<REPLACE>.h5  --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt     --emit bus --stream rmsai.events
 
-Terminal C:
-for consuming events from redis -
+#for consuming events from redis -
 
 uv run python -m cli.consume --channel voice --caller livekit --transport webrtc --once
-
-Copy the URL and Token from any event in the terminal log. Every event produces a new Token.
-
-Web Browser:
-~~~~~~~~~~~~
-https://meet.livekit.io/?tab=custom
-Paste the URL and the Token and Connect
-
-Give permissions to MIC and Unmute the Mic
-Speak the PIN: 1234 (Configurable in .env)
 
 Q&A general:
 ~~~~~~~~~~~~

@@ -170,6 +170,23 @@ def test_vitals_intent_when_patient_scoped(query):
     assert intent == ("vitals_at_patient_last_event", {"patient_id": "PT7878"})
 
 
+def test_vitals_intent_prefers_the_selected_event_over_the_patients_latest():
+    # The companion app scopes chat to a worklist row. Answering from the patient's *latest* event
+    # silently describes a different rhythm whenever an older row is open (selected VF -> answered
+    # about a newer VT), so a selection must win over the patient-latest template.
+    assert match_intent("what were the vitals at the time of the event?", now=NOW,
+                        patient_ref="PT7878", event_ref="evt-9") == (
+        "vitals_at_selected_event", {"event_uuid": "evt-9"})
+    # An explicitly named bed still wins — the clinician asked about a different target on purpose.
+    assert match_intent("what were the vitals at the event for the patient in Bed Unit1-Bed01?",
+                        now=NOW, patient_ref="PT7878", event_ref="evt-9") == (
+        "vitals_for_bed_last_event", {"bed": "Unit1-Bed01"})
+    # No selection (SIP call, CLI) -> unchanged behaviour.
+    assert match_intent("what were the vitals at the time of the event?", now=NOW,
+                        patient_ref="PT7878") == (
+        "vitals_at_patient_last_event", {"patient_id": "PT7878"})
+
+
 def test_vitals_intent_requires_patient_scope():
     # No patient in scope (operational CLI path) -> vitals question must NOT route to the
     # patient-scoped template; it falls through to None (template/Cypher fallback handles it).

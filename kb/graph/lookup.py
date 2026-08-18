@@ -39,14 +39,18 @@ _REPORT = re.compile(r"\breport\b|\banalysis\b", re.IGNORECASE)
 _THIS_PATIENT = re.compile(r"\b(this|current|same) patient(?:'s|s)?\b", re.IGNORECASE)
 
 
-def match_intent(query: str, *, now: float, patient_ref: str | None = None) -> tuple[str, dict] | None:
+def match_intent(query: str, *, now: float, patient_ref: str | None = None,
+                 event_ref: str | None = None) -> tuple[str, dict] | None:
     """Map a natural-language query to (template_name, params), or None.
 
     Covers the operational matrix (T1–T10 + traversals). `patient_ref` scopes the session-relative
-    vitals intent ("the event" = that patient's latest); bed/event-type-scoped intents read their
-    target from the query text, so they work on the inbound text path too. Rules are ordered most-
-    to least-specific (first match wins). The query is first normalized for spoken/STT phrasing
-    (spelled acronyms, number-word bed labels) so voice and typed queries route identically.
+    vitals intent; `event_ref` (the worklist row the companion app has selected) makes "the event"
+    mean *that* event rather than the patient's latest — without it, asking about a selected VF row
+    answers from the patient's most recent event, which may be a different rhythm entirely.
+    Bed/event-type-scoped intents read their target from the query text, so they work on the inbound
+    text path too. Rules are ordered most- to least-specific (first match wins). The query is first
+    normalized for spoken/STT phrasing (spelled acronyms, number-word bed labels) so voice and typed
+    queries route identically.
     """
     query = normalize_spoken_query(query)
     q = query.lower()
@@ -73,10 +77,13 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None) -> t
     if etype and _ALL_PATIENTS.search(q):
         return "patients_with_event_type", {"event_type": etype}
 
-    # T5 — vitals at the event: bed-scoped if a bed is named, else the session patient's latest.
+    # T5 — vitals at the event: a named bed wins (an explicit target beats the session's), then the
+    # selected worklist event, then the session patient's latest.
     if _VITALS.search(q) and "trend" not in q:
         if bed:
             return "vitals_for_bed_last_event", {"bed": bed}
+        if event_ref:
+            return "vitals_at_selected_event", {"event_uuid": event_ref}
         if patient_ref:
             return "vitals_at_patient_last_event", {"patient_id": patient_ref}
 

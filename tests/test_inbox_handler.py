@@ -33,9 +33,12 @@ class _FakeOrch:
 class _FakeWorking:
     def __init__(self) -> None:
         self.scoped: dict[str, str | None] = {}
+        self.events: dict[str, str | None] = {}
 
-    def set_authenticated(self, session_id: str, *, patient_ref: str | None = None) -> None:
+    def set_authenticated(self, session_id: str, *, patient_ref: str | None = None,
+                          event_ref: str | None = None) -> None:
         self.scoped[session_id] = patient_ref
+        self.events[session_id] = event_ref
 
 
 @pytest.fixture()
@@ -74,6 +77,9 @@ def test_selection_scopes_to_patient_then_answers(handler, tmp_path):
     patient = h.set_selection(ROOM, "evt-1")
     assert patient == "PT1155"
     assert working.scoped[ROOM] == "PT1155"  # orchestrator turns are scoped to this patient
+    # ...and to the selected EVENT, so "the event" in a later question resolves to this worklist
+    # row rather than the patient's newest event (which is often a different rhythm entirely).
+    assert working.events[ROOM] == "evt-1"
 
     reply = h.respond("what were the vitals at the event?", session_id=ROOM)
     assert reply == "Grounded: what were the vitals at the event?"

@@ -65,6 +65,19 @@ TEMPLATES: dict[str, str] = {
                e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
                e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
     """,
+    # Vitals snapshot for the event the companion app has *selected* — the same shape as
+    # `vitals_at_patient_last_event`, keyed by event uuid instead of "the patient's latest", so a
+    # chat scoped to an older worklist row answers about that row's rhythm and not a newer one.
+    "vitals_at_selected_event": """
+        MATCH (e:MonitoredEvent {uuid: $event_uuid})
+        OPTIONAL MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
+        RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
+               e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
+               e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+    """,
     # Vitals snapshot for a bed's most recent event — the bed-scoped form of T5 ("vitals at the
     # event for the patient in Bed xx", where "the event" is that bed's latest MonitoredEvent).
     "vitals_for_bed_last_event": """

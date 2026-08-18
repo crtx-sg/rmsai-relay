@@ -204,7 +204,10 @@ class InboxHandler(OrchestratorHandler):
             except Exception:  # noqa: BLE001 - a graph hiccup must not break selection
                 patient_ref = event_id
         self._selected[session_id] = (event_id, patient_ref)
-        self.working.set_authenticated(session_id, patient_ref=patient_ref)  # auth-by-membership
+        # auth-by-membership; `event_ref` scopes "the event" in later questions to THIS worklist row
+        # rather than the patient's most recent event (they differ whenever the clinician opens an
+        # older row — the answer would silently describe a different rhythm).
+        self.working.set_authenticated(session_id, patient_ref=patient_ref, event_ref=event_id)
         print(f"[worker] inbox selection: {session_id} -> event {event_id} patient {patient_ref}",
               flush=True)
         return patient_ref

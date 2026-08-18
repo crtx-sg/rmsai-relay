@@ -44,11 +44,14 @@ class WorkingMemory:
         self.save(state)
         return state
 
-    def set_authenticated(self, session_id: str, *, patient_ref: str | None = None) -> None:
+    def set_authenticated(self, session_id: str, *, patient_ref: str | None = None,
+                          event_ref: str | None = None) -> None:
         state = self.get_or_create(session_id)
         state.authenticated = True
         if patient_ref is not None:
             state.patient_ref = patient_ref
+        if event_ref is not None:
+            state.event_ref = event_ref
         self.save(state)
 
     def clear(self, session_id: str) -> None:

@@ -27,7 +27,11 @@ from livekit.agents import llm as lkllm  # noqa: E402
 
 from voice.livekit_agent import (  # noqa: E402
     build_handler,
+    build_room_input_options,
     build_worker_options,
+    duplicate_agent_should_yield,
+    ptt_command,
+    relink_target,
     emit_tts_audio,
     last_user_text,
     make_agent_class,
@@ -58,6 +62,58 @@ def test_worker_uses_named_explicit_dispatch():
     # automatic dispatch, so guard the name is actually set from config.
     assert build_worker_options(_CONFIGURED).agent_name == _CONFIGURED.livekit_agent_name
     assert build_worker_options(_CONFIGURED).agent_name  # non-empty
+
+
+def test_inbox_session_survives_a_clinician_reconnect():
+    # The app mints a NEW identity per /session, so a reload disconnects the old participant
+    # (CLIENT_INITIATED). With the SDK default the AgentSession would close, detaching text_input_cb
+    # -> every later chat message is dropped ("no callback attached") and, because the agent is
+    # still a room participant, create_agent_dispatch won't re-wire it. The persistent inbox room
+    # must therefore opt out; per-event call rooms keep the default (hang up == end of call).
+    cb = object()
+    inbox = build_room_input_options(cb, is_inbox=True)
+    assert inbox.close_on_disconnect is False
+    assert inbox.text_input_cb is cb
+    assert build_room_input_options(cb, is_inbox=False).close_on_disconnect is True
+
+
+def test_ptt_control_frames_are_recognised():
+    # The button delimits the audio turn (the inbox runs manual end-of-turn detection), so these
+    # two messages must be routed to the transport, never to handler.respond — which would answer
+    # "/ptt-end" as if the clinician had asked a question.
+    assert ptt_command("/ptt-start") == "start"
+    assert ptt_command("  /ptt-end  ") == "end"
+    assert ptt_command("/select abc") is None
+    assert ptt_command("What were the vitals at the time of the event?") is None
+    assert ptt_command("") is None
+
+
+def test_audio_relinks_to_a_reconnected_clinician():
+    # RoomIO pins its audio input to ONE identity, once. The app mints a new clinician-<hex> per
+    # /session, so after a reload the mic track belongs to an identity the input isn't listening to
+    # -> voice dies silently while text chat (room-scoped) keeps working.
+    standard = rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
+    assert relink_target("clinician-old", "clinician-new", standard) == "clinician-new"
+    assert relink_target(None, "clinician-new", standard) == "clinician-new"
+    assert relink_target("clinician-new", "clinician-new", standard) is None  # already linked
+    # Never follow another agent into the room — that would feed our own TTS back into STT.
+    assert relink_target("clinician-old", "rmsai-agent",
+                         rtc.ParticipantKind.PARTICIPANT_KIND_AGENT) is None
+    # A phone caller (SIP) is a legitimate audio source for the per-event call rooms.
+    assert relink_target(None, "sip-caller", rtc.ParticipantKind.PARTICIPANT_KIND_SIP) == "sip-caller"
+
+
+def test_duplicate_agent_tiebreak_keeps_exactly_one():
+    # Two dispatches racing put two agents in the inbox room and every reply is doubled. Both jobs
+    # run this check independently, so the verdict must be asymmetric: the higher identity yields,
+    # the lower one stays. A symmetric "someone else is here, I'll leave" would empty the room.
+    assert duplicate_agent_should_yield("agent-B", ["agent-A"])
+    assert not duplicate_agent_should_yield("agent-A", ["agent-B"])
+    assert not duplicate_agent_should_yield("agent-A", [])
+    assert not duplicate_agent_should_yield("agent-A", ["agent-A"])  # itself, if ever listed
+    # Three-way race still converges on the single lowest identity.
+    assert not duplicate_agent_should_yield("agent-A", ["agent-B", "agent-C"])
+    assert duplicate_agent_should_yield("agent-C", ["agent-A", "agent-B"])
 
 
 def test_run_agent_requires_livekit_config():

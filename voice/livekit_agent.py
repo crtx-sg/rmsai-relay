@@ -186,7 +186,13 @@ def make_speech_bridges():
             frame = rtc.combine_audio_frames(buffer)
             wav = frame.to_wav_bytes()  # WAV so faster-whisper can decode the buffer
             loop = asyncio.get_running_loop()
+            # Log both ends of the STT call: reaching here proves audio flowed all the way through
+            # VAD segmentation, and the returned text separates "heard nothing" (silence/mic) from
+            # "backend returned nothing" (STT). Duration is the audio the segment actually carried.
+            print(f"[worker] stt: transcribing {frame.duration:.2f}s of audio "
+                  f"({self._adapter.__class__.__name__})", flush=True)
             text = await loop.run_in_executor(None, self._adapter.transcribe, wav)
+            print(f"[worker] stt: -> {text!r}", flush=True)
             lang = language if isinstance(language, str) else "en"
             return lkstt.SpeechEvent(
                 type=lkstt.SpeechEventType.FINAL_TRANSCRIPT,
@@ -348,9 +354,98 @@ def _build_inbox_room(ctx, config, loop):  # pragma: no cover - needs a live Liv
     return handler, greeting, cleanup
 
 
+#: Push-to-talk control messages the app sends on the `lk.chat` text channel (same proven transport
+#: as `/select`; raw data packets don't reach the agent worker). They frame an audio turn explicitly.
+_PTT_START, _PTT_END = "/ptt-start", "/ptt-end"
+
+
+def ptt_command(text: str) -> str | None:
+    """Classify a chat message as a push-to-talk control frame: `"start"`, `"end"`, or `None`.
+
+    These are transport-level, not conversation: they must be intercepted *before* the text reaches
+    `handler.respond`, or the orchestrator would answer "/ptt-end" as if it were a question.
+    """
+    stripped = (text or "").strip()
+    if stripped == _PTT_START:
+        return "start"
+    if stripped == _PTT_END:
+        return "end"
+    return None
+
+
+#: How long a freshly-connected inbox job waits for the room roster to settle before checking for a
+#: duplicate agent. Two dispatches racing (gateway `/session` + the worker's auto-redispatch) join
+#: within milliseconds of each other, so the check must not run on an empty roster.
+_DUP_AGENT_SETTLE_S = 2.0
+
+
+def duplicate_agent_should_yield(my_identity: str, agent_identities) -> bool:
+    """True when *this* agent should leave because another agent is already serving the room.
+
+    `create_agent_dispatch` is idempotent, but only against state it can see: two dispatches issued
+    in the same instant (the gateway's `/session` and the worker's auto-redispatch) both look at a
+    room with no agent and no job yet, so both fire. Two agents then answer every message — the
+    clinician hears the selected event spoken twice and gets every chat reply twice.
+
+    The tiebreak is the identity sort order, so both sides reach the same verdict independently and
+    exactly one survives: an agent yields only to a *lower* identity. Symmetric "someone else is
+    here, I'll go" would empty the room.
+    """
+    others = [i for i in agent_identities if i and i != my_identity]
+    return any(i < my_identity for i in others)
+
+
+#: Participant kinds RoomIO is willing to link its audio input to (the SDK's
+#: `DEFAULT_PARTICIPANT_KINDS`): STANDARD (the app), SIP (a phone caller), CONNECTOR. Notably NOT
+#: AGENT — linking to another agent would feed our own output back in.
+_LINKABLE_KINDS = (0, 3, 5)
+
+
+def relink_target(linked_identity: str | None, new_identity: str, kind: int) -> str | None:
+    """Identity the room's audio input should switch to when `new_identity` joins, or `None`.
+
+    RoomIO links its **audio** input to exactly one participant identity, and it does that once:
+    `_init_task` awaits the first participant, calls `set_participant(identity)` and exits. The
+    connect handler then early-returns for every later participant because an identity is already
+    pinned. The app mints a fresh `clinician-<hex>` on every `/session`, so after any reload the
+    audio input stays bound to the *disconnected* identity and the new browser's mic track is never
+    subscribed — voice goes silently dead (no STT, no log) while text chat keeps working, because
+    the text stream handler is room-scoped, not participant-scoped.
+
+    Returns the new identity when a re-link is needed. One clinician at a time per inbox room is
+    assumed: the newest join wins.
+    """
+    if kind not in _LINKABLE_KINDS or not new_identity:
+        return None
+    if linked_identity == new_identity:
+        return None  # already linked (e.g. RoomIO's own first-participant handling won the race)
+    return new_identity
+
+
+def build_room_input_options(text_input_cb, *, is_inbox: bool):
+    """`RoomInputOptions` for a job, with session teardown gated on the room *kind*.
+
+    The inbox room is PERSISTENT and the app takes a **fresh identity** on every `/session` (page
+    reload / re-login), so the previous `clinician-*` participant leaves CLIENT_INITIATED. The SDK
+    default (`close_on_disconnect=True`) closes the `AgentSession` on that — which detaches
+    `text_input_cb`, so every later chat message is dropped with *"ignoring text stream with topic
+    'lk.chat', no callback attached"* and the app gets no reply. The job itself keeps running and
+    the agent stays a room participant, so `create_agent_dispatch` (a deliberate no-op when an agent
+    is present) can't re-wire it either: in-app chat is dead until the worker is restarted. Keeping
+    the session open across reconnects fixes it — RoomIO re-links audio to the new participant, and
+    the text path is room-scoped so it never needed re-linking.
+
+    Per-event call rooms keep the default: there the caller hanging up *should* end the session.
+    """
+    from livekit.agents import RoomInputOptions  # noqa: PLC0415
+
+    return RoomInputOptions(text_input_cb=text_input_cb, close_on_disconnect=not is_inbox)
+
+
 async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit room
     """Worker job: join the room, then run STT -> Handler -> TTS until the call ends."""
-    from livekit.agents import AgentSession, RoomInputOptions, TurnHandlingOptions  # noqa: PLC0415
+    from livekit.agents import AgentSession, TurnHandlingOptions  # noqa: PLC0415
+    from livekit.agents.voice.room_io import TextInputEvent as _TextInputEvent  # noqa: PLC0415
 
     quiet_noisy_loggers()  # presidio/whisper/piper/etc. flood the console at DEBUG
     config = DEFAULT
@@ -388,6 +483,20 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
 
     await ctx.connect()
     print(f"[worker] joined room {ctx.room.name!r} over WebRTC — {kind}", flush=True)
+    if is_inbox:
+        # Last line of defence against a dispatch race putting two agents in the persistent inbox
+        # room (every reply doubled). Dispatch-time de-duplication can't see a concurrent dispatch;
+        # here we can see the other agent as a participant.
+        from livekit import rtc as _rtc  # noqa: PLC0415
+
+        await asyncio.sleep(_DUP_AGENT_SETTLE_S)
+        agents = [p.identity for p in ctx.room.remote_participants.values()
+                  if p.kind == _rtc.ParticipantKind.PARTICIPANT_KIND_AGENT]
+        if duplicate_agent_should_yield(ctx.room.local_participant.identity, agents):
+            print(f"[worker] duplicate agent in {ctx.room.name!r} (also: {agents}) — yielding, "
+                  f"this job will exit so exactly one agent serves the room", flush=True)
+            ctx.shutdown(reason="duplicate agent")
+            return
     vad = (ctx.proc.userdata or {}).get("vad") or silero.VAD.load()
     session = AgentSession(
         stt=LocalSTT(stt_adapter),  # session + vad wrap the non-streaming STT for endpointing
@@ -400,14 +509,90 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         # no-wake-word turn would still hit the KB/LLM (and could be spoken) before the wake gate
         # drops it. Off => the gate runs first; ignored turns do no work. (Option is a mapping, not
         # a bool — the SDK resolves it via `{**defaults, **config}`.)
-        turn_handling=TurnHandlingOptions(preemptive_generation={"enabled": False}),
+        #
+        # In the inbox the *button* delimits the turn, so end-of-turn is "manual": VAD endpointing
+        # would need ~0.5s of trailing silence to fire, but the app mutes the mic the instant the
+        # clinician releases the button — the SFU then stops forwarding audio, no silence ever
+        # reaches the VAD, the turn never closes and STT is never invoked (symptom: a held-and-
+        # spoken question produces NOTHING in the worker log). `/ptt-end` commits the turn instead.
+        turn_handling=TurnHandlingOptions(
+            preemptive_generation={"enabled": False},
+            **({"turn_detection": "manual"} if is_inbox else {}),
+        ),
     )
+    # Log every finalized transcript: the one place that proves STT actually ran (and what it heard)
+    # when a voice turn produces no answer. Text-chat turns don't pass through STT, so this is
+    # audio-only. Pseudonymous by construction; synthetic speech only (hard rules #5/#6).
+    session.on("user_input_transcribed",
+               lambda ev: print(f"[worker] stt transcript: {getattr(ev, 'transcript', '')!r}"
+                                f" (final={getattr(ev, 'is_final', None)})", flush=True))
+
+    def _link_audio(participant) -> None:
+        """Point RoomIO's audio input at `participant` if it isn't already (see `relink_target`)."""
+        if participant is None:
+            return
+        try:
+            room_io = session.room_io
+            linked = room_io.linked_participant
+            target = relink_target(linked.identity if linked else None,
+                                   participant.identity, participant.kind)
+            if target is None:
+                return
+            room_io.set_participant(target)
+            print(f"[worker] audio input re-linked to {target}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - never let a room/text event kill the session
+            print(f"[worker] audio re-link failed: {exc}", flush=True)
+
+    async def _handle_ptt(action: str, participant=None) -> None:
+        """Open/close an inbox audio turn on the app's button press/release.
+
+        Press: link audio to whoever pressed the button, attach the audio input and drop whatever
+        was buffered (a half-turn from a previous press, or the tail of our own TTS). Release:
+        detach the input and `commit_user_turn()`, which pushes the silence that flushes our
+        non-streaming STT (the SDK only does that when the input is detached — see
+        `audio_recognition.commit_user_turn`) and then generates the reply.
+
+        The press-time re-link is the belt to the `participant_connected` braces: it keys off the
+        participant that is about to publish the mic track, so it holds even if the join event was
+        missed (agent dispatched into a room the clinician was already in).
+
+        Best-effort: a failed commit must not kill the session, it just costs one turn.
+        """
+        try:
+            if action == "start":
+                _link_audio(participant)
+                session.input.set_audio_enabled(True)
+                session.clear_user_turn()
+                print(f"[worker] ptt: mic open (audio_enabled="
+                      f"{session.input.audio_enabled}, linked="
+                      f"{getattr(session.room_io.linked_participant, 'identity', None)})", flush=True)
+                return
+            session.input.set_audio_enabled(False)
+            # The SDK's 2s default assumes a streaming cloud STT; ours is non-streaming and only
+            # starts once the flush silence lands (Whisper on CPU / an ElevenLabs round trip), so a
+            # short timeout would report "nothing heard" for a turn that was about to transcribe.
+            transcript = await session.commit_user_turn(transcript_timeout=15.0)
+            print(f"[worker] ptt: turn committed -> {transcript!r}", flush=True)
+            if not transcript:
+                # Nothing transcribed: the clinician gets silence otherwise, which is
+                # indistinguishable from a broken worker.
+                await ctx.room.local_participant.send_text(
+                    "I didn't catch that — hold the button, speak, then release.", topic="lk.chat"
+                )
+        except Exception as exc:  # noqa: BLE001 - one dropped turn beats a dead session
+            print(f"[worker] ptt: {action} failed: {exc}", flush=True)
+
     # Text chat (meet.livekit.io chat box) -> text-only reply. Bypasses generate_reply (and thus
     # TTS), so a typed question gets a typed answer on the chat topic, never spoken audio. This also
     # bypasses the wake-word gate (that lives in on_user_turn_completed, audio-only).
     async def _text_only_reply(sess, ev) -> None:
         text = (getattr(ev, "text", "") or "").strip()
         if not text:
+            return
+        # Push-to-talk framing (transport, not conversation): the button open/closes the audio turn.
+        # Must be intercepted before handler.respond, which would otherwise answer the control word.
+        if is_inbox and (ptt := ptt_command(text)) is not None:
+            await _handle_ptt(ptt, getattr(ev, "participant", None))
             return
         print(f"[worker] text chat heard: {text!r}", flush=True)
         loop = asyncio.get_running_loop()
@@ -429,12 +614,56 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         print(f"[worker] text chat reply: {reply!r}", flush=True)
         await ctx.room.local_participant.send_text(reply, topic="lk.chat")
 
+    # Own the `lk.chat` topic ourselves, *before* the session starts (only one handler per topic is
+    # allowed, and first registration wins — RoomIO's own attempt then logs "already set, ignoring").
+    # Two reasons this beats letting RoomIO deliver the text:
+    #   1. Visibility. Every inbound message is logged with its sender the moment it lands, so
+    #      "did the app's control frame reach the worker?" is answerable from the console instead of
+    #      inferred from a missing downstream effect.
+    #   2. RoomIO drops text from any participant that isn't the linked one (room_io.py:439-442).
+    #      The app reconnects under a new identity on every /session, so that filter can silently
+    #      swallow chat from a clinician the audio input hasn't re-linked to yet.
+    _chat_tasks: set = set()
+
+    def _on_chat_text(reader, participant_identity: str) -> None:
+        async def _read() -> None:
+            try:
+                text = await reader.read_all()
+                print(f"[worker] lk.chat rx from {participant_identity}: {text!r}", flush=True)
+                participant = ctx.room.remote_participants.get(participant_identity)
+                await _text_only_reply(session, _TextInputEvent(
+                    text=text, info=reader.info, participant=participant))
+            except Exception:  # noqa: BLE001 - one bad message must not kill the chat path
+                import traceback  # noqa: PLC0415
+
+                print(f"[worker] lk.chat handler failed:\n{traceback.format_exc()}", flush=True)
+
+        task = asyncio.create_task(_read())
+        _chat_tasks.add(task)
+        task.add_done_callback(_chat_tasks.discard)
+
+    try:
+        ctx.room.register_text_stream_handler("lk.chat", _on_chat_text)
+        print("[worker] lk.chat handler registered (worker-owned)", flush=True)
+    except ValueError as exc:  # pragma: no cover - someone else already owns the topic
+        print(f"[worker] lk.chat handler NOT registered ({exc}); falling back to RoomIO's", flush=True)
+
     await session.start(
         agent=HandlerAgent(handler, session_id=ctx.room.name, greeting=greeting,
                            push_to_talk=is_inbox),
         room=ctx.room,
-        room_input_options=RoomInputOptions(text_input_cb=_text_only_reply),
+        room_input_options=build_room_input_options(_text_only_reply, is_inbox=is_inbox),
     )
+    if is_inbox:
+        # Start with the audio input detached: the inbox mic is push-to-talk, so nothing should be
+        # recognized until the button is held. This also guarantees the input is *detached* at
+        # `/ptt-end`, which is the condition the SDK requires before flushing STT on commit.
+        session.input.set_audio_enabled(False)
+
+        # Re-link the audio input when the clinician reconnects under a new identity (see
+        # relink_target): without this the persistent inbox room keeps text chat alive but loses
+        # voice for the rest of the session.
+        ctx.room.on("participant_connected", _link_audio)
 
 
 def _prewarm(proc) -> None:  # pragma: no cover - needs the silero plugin + a worker process

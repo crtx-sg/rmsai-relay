@@ -7,6 +7,11 @@
 // Artifact bytes never ride the data channel — messages carry only pseudonyms + scoped links.
 // Rendering artifacts inline (ECG strip / trend / report) and in-app chat come in later steps.
 
+// Bump on every client change. Printed on load so "is the browser running the current app.js?" is
+// answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
+// like a broken backend.
+const APP_BUILD = "2026-08-18 ptt-2";
+
 const LK = window.LivekitClient;
 
 let session = null; // { url, room, token, ... } from POST /session
@@ -202,7 +207,9 @@ async function connect(sess) {
   session = sess;
   document.getElementById("login").classList.add("hidden");
   document.getElementById("worklist").classList.remove("hidden");
-  document.getElementById("room-label").textContent = session.room;
+  // Build tag on screen, not just in the console: a stale cached page is the single most expensive
+  // thing to misdiagnose here — it looks exactly like a broken worker.
+  document.getElementById("room-label").textContent = `${session.room} · app ${APP_BUILD}`;
   setStatus("connecting…");
 
   room = new LK.Room();
@@ -300,29 +307,61 @@ async function sendChat() {
   }
 }
 
-// Push-to-talk: mic is live only while the button is held.
+// Push-to-talk: the mic is live only while the button is held, and the button itself delimits the
+// turn. The worker runs the inbox with manual end-of-turn detection, so it needs to be *told* when
+// the turn ends: releasing the button mutes the mic, which stops audio at the SFU, so the agent's
+// VAD would never see the trailing silence it otherwise needs to close the turn (the turn would
+// hang forever and STT would never run). Sent on the chat text channel — the one control path that
+// reliably reaches the agent worker, same as /select.
+const PTT_TAIL_MS = 250; // keep capturing briefly after release so the last word isn't clipped
+let pttActive = false;
+
+function sendCtl(msg) {
+  if (!room) return Promise.resolve();
+  return room.localParticipant.sendText(msg, { topic: CHAT_TOPIC })
+    .catch((e) => console.warn("ptt: control send failed", msg, e));
+}
+
 async function pttDown() {
-  if (!room || !currentSelection) return;
+  console.log("[ptt] down", { hasRoom: !!room, selection: currentSelection, active: pttActive });
+  if (!room || !currentSelection || pttActive) return;
+  pttActive = true;
   const btn = document.getElementById("ptt");
+  btn.classList.add("talking");
+  btn.textContent = "🎤 Listening… release to send";
   try {
+    // Open the agent's turn FIRST: it must be listening before audio flows, and this way a mic that
+    // is slow to grant (or never resolves — an unplugged/busy device leaves getUserMedia pending
+    // forever) can't silently swallow the control message and strand the turn.
+    await sendCtl("/ptt-start");
     await room.localParticipant.setMicrophoneEnabled(true);
-    btn.classList.add("talking");
-    btn.textContent = "🎤 Listening… release to send";
   } catch (e) {
     console.warn("ptt: mic enable failed", e);
-  }
-}
-async function pttUp() {
-  if (!room) return;
-  const btn = document.getElementById("ptt");
-  try {
-    await room.localParticipant.setMicrophoneEnabled(false);
-  } finally {
+    addChatLine("assistant", "Could not open the microphone — check the browser's mic permission.");
+    pttActive = false;
     btn.classList.remove("talking");
     btn.textContent = "🎤 Hold to talk";
   }
 }
 
+// mouseup and mouseleave both land here; pttActive keeps the turn from being committed twice.
+async function pttUp() {
+  console.log("[ptt] up", { active: pttActive });
+  if (!room || !pttActive) return;
+  pttActive = false;
+  const btn = document.getElementById("ptt");
+  btn.classList.remove("talking");
+  btn.textContent = "🎤 Thinking…";
+  await new Promise((r) => setTimeout(r, PTT_TAIL_MS));
+  try {
+    await sendCtl("/ptt-end"); // agent detaches audio, flushes STT and answers
+    await room.localParticipant.setMicrophoneEnabled(false);
+  } finally {
+    btn.textContent = "🎤 Hold to talk";
+  }
+}
+
+console.log(`[app] build ${APP_BUILD}`);
 document.getElementById("login-btn").addEventListener("click", login);
 document.getElementById("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 // Event delegation for the per-row buttons + row selection (the table is re-rendered each message).

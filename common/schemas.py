@@ -169,5 +169,8 @@ class ConversationState(BaseModel):
 
     session_id: str
     patient_ref: Optional[str] = None
+    # Event the conversation is scoped to (the worklist row selected in the companion app). When
+    # set, "the event" in a question means THIS event, not the patient's most recent one.
+    event_ref: Optional[str] = None
     authenticated: bool = False
     turns: list[ChatTurn] = Field(default_factory=list)

@@ -246,8 +246,22 @@ def create_app(
 
         raise HTTPException(status_code=404, detail="unknown artifact kind")
 
+    class _NoStoreStatic(StaticFiles):
+        """`StaticFiles` that forbids caching of the worklist app.
+
+        The app is a hand-edited SPA served from disk with no build step or content hash, so a
+        browser holding `app.js` from a previous session silently runs stale client code against a
+        current worker — which surfaces as a feature that "doesn't work" with nothing wrong in any
+        log, and survives an ordinary reload. Correctness beats a few KB per load here.
+        """
+
+        def file_response(self, *args, **kwargs):
+            response = super().file_response(*args, **kwargs)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
     # Static worklist app last, at "/", so the explicit API routes above take precedence.
     if app_dir.is_dir():
-        api.mount("/", StaticFiles(directory=str(app_dir), html=True), name="app")
+        api.mount("/", _NoStoreStatic(directory=str(app_dir), html=True), name="app")
 
     return api
