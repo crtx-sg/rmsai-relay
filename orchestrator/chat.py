@@ -54,7 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", default="repl")
     parser.add_argument("--patient", default=None)
-    parser.add_argument("--embedder", default="hashing", choices=["auto", "bge", "hashing"])
+    parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
+                        help=f"Must match the KB collections (default from EMBEDDER: {DEFAULT.embedder}).")
     parser.add_argument("--llm", default="echo", choices=["echo", "ollama"])
     parser.add_argument("--deid", default="regex", choices=["regex", "auto", "presidio"])
     args = parser.parse_args(argv)

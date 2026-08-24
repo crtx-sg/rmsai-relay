@@ -71,6 +71,35 @@ class VectorRetriever:
         vectors = self.embedder.embed([c.text for c in chunks])
         return self.store.index(chunks, vectors)
 
+    def index_paths(self, paths, *, reset: bool = False) -> int:
+        """Index a list of documents of **any supported type** (markdown, text, PDF). Returns #chunks.
+
+        `index_dir` only sees `*.md`, which is right for the committed corpus but wrong for uploads —
+        a folder of clinical SOPs is mostly PDF. This routes each file through the loader (which
+        extracts PDF text and rebuilds its page structure) so an upload survives a corpus rebuild
+        instead of being silently skipped by the glob.
+
+        Unreadable files are skipped rather than aborting the batch: one bad scan in an upload folder
+        must not stop a rebuild, or the corpus is left half-populated.
+        """
+        from .chunking import chunk_document  # noqa: PLC0415
+        from .loader import read_document  # noqa: PLC0415
+
+        chunks = []
+        for path in paths:
+            try:
+                chunks.extend(chunk_document(read_document(path), Path(path).name))
+            except Exception as exc:  # noqa: BLE001 - reported by the caller's log, not fatal
+                print(f"[index] skipping {path}: {type(exc).__name__}: {exc}", flush=True)
+        if not chunks:
+            return 0
+        if reset:
+            self.store.reset(self.embedder.dim)
+        else:
+            self.store.ensure(self.embedder.dim)
+        vectors = self.embedder.embed([c.text for c in chunks])
+        return self.store.index(chunks, vectors)
+
     def search(self, query: str, k: int = 5, *, rerank: bool = True) -> list[SearchHit]:
         qvec = self.embedder.embed([query])[0]
         # Over-fetch a little before reranking so the reranker can reorder a wider pool.

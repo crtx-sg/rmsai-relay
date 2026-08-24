@@ -8,7 +8,7 @@ symptoms, surgeries, age, gender). References the pseudonym only (G3).
 from __future__ import annotations
 
 from common.config import DEFAULT, Config
-from common.criticality import event_criticality, vitals_override
+from common.criticality import alert_basis, event_criticality
 from common.schemas import DeviceEvent
 
 
@@ -36,18 +36,26 @@ def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config 
     where = f" on bed {bed}" if bed else ""
     guidance = a.care_guidance[0] if a.care_guidance else ""
     guidance_txt = f" Recommended: {guidance}." if guidance else ""
-    # When the rhythm is a false positive but vitals drove the alert, say so plainly so the
-    # clinician isn't confused by a "normal sinus" event being High criticality.
-    override_txt = ""
-    if event.is_false_positive:
-        triggered, why = vitals_override(event, config)
-        if triggered and config.criticality_fp_override_on_vitals:
-            override_txt = (
-                f" Note: the ECG rhythm is classified as normal sinus, so this alert is driven by "
-                f"the patient's vitals ({why}), not the rhythm."
-            )
+    # A vitals-driven alert must not be spoken as a rhythm finding: the vitals are what we know, the
+    # rhythm is either contradicted (a confident NORMAL_SINUS) or unconfirmed (below the confidence
+    # gate). Lead accordingly and say which, so the clinician never hears an uncertain rhythm
+    # asserted as fact.
+    basis, why = alert_basis(event, config)
+    detected = event.event_type.replace("_", " ")
+    if basis == "vitals" and event.event_type == config.criticality_normal_event:
+        lead, override_txt = f"Detected {detected}", (
+            f" Note: the ECG rhythm is classified as normal sinus, so this alert is driven by "
+            f"the patient's vitals ({why}), not the rhythm."
+        )
+    elif basis == "vitals":
+        lead, override_txt = f"Possible {detected}", (
+            f" Note: this alert is driven by the patient's vitals ({why}). The ECG suggests "
+            f"{detected}, but at {event.confidence:.0%} confidence treat the rhythm as unconfirmed."
+        )
+    else:
+        lead, override_txt = f"Detected {detected}", ""
     return (
-        f"Alert for patient {w.patient_ref}{where}. Detected {event.event_type.replace('_', ' ')}, "
+        f"Alert for patient {w.patient_ref}{where}. {lead}, "
         f"{crit} criticality, MEWS {a.mews.score} ({a.mews.risk}), "
         f"confidence {event.confidence:.0%}.{guidance_txt}{override_txt}"
     )

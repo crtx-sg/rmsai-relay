@@ -80,9 +80,12 @@ markdown report.
 (the bus); a consumer writes it to:
 - **Neo4j** (graph): `Patient → HAD_EVENT → MonitoredEvent → HAS_REPORT`, plus conditions, beds, and
   action items — the "who / what / when / relationships" store.
-- **Qdrant** (vector): the report narrative is embedded and stored for semantic search. Embeddings
-  come from a deterministic **hashing** embedder (default, offline) or **BGE**
-  (`bge-small-en-v1.5`) when the `rag` extra is enabled.
+- **Qdrant** (vector): the report narrative is embedded and stored for semantic search, alongside the
+  clinical corpus. Embeddings come from **BGE** (`bge-small-en-v1.5`, the `rag` extra) or a
+  deterministic **hashing** embedder for offline/test runs. The choice is not cosmetic: only BGE
+  separates on-topic from off-topic questions by score, which is what lets the relevance gate answer
+  a reworded question instead of declining it. The collection's vector dimension (384 vs 256) is the
+  only fingerprint of which embedder built it, so switching requires a rebuild.
 
 **Step 5 · The call decision** (`should_call`, `orchestrator/outbound_flow.py`) — a pure gate:
 1. `OUTBOUND_ENABLED` must be on.
@@ -90,11 +93,47 @@ markdown report.
    the arrhythmia class and the MEWS risk, escalated to at least `High` for any real arrhythmia,
    high MEWS, or a deteriorating trend (`common/criticality.py`).
 3. **False-positive gate**: a confident `NORMAL_SINUS` does not call…
-4. **Arrhythmia-confidence gate**: …and a *non-normal* prediction only calls when confidence ≥
-   `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` (default `0.60`) — a low-confidence arrhythmia is likely a
-   misdetection.
-5. **Vitals override**: a deteriorating patient (MEWS ≥ threshold or a deteriorating trend) calls
-   **regardless** of both gates above — vitals beat the rhythm classifier.
+4. **Arrhythmia-confidence gate**: …and a *non-normal* prediction is only asserted **as a rhythm**
+   when confidence ≥ `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` (default `0.60`) — a low-confidence
+   arrhythmia is likely a misdetection.
+5. **Vitals override**: a deteriorating patient (MEWS ≥ threshold or a deteriorating trend) alerts
+   **regardless of the false-positive gate** — bad vitals beat a confident `NORMAL_SINUS`. Vitals
+   never raise the confidence bar (they cannot make an uncertain classification true), but they do
+   change the **basis** of the alert instead of being ignored: an uncertain rhythm on a deteriorating
+   patient is reported as a **vitals-driven alert** naming the vital, with the rhythm marked
+   unconfirmed. Only an uncertain rhythm on a patient whose vitals are unremarkable is withheld — and
+   even then the event is persisted and answerable in chat.
+
+`common.criticality.alert_basis` is the single source of truth for that distinction; every surface
+(worklist row, spoken call alert, console) leads with what it returns, so no surface asserts a rhythm
+the classifier could not stand behind.
+
+```mermaid
+flowchart TD
+    E["Classified event<br/><code>event_type · confidence</code>"] --> A{"OUTBOUND_ENABLED?"}
+    A -- no --> D1["drop: outbound_disabled"]
+    A -- yes --> B{"Confident NORMAL_SINUS?<br/><code>conf ≥ FP_SUPPRESS_MIN_CONFIDENCE</code>"}
+    B -- "yes, vitals calm" --> D2["drop: false_positive"]
+    B -- "yes, vitals warrant it" --> V["Vitals-driven alert<br/>reason: fp_override"]
+    B -- no --> C{"Rhythm confident enough?<br/><code>conf ≥ OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE</code>"}
+    C -- no, vitals calm --> D3["drop: low_confidence_arrhythmia"]
+    C -- "no, vitals warrant it" --> V
+    C -- yes --> K{"crit ≥ OUTBOUND_MIN_CRITICALITY?"}
+    V --> K
+    K -- no --> D4["drop: below_threshold"]
+    K -- yes --> P["Alert the clinician<br/>worklist row + call per DISPATCH_MODE"]
+
+    W["Vitals override<br/><code>MEWS ≥ CRITICALITY_MEWS_THRESHOLD</code><br/>or any vital deteriorating"] -.->|re-bases the alert| V
+
+    classDef drop stroke-dasharray: 5 4;
+    classDef vitals stroke-width:2px;
+    class D1,D2,D3,D4 drop;
+    class V,W vitals;
+```
+
+Dropped events are still **persisted** — the drop withholds the alert, not the data. A rendered
+version of this flow, with the measured per-vital numbers behind the override, is in
+[`docs/alert-gate.html`](docs/alert-gate.html).
 
 If it decides to call, it dispatches a **LiveKit** outbound call (SIP phone or WebRTC room) or an SMS
 text, and pushes the event to the **companion app** worklist. The event is **always persisted**; the
@@ -120,9 +159,43 @@ for browser, SIP for phone). One turn, in order:
 
 **Inside the orchestrator turn** (`orchestrator/orchestrator.py`, `handle_turn`):
 1. **Input guardrail** — refuse unsafe / out-of-scope requests *before* any retrieval or model call.
-2. **Retrieve (RAG)** via `HybridRetriever`: a **vector** search over Qdrant (*Retrieved passages*)
+2. **Route the question** — three paths, cheapest first, because they answer very differently:
+
+```mermaid
+flowchart TD
+    Q["Clinician's question"] --> R{"match_intent<br/>regex hits?"}
+    R -- yes --> T["Graph template<br/><code>run_template</code> → exact patient data"]
+    R -- no --> O{"looks operational?<br/>+ KB_LLM_ROUTER"}
+    O -- "no (a documents question)" --> H["Hybrid retrieval"]
+    O -- yes --> L["LLM picks a template<br/>from a fixed menu"]
+    L -- "valid choice" --> T
+    L -- "no match / invalid" --> H
+    H --> G{"relevance gate:<br/>graph fact, OR similarity ≥ KB_MIN_RELEVANCE,<br/>OR word overlap ≥ 0.18"}
+    G -- yes --> A["Cited answer via the LLM"]
+    G -- no --> D["Decline — and log which<br/>signal fell short, and by how much"]
+    T --> P["Deterministic answer<br/>(no LLM call at all)"]
+
+    classDef nollm stroke-width:2px;
+    class T,P nollm;
+```
+
+   A **graph template** answers from Cypher with no model in the path — `_answer_operational`
+   renders the rows directly, so "what were the vitals at that event" cannot be paraphrased away.
+   The **LLM router** (`kb/graph/llm_router.py`) exists because the regexes only fire on phrasings
+   someone anticipated; it picks a *name* from a fixed catalogue and never supplies a patient or
+   event id (those come from session scope), so a hallucinated identity cannot reach a query.
+   It is off by default (`KB_LLM_ROUTER`) — it costs one model call (~6s on `llama3.2:3b`, warm).
+3. **Retrieve (RAG)** via `HybridRetriever`: a **vector** search over Qdrant (*Retrieved passages*)
    **plus** a **graph** query over Neo4j (*Known relationships*). Two separately-labelled,
-   separately-cited blocks (`RetrievalResult`) — no cross-block re-ranking.
+   separately-cited blocks (`RetrievalResult`) — no cross-block re-ranking. The corpus is the
+   committed `docs/*.md` **plus** whatever was added with `cli.kb_upload` (SOPs, guidelines and
+   checklists as PDF or markdown; PDF chunks cite their page). Uploads are copied to
+   `KB_UPLOAD_DIR` so a corpus rebuild re-indexes them instead of deleting them.
+   The **relevance gate** then decides whether retrieval vouches for itself at all: a graph fact,
+   semantic similarity ≥ `KB_MIN_RELEVANCE`, or word overlap ≥ 0.18 — any one suffices. The two
+   text signals fail in opposite directions (similarity survives rewording but needs
+   `EMBEDDER=bge`; word overlap is the only signal the hashing embedder has), and when neither
+   vouches the decline says which number fell short of which threshold.
 3. **De-identify** the retrieved context (Presidio or regex, `DEID_BACKEND`) so no name/PHI reaches
    the model.
 4. **LLM generate**: the prompt goes to the `LLMProvider` — self-hosted **Ollama** (`llama3.2`) by

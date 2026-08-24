@@ -1,0 +1,40 @@
+# Build context is the repo root (infra/docker-compose.yml sets `context: ..`). Keep it small:
+# the image bakes only the dependency env + the vendored package, and the source arrives as a
+# bind mount at runtime.
+
+# Host virtualenv — built against the host interpreter, multi-GB, never valid inside the image.
+.venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+.git/
+.github/
+
+# Runtime state: plots, reports, uploads, audit log, generated HDF5. All of it is bind-mounted
+# back in at runtime, so baking it would only bloat the context.
+data/
+
+# Vendored upstream: the package IS needed at build time (it is pip-installed into the image), but
+# its checkpoints/notebooks/docs are not — those are read by path from the bind mount.
+external/ecgtranscnn/models/
+external/ecgtranscnn/data/
+external/ecgtranscnn/notebooks/
+external/ecgtranscnn/docs/
+external/ecgtranscnn/openspec/
+external/ecgtranscnn/tests/
+
+# Secrets never enter an image layer. Compose does not use `env_file` either — the app reads
+# /app/.env off the bind mount itself (common/config.py::_load_dotenv), exactly as on the host.
+.env
+
+# Docs and editor noise
+docs/project/
+*.md
+!README.md
+.DS_Store
+*.swp
+*.swo
+*~

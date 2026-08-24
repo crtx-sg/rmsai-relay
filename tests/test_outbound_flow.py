@@ -100,16 +100,26 @@ def test_threshold_is_configurable():
     assert not should_call(ev, replace(_CFG, outbound_min_arrhythmia_confidence=0.80))[0]  # 70% < 80%
 
 
-def test_low_confidence_arrhythmia_still_calls_on_deteriorating_vitals():
-    # Vitals override the confidence gate: a deteriorating patient calls even at low confidence.
+def test_uncertain_rhythm_on_a_deteriorating_patient_alerts_on_the_vitals():
+    # The rhythm claim never survives the confidence gate, but the patient still does: the alert is
+    # re-based on the vitals rather than dropped, and the reason says so.
     call, reason = should_call(_arrhythmia_event(0.30, deteriorating=True), _CFG)
-    assert call and reason == "ok"
+    assert call and reason.startswith("vitals_alert") and "deteriorating" in reason
+
+    call, reason = should_call(_arrhythmia_event(0.30, mews_score=4, mews_risk="Medium"), _CFG)
+    assert call and reason.startswith("vitals_alert") and "MEWS 4" in reason
 
 
-def test_low_confidence_arrhythmia_still_calls_on_high_mews():
-    call, reason = should_call(
-        _arrhythmia_event(0.30, mews_score=4, mews_risk="Medium"), _CFG)
-    assert call and reason == "ok"
+def test_uncertain_rhythm_on_a_stable_patient_is_withheld():
+    # Nothing carries this alert: the classifier isn't sure and the vitals are unremarkable.
+    call, reason = should_call(_arrhythmia_event(0.30), _CFG)
+    assert not call and reason.startswith("low_confidence_arrhythmia")
+
+
+def test_confident_arrhythmia_alerts_on_the_rhythm_even_with_bad_vitals():
+    # A rhythm we believe in stays a rhythm alert — bad vitals don't demote it to "unconfirmed".
+    assert should_call(_arrhythmia_event(0.92, deteriorating=True), _CFG) == (True, "ok")
+    assert should_call(_arrhythmia_event(0.92, mews_score=4, mews_risk="Medium"), _CFG) == (True, "ok")
 
 
 def test_false_positive_never_calls():

@@ -174,7 +174,7 @@ A few design points that aren't obvious from the diagram:
 | Telephony / WebRTC | **LiveKit** (agent worker + SIP outbound + browser WebRTC) |
 | EMR | **HAPI FHIR** (`emr/`, stub → real in Phase 8) |
 | Orchestration | LangGraph-style turn orchestrator (`orchestrator/`) |
-| Infra | Docker Compose (`infra/docker-compose.yml`): neo4j, qdrant, redis, mosquitto, model-server (ollama), hapi-fhir, livekit |
+| Infra | Docker Compose (`infra/docker-compose.yml`) — **everything runs as a service**: the backing stores (neo4j, qdrant, redis, livekit; profiled: mosquitto, model-server/ollama, hapi-fhir) *and* the app itself (consumer, voice-worker, gateway) from one shared image (`infra/Dockerfile`) with the source bind-mounted |
 
 **No SQL DB in the POC.** Five stores: Neo4j (relationships + operational event log, behind an
 `EventStore` repository interface so it can migrate to Postgres/TimescaleDB later), Qdrant (text +
@@ -186,8 +186,9 @@ embeddings), Redis (working memory + bus), HDF5 (waveforms), object/file store (
 model + vitals + serialize · `kb/{vector,graph,hybrid}` retrieval · `memory/` working/episodic tiers
 · `orchestrator/` turn loop + outbound flow + bus consumer · `voice/` SIP/LiveKit + handlers +
 STT/TTS · `emr/` FHIR · `app/`+`live/` companion app & live media (Phase 9, planned) · `cli/`
-entrypoints · `infra/` compose · `external/ecgtranscnn/` vendored model+simulator (gitignored) ·
-`data/{synthetic,fixtures}` · `docs/` clinical corpus.
+entrypoints · `infra/` compose + app `Dockerfile` · `external/ecgtranscnn/` vendored model+simulator
+(gitignored) · `data/{synthetic,fixtures}` · `docs/` clinical corpus (+ `docs/samples/` upload
+fixtures, excluded from it).
 
 ---
 
@@ -327,12 +328,43 @@ Ad-hoc graph reads use `cli.graph` (templates or read-only Cypher); GUIs: Neo4j 
 event-writing/serving paths (`cli.consume`, `cli.outbound`, and `build_orchestrator` — which runs on
 every text chat **and** every voice call) all **append**, so they preserve the report narratives that
 `consume` archives. Append requires a **matching embedder dimension**: the collection is built with
-one embedder (hashing=256 / BGE=384); re-index with the same `--embedder`, or `--reset` to rebuild —
-a clear error fires on mismatch.
+one embedder (hashing=256 / BGE=384), so those paths default `--embedder` to `EMBEDDER` from `.env`;
+re-index with the same embedder, or `--reset` to rebuild — a clear error fires on mismatch.
 
 ```bash
 uv run python -m cli.kb_vector index --dir docs              # append (preserves event reports)
 uv run python -m cli.kb_vector index --dir docs --reset      # full rebuild (wipes the collection)
+```
+
+**The corpus is `docs/*.md` plus the managed upload folder.** `chunk_dir` globs `docs/` **non-
+recursively for `*.md`**, so every markdown file dropped there becomes retrievable clinical
+evidence — project/engineering docs belong in `docs/project/` and upload test fixtures in
+`docs/samples/`, both of which the glob excludes. Non-markdown files are never picked up by the
+glob: a PDF must go through `cli.kb_upload`. Documents added that way are copied to
+`KB_UPLOAD_DIR` (`data/kb_uploads/`, gitignored) and re-indexed by every rebuild, so they are part
+of the corpus rather than a one-off write. See [§3a](#3a-upload-protocols--sops--checklists-to-the-kb)
+for the upload + verification commands.
+
+**How a question is answered** — three paths, in order:
+
+| path | when | answer |
+|---|---|---|
+| graph template | `match_intent` regex hits | exact patient data from Cypher, no LLM |
+| LLM-routed template | regex misses, question looks operational, `KB_LLM_ROUTER=true` | same, template chosen by the model from a fixed menu |
+| hybrid retrieval | everything else | cited passages (vector) + relationships (graph), answered by the LLM |
+
+`uv run python -m cli.kb_route --llm "<question>"` shows which path a question takes and why.
+
+**Relevance gate.** A hybrid answer is only given when retrieval vouches for itself: a graph
+relationship, semantic similarity ≥ `KB_MIN_RELEVANCE` (0.60), **or** word overlap ≥ 0.18. The two
+signals fail in opposite directions — semantic similarity survives rewording (calibrated on this
+corpus: on-topic 0.61–0.83, off-topic 0.35–0.54, but only under `EMBEDDER=bge`; hashing scores the
+two alike), while word overlap is what carries the hashing embedder. When neither vouches, the turn
+declines and logs **why**, naming both numbers, both thresholds, and the top passage:
+
+```
+[orchestrator] declined: 4 passage(s) retrieved, but neither relevance signal vouched for them:
+semantic similarity 0.17 < 0.60 AND word overlap 0.00 < 0.18 (top: vt_vf.md#Post-resuscitation)…
 ```
 
 > ⚠️ **Destructive ops to know about.** Graph/orchestrator pytest fixtures
@@ -359,7 +391,7 @@ touching callers.
 | `CRITICALITY_ESCALATE_ON_DETERIORATING` | `true` | any deteriorating vital trend ⇒ escalate criticality to High |
 | `CRITICALITY_FP_OVERRIDE_ON_VITALS` | `true` | call even on a confident false-positive ECG (NORMAL_SINUS) when vitals warrant it (MEWS ≥ threshold or deteriorating); overrides the spec-D10 no-call guard |
 | `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` | `false` / `High` | gate which events dial out |
-| `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` | `0.60` | a non-normal (arrhythmia) event only dials out if the model's confidence is at/above this — a low-confidence arrhythmia is likely a misdetection. Deteriorating vitals override it (still call) |
+| `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` | `0.60` | a non-normal (arrhythmia) event is only asserted *as a rhythm* if confidence is at/above this. Below it: withheld when the vitals are calm, or re-based as a **vitals-driven alert** (rhythm marked unconfirmed) when they aren't. Vitals never raise the bar |
 | `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` | — | single hard-configured destination + caller ID |
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` | `2` / `30` | no-answer retry policy |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
@@ -368,6 +400,8 @@ touching callers.
 | `AUDIO_WAKE_REQUIRED` | `true` | require the wake word to open a follow-up audio turn (SIP/playground Q&A). Set `false` to answer **every** authenticated audio turn — the escape hatch when STT mishears the out-of-vocab brand word. The companion app already bypasses the gate (it controls the mic) |
 | `INBOX_SPEAK_ON_SELECT` | `true` | companion app: selecting a worklist row speaks that event's stored report summary aloud (in addition to scoping chat). Spoken text is the `Report.summary` — no model call |
 | `LIVEKIT_REDISPATCH_ON_START` | `true` | on worker startup, auto re-dispatch the agent into live `rmsai-inbox-*` rooms that lost their agent (e.g. after a worker restart), so the app doesn't need a re-login. On-demand equivalent: `cli.dispatch` |
+| `LIVEKIT_WORKER_HTTP_PORT` | `8081` | port for livekit-agents' health-check HTTP server. Only matters when two workers run side by side — the Docker `voice-worker` service defaults it to `8091`, because host networking would otherwise collide with a worker run by hand (`[errno 98] address already in use`) |
+| `GATEWAY_PORT` | `8080` | host port for the containerized gateway. Move it if `hapi-fhir` (`--profile emr`) or a hand-run gateway already holds 8080 |
 | `EPISODIC_RECALL` | `false` | condition free-text answers on recalled cross-session past Q&A; off keeps answers grounded in the live KB + current conversation only |
 | `STT_LANGUAGE` | `en` | force the STT language (ISO 639-1); blank/`auto` = auto-detect. Stops Whisper/Scribe "hearing" other languages on noise |
 | `ECG_PLOT_ENABLED` / `PLOT_DIR` | `true` / `data/plots` | producer renders each event's ECG lead to `{PLOT_DIR}/<event_id>.png` (gitignored); path persisted as `MonitoredEvent.ecg_plot_ref` |
@@ -399,12 +433,22 @@ outbound-call gate, and all of its inputs are configurable (table above). It is 
    above `OUTBOUND_MIN_CRITICALITY` (default `High`). The event is **always persisted**; the gate
    only governs the call.
 
-**Arrhythmia confidence gate (the model must be sure).** A **non-normal (arrhythmia)** prediction only
-dials out when the model's confidence in it is at/above `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` (default
-`0.60`) — a low-confidence arrhythmia is likely a misdetection, not worth a call on the rhythm alone
-(decision reason → `low_confidence_arrhythmia (45% < 60%)`). This is the mirror image of the
-false-positive gate below, and the **same vitals-driven escalation overrides it**: a deteriorating
-patient (MEWS ≥ threshold or a deteriorating trend) still calls regardless of classifier confidence.
+**Arrhythmia confidence gate (the model must be sure — or say it isn't).** A **non-normal
+(arrhythmia)** prediction is only asserted *as a rhythm* when the model's confidence in it is at/above
+`OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` (default `0.60`). Below that, what happens next depends on the
+patient, not on the classifier:
+
+- **vitals unremarkable** → withheld (`low_confidence_arrhythmia (45% < 60%)`). The event is still
+  persisted and answerable in chat; only the alert is suppressed.
+- **vitals warrant attention** (MEWS ≥ threshold or a deteriorating trend) → the alert still goes out,
+  but **re-based on the vitals** (`vitals_alert (MEWS 4 >= threshold 3)`). The worklist row leads with
+  *Vitals alert* and the named vital, the rhythm is demoted to `unconfirmed: <type>`, and the spoken
+  call alert says "Possible …, treat the rhythm as unconfirmed".
+
+Vitals never raise the confidence bar — they cannot make an uncertain classification true — they only
+change what the alert **claims**. `common.criticality.alert_basis` decides that once, and every
+surface leads with it. Rows also carry their confidence, flagged below `LOW_CONFIDENCE_CAVEAT`.
+See the flowchart in [ARCHITECTURE.md](ARCHITECTURE.md) or [`docs/alert-gate.html`](docs/alert-gate.html).
 
 **False-positive override (vitals beat the rhythm).** A confident `NORMAL_SINUS`
 (≥ `FP_SUPPRESS_MIN_CONFIDENCE`) is a false positive and normally does **not** call (spec D10). When
@@ -436,6 +480,60 @@ Set `CRITICALITY_FP_OVERRIDE_ON_VITALS=false` to revert to the strict spec-D10 b
 
 ## Setup
 
+Two ways to run it. **Docker** brings the whole relay up in one command and needs no host Python;
+**host** installs the environment locally, which is the better loop for editing and running tests.
+They share the same `.env` and the same datastores, so you can mix them.
+
+### A. Everything in Docker (recommended for a demo)
+
+```bash
+# 1. Vendor the ECG model + simulator (gitignored; baked into the image, so clone it FIRST)
+git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn
+
+# 2. Configure
+cp .env.example .env      # then set LIVEKIT_API_KEY / LIVEKIT_API_SECRET, HOSPITAL_ID, …
+
+# 3. Build the shared app image (once; ~5-10 min for torch + whisper + presidio)
+make docker-build
+
+# 4. Bring up every service
+make docker-up
+```
+
+That starts **redis, neo4j, qdrant, livekit** and the three application services — **consumer**
+(bus → persist → dispatch), **voice-worker** (the LiveKit agent), and **gateway** (the companion
+app on `http://localhost:8080/`). `make docker-ps` shows the state, `make docker-logs` tails the
+three app services.
+
+The **source is bind-mounted**, so a code edit needs only `make docker-restart` — no rebuild.
+Rebuild (`make docker-build`) only when `pyproject.toml`, `uv.lock`, or the vendored package
+changes.
+
+Run any CLI harness in the same image, with no host Python:
+
+```bash
+docker compose -f infra/docker-compose.yml run --rm tools \
+    python -m cli.ingest --file data/inference/<f>.h5 \
+    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+make docker-shell        # or an interactive shell in that image
+```
+
+> **App services use `network_mode: host`.** That is deliberate: it makes every `localhost` URL in
+> `.env` resolve the same inside a container as on the host, keeps an Ollama running on the *host*
+> reachable, and — the reason that matters most — lets LiveKit's advertised `rtc.node_ip: 127.0.0.1`
+> mean the same thing to the voice worker as to the browser. On a bridge network the worker would
+> receive that candidate, try to connect to itself, and audio would never flow even though
+> signaling succeeded. The tradeoff is no port isolation, and Linux-only portability. See the header
+> of `infra/docker-compose.yml`.
+
+Two services stay behind profiles because they collide with this setup: `--profile llm`
+(`model-server`, containerized Ollama — **skip it if `ollama serve` already runs on the host**;
+both bind 11434) and `--profile emr` (`hapi-fhir` — binds 8080, same as the gateway; move the
+gateway with `GATEWAY_PORT`). `--profile telemetry` adds mosquitto. The legacy `--profile later`
+still selects all of them.
+
+### B. On the host
+
 ```bash
 # 1. Vendor the ECG model + simulator (gitignored; see external/ecgtranscnn/PLACEHOLDER.md)
 git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn
@@ -447,13 +545,29 @@ make setup-all
 #    Re-run `make external` after ANY hand-run `uv sync` — the vendored package is gitignored, so
 #    `uv sync` uninstalls it and it must be reinstalled editable.
 
-# 3. Bring up the lean datastores (LiveKit is `later`-profiled — add it explicitly for voice; see
-#    "Demo bring-up sequence" under End-to-end testing)
-docker compose -f infra/docker-compose.yml up -d redis neo4j qdrant
+# 3. Bring up the backing stores only (leave the app services to your terminals)
+make stores-up            # = docker compose … up -d redis neo4j qdrant livekit
+make stores-check         # which ones are actually reachable?
 
 # 4. Run tests
 uv run pytest
 ```
+
+> **The stores run in Docker even in this mode.** Running the CLIs with `uv run` does *not* make
+> them self-contained — `cli.ingest --emit bus` still needs Redis, `cli.consume` needs Redis + Neo4j
+> + Qdrant, and the app needs LiveKit. A `docker compose down` removes them all, and the next CLI
+> run fails with `Error 111 connecting to localhost:6379`. `make stores-up` is the fix;
+> `make stores-check` tells you which one is missing:
+>
+> ```
+> redis   : up
+> neo4j   : DOWN  -> make stores-up
+> qdrant  : up
+> livekit : up
+> ```
+>
+> Use `make stores-up`, **not** `make docker-up`, when you drive the app by hand — the latter also
+> starts consumer/voice-worker/gateway, which collide with host-run copies on 8080/8081.
 
 ### Make targets
 
@@ -462,6 +576,13 @@ uv run pytest
 | `make setup` | `uv sync --extra dev` + `make external` (core + dev only) |
 | `make setup-all` | all extras (rag, deid, voice, livekit, app) + `make external` + spaCy `en_core_web_sm` |
 | `make external` | (re)install the vendored `external/ecgtranscnn` editable — run after any manual `uv sync` |
+| `make stores-up` / `make stores-down` | start / stop **only** the backing stores (redis, neo4j, qdrant, livekit) — the target to use when you run the CLIs on the host |
+| `make stores-check` | which backing stores are reachable, and what to run if one is down |
+| `make docker-build` | build the shared app image (`infra/Dockerfile`) |
+| `make docker-up` / `make docker-down` | start / stop every service |
+| `make docker-restart` | restart the three app services to pick up source edits (no rebuild) |
+| `make docker-logs` / `make docker-ps` | tail the app services / show container state |
+| `make docker-shell` | interactive shell in the app image with the repo mounted |
 | `make test` / `make lint` | `uv run pytest -q` / linters |
 
 ### Optional extras (à la carte, if you skipped `make setup-all`)
@@ -503,30 +624,376 @@ PHI handling differs by direction (the two cloud legs are **not** symmetric):
 
 ---
 
-## End-to-end testing
+## Operations runbook
 
-### 0. Demo bring-up sequence (do this in order)
+The whole lifecycle in order — bring the stack up, load the model, initialize the KB, drive it,
+inspect it, measure it, shut it down. Every command here is Docker-first; the host equivalent of
+any `$RMSAI` line is the same `python -m …` under `uv run`.
 
-The datastores and the **LiveKit server** are separate concerns. `redis/neo4j/qdrant` are the always-on
-lean stores; **LiveKit is `later`-profiled**, so a plain `up` skips it and you must start it explicitly.
-A voice worker started against a missing LiveKit server just retry-loops on `:7880`
-(`Connect call failed ('127.0.0.1', 7880)`) — that error means *the server isn't running*, not a bug in
-the worker.
+Define this once per shell — it runs any CLI harness in the app image with the repo mounted, so no
+host Python is needed:
 
 ```bash
-# 1. Datastores (always needed)
-docker compose -f infra/docker-compose.yml up -d redis neo4j qdrant
+export RMSAI="docker compose -f infra/docker-compose.yml run --rm tools python -m"
+$RMSAI cli.kb_dump --list          # …and so on for every cli.* below
+```
 
-# 2. LiveKit media server (needed ONLY for voice: steps 5 & 6). Start it explicitly.
-docker compose -f infra/docker-compose.yml up -d livekit
-#    verify: healthy + listening on 7880
-docker ps --filter name=livekit --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'
+### 1. Prerequisites and the vendored ECG model
 
-# 3. (voice) agent worker — joins rooms, runs STT → Handler → TTS. Leave running in its own terminal.
+The `ECG_TransConv` classifier and the synthetic-data simulator are **vendored, not vendorable by
+pip** — the clone carries the `scripts/` simulators and `models/` checkpoints that a wheel would
+not. It is gitignored but **baked into the image**, so clone it *before* the first build:
+
+```bash
+git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn   # pinned: 0bc646da
+cp .env.example .env    # then set LIVEKIT_API_KEY / LIVEKIT_API_SECRET / HOSPITAL_ID
+```
+
+Check the checkpoints arrived — weights may be Git-LFS and a plain clone can omit them:
+
+```bash
+ls external/ecgtranscnn/models/*/best_model.pt
+# external/ecgtranscnn/models/avblock_fix/best_model.pt
+# external/ecgtranscnn/models/noise_robust/best_model.pt
+```
+
+**Without weights the pipeline still runs** — `ECGModel` falls back to the deterministic stub, so
+every phase and test works; only the predictions are synthetic. With weights, pass one as
+`--checkpoint` to `cli.ingest` / `cli.outbound` (below). `noise_robust/best_model.pt` is the
+general-purpose one.
+
+Generate synthetic HDF5 to feed the pipeline. The generator's `--output-dir` defaults to
+`data/inference` **relative to the current directory**, so run it from the repo root (or pass the
+flag) — otherwise the files land somewhere you then can't find, e.g. under
+`external/ecgtranscnn/data/inference/` if you `cd` in there first:
+
+```bash
+# a script rather than a module, so it does not use $RMSAI
+docker compose -f infra/docker-compose.yml run --rm tools \
+    python external/ecgtranscnn/scripts/generate_inference_data.py --output-dir data/inference
+ls data/inference/*.h5
+```
+
+Useful flags: `--num-files` / `--events-per-file` (default 3 × 5), `--conditions
+ATRIAL_FIBRILLATION:3,NORMAL_SINUS:1` to weight the mix, and `--noise-level {low,medium,high,mixed}`.
+`data/` is gitignored and bind-mounted into every container, so these files are visible to both the
+host CLIs and the `tools` service at the same path.
+
+### 2. Build and start
+
+```bash
+make docker-build      # once; ~5-10 min (torch, faster-whisper, presidio, spaCy)
+make docker-up         # redis, neo4j, qdrant, livekit + consumer, voice-worker, gateway
+make docker-ps
+```
+
+Wait for all three app services to report ready — cold start loads BGE/Whisper/the orchestrator:
+
+```bash
+docker compose -f infra/docker-compose.yml logs consumer     | grep "\[consume\] group="
+docker compose -f infra/docker-compose.yml logs voice-worker | grep "registered worker"
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/     # 200
+```
+
+Expected steady state:
+
+```
+consumer       Up  (blocking on XREADGROUP)
+gateway        Up (healthy)   → http://localhost:8080/
+voice-worker   Up  (registered as rmsai-agent, health server on 8091)
+livekit neo4j qdrant redis   Up (healthy)
+```
+
+> **Before `make docker-up`, stop any host-run `cli.gateway` / `cli.voice_worker`.** The app
+> services use host networking, so a hand-run gateway holds 8080 and a hand-run worker holds 8081 —
+> the containers then fail to bind. Two workers registered under the same `LIVEKIT_AGENT_NAME` also
+> split dispatches between them.
+
+### 3. Initialize the knowledge base
+
+Both stores start empty. The **graph** needs its schema, care protocols, and document entities; the
+**vector** store needs the clinical corpus. `cli.consume` runs `migrate` itself on startup, so
+strictly only the middle three are manual:
+
+```bash
+$RMSAI cli.graph migrate                     # constraints + indexes   -> {"migrated": true}
+$RMSAI cli.graph protocols                   # care protocols          -> {"protocols_loaded": 2}
+$RMSAI cli.graph extract --dir docs          # doc entities onto shared nodes
+#   -> {"chunks": 13, "guidelines": 13, "conditions": 5, "treatments": 9}
+$RMSAI cli.kb_vector --embedder bge index --dir docs    # clinical corpus -> Qdrant
+```
+
+Optionally seed a synthetic patient cohort (demographics, co-morbidities, symptoms) so the
+pattern/co-morbidity queries have something to traverse. Patients are auto-created on first event
+otherwise (G8):
+
+```bash
+$RMSAI cli.graph ingest --patients PT1000 PT1001 PT1002
+```
+
+**The embedder must match the collection** (hashing=256-dim / BGE=384-dim). Every KB path defaults
+`--embedder` to `EMBEDDER` from `.env`; `cli.kb_vector` is the one exception (it defaults to
+`auto`), so pass it explicitly there. See [§3a](#3a-upload-protocols--sops--checklists-to-the-kb).
+
+### 4. Drive the application
+
+Publish classified events onto the bus; the running `consumer` container picks them up, persists to
+both stores, and dispatches per the criticality gate:
+
+```bash
+$RMSAI cli.ingest \
+    --file data/inference/PT6580_2026-06.h5 \
+    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+```
+
+```
+{"published": "…", "patient": "PT6580", "event_type": "VENTRICULAR_TACHYCARDIA",
+ "confidence": 1.0, "criticality": "Critical", "mews": 6, …}
+```
+
+Watch it land:
+
+```bash
+docker compose -f infra/docker-compose.yml logs -f consumer
+# [consume] received event daf16c2d… type=VENTRICULAR_TACHYCARDIA conf=1.00 patient=PT6580
+# [consume] persisted MonitoredEvent … -> Neo4j graph
+# [consume] archived report narrative -> Qdrant vector store
+# [consume] dispatch=app: pushed inbox event … -> rmsai-inbox-h1
+```
+
+Then **use it**: open `http://localhost:8080/`, enter the PIN (`INBOUND_AUTH_PIN`, default `1234`),
+and the worklist renders live. Selecting a row scopes chat to that event and speaks its report
+summary (`INBOX_SPEAK_ON_SELECT`). Ask questions by typing or by voice. For the phone/WebRTC paths
+and the on-demand call, see [End-to-end testing](#end-to-end-testing) §5–6.
+
+Query the KB directly without the app:
+
+```bash
+$RMSAI cli.kb "which conditions are co-morbid with atrial fibrillation"   # hybrid: vector + graph
+$RMSAI cli.text_chat                                                       # PIN-gated text console
+```
+
+### 5. Load documents into the KB
+
+Protocols, SOPs, and checklists — PDF, markdown, or text — so questions are answered from *your*
+documents with a citation instead of declined:
+
+```bash
+$RMSAI cli.kb_upload --file protocols/af_sop.pdf --dry-run   # preview the chunk plan
+$RMSAI cli.kb_upload --file protocols/af_sop.pdf
+$RMSAI cli.kb_upload --dir protocols/ --glob '*.pdf' --extract   # + graph entities
+
+# a sample SOP ships with the repo, deliberately outside the auto-indexed corpus
+$RMSAI cli.kb_upload --file docs/samples/critical_alarm_sop.md
+```
+
+Uploads are idempotent, copied into `KB_UPLOAD_DIR` so a rebuild re-indexes them, and PDF pages are
+cited individually. Full detail + verification commands:
+[§3a](#3a-upload-protocols--sops--checklists-to-the-kb).
+
+### 6. Test the application
+
+```bash
+$RMSAI pytest -q                        # full suite (needs the stores up)
+$RMSAI pytest -q -m "not infra"         # offline only — no containers required
+$RMSAI pytest -q tests/test_criticality.py -k fp_override    # one file / one test
+make test                               # host equivalent (uv run pytest -q)
+```
+
+Then the end-to-end smoke test — generate, classify, publish, consume, alert, acknowledge:
+
+```bash
+$RMSAI cli.ingest --file data/inference/<f>.h5 \
+    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+docker compose -f infra/docker-compose.yml logs --tail=40 consumer
+```
+
+Expect critical events (AFib/VT, High/Critical) persisted **and** dispatched; `NORMAL_SINUS`/Low
+persisted but skipped with a printed reason (`below_threshold`, `low_confidence_arrhythmia`,
+`vitals_alert`, `fp_override`). Per-subsystem harnesses are listed under
+[Other CLI harnesses](#other-cli-harnesses-per-subsystem).
+
+> ⚠️ **`tests/test_graph_templates.py`, `tests/test_orchestrator.py`, and `cli.kb_eval` call
+> `reset_all()` on the LIVE Neo4j.** Running the full suite wipes ingested events — that is why
+> `cli.kb_dump --list` can suddenly return `[]`. Recover by re-running step 3 then step 4.
+
+### 7. Debug and inspect
+
+**Dump everything stored for one event** — the graph node, the report file, and the vector chunks,
+side by side. This is the first thing to reach for when an answer looks wrong:
+
+```bash
+$RMSAI cli.kb_dump --list                    # recent event ids to pick from
+$RMSAI cli.kb_dump <event_id>
+$RMSAI cli.kb_dump <event_id> --json         # raw {graph, vector, report_text}
+```
+
+```
+=== EVENT daf16c2d-51fb-4cbe-a4ef-dea59502e56b ===
+GRAPH (Neo4j)
+  patient    : PT6580        bed : Unit1-Bed01
+  event_type : VENTRICULAR_TACHYCARDIA | criticality Critical | status reported | FP False
+  confidence : 0.9999  | MEWS risk High
+  vitals     : HR 175.0, BP 175.0/93.0, SpO2 93.0, RR 24.0, Temp 99.0
+  actions    : MEWS 6 (High) — escalate care
+  plots      : ecg=data/plots/daf16c2d….png
+  report     : report:daf16c2d…  (index_status indexed)
+REPORT FILE (markdown) …
+```
+
+**Graph queries** — the operational templates, or a natural-language lookup that shows which
+template it resolved to:
+
+```bash
+$RMSAI cli.graph template outstanding_action_items
+$RMSAI cli.graph lookup "critical events in the last 24 hours"
+#   -> {"mode": "template", "template": "critical_events_since", "rows": [...]}
+```
+
+**Why did a question take that path?** Regex template vs LLM router vs document retrieval:
+
+```bash
+$RMSAI cli.kb_route "what were the vitals at the event"
+# [route] regex -> (no match)
+# [route] looks operational? True (the LLM router is eligible)
+# [route] pass --llm to try the LLM router
+```
+
+**Vector store** — what's actually indexed, and does the right passage win:
+
+```bash
+$RMSAI cli.kb_vector --embedder bge retrieve "escalation checklist for a critical alarm" -k 3
+curl -s -X POST http://localhost:6333/collections/rmsai_docs/points/scroll \
+  -H 'Content-Type: application/json' -d '{"limit":500,"with_payload":true}' \
+| python3 -c "import sys,json,collections; c=collections.Counter(p['payload'].get('doc_id') for p in json.load(sys.stdin)['result']['points']); [print(f'{v:4d}  {k}') for k,v in sorted(c.items())]"
+```
+
+**In-app chat / push-to-talk not responding?** Probe the room without a browser — this splits a
+worker fault from a browser fault (stale `app.js`, handler never fired):
+
+```bash
+$RMSAI cli.inbox_probe --ptt
+$RMSAI cli.inbox_probe --select <event_id> --say "what were the vitals at the event?"
+$RMSAI cli.dispatch --all-inbox       # re-wire live inbox rooms that lost their agent
+```
+
+**Logs, audit trail, and GUIs:**
+
+```bash
+make docker-logs                                    # all three app services, follow
+docker compose -f infra/docker-compose.yml logs -f voice-worker
+tail -f data/audit.jsonl                            # {ts, actor, action, subject, outcome}
+```
+
+Neo4j Browser `http://localhost:7474` · Qdrant dashboard `http://localhost:6333/dashboard` ·
+companion app `http://localhost:8080/`.
+
+**Common failures and what they actually mean:**
+
+| Symptom | Cause |
+|---|---|
+| `Error 111 connecting to localhost:6379` | the backing stores aren't running — `make stores-check`, then `make stores-up`. Running the CLIs under `uv` does not make them self-contained |
+| `[errno 98] address already in use` on 8080/8081 | a host-run gateway/worker is still up — host networking shares the port space |
+| worker retry-loops on `:7880` | the LiveKit **server** isn't running, not a worker bug |
+| `collection … has vector dim 384, but embedder … 256` | `--embedder` doesn't match what built the collection |
+| `cli.kb_dump --list` returns `[]` | the graph was wiped (full pytest run / `cli.kb_eval`) — redo steps 3–4 |
+| worklist empty, chat silent | worker not dispatched into the room → `cli.dispatch --all-inbox`; or a cached `app.js` (check the on-screen build tag) |
+| answer declines on an in-corpus question | relevance gate — the log names both signals and both thresholds |
+
+### 8. Performance
+
+**Retrieval quality + cost + latency**, vector vs hybrid over the gold question set — the go/no-go
+on hybrid. Reports correctness, citation grounding, context-token cost, and per-mode latency:
+
+```bash
+$RMSAI cli.kb_eval                     # ⚠️ resets the live Neo4j (seeds its own eval cohort)
+$RMSAI cli.kb_eval --json
+```
+
+**Speech latency per leg** — TTS → STT round-trip with no audio hardware, the way to compare a
+self-hosted backend against a cloud one:
+
+```bash
+$RMSAI cli.speech_check                                    # whisper + piper (self-hosted)
+$RMSAI cli.speech_check --tts elevenlabs --stt elevenlabs  # cloud (synthetic text only)
+```
+
+**Container resource use:**
+
+```bash
+docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'
+# infra-consumer-1      0.10%   262.5MiB / 15.35GiB
+# infra-voice-worker-1  1.25%    72.8MiB / 15.35GiB   (idle; a live job forks a ~600MB child)
+# infra-gateway-1       0.27%    35.0MiB / 15.35GiB
+```
+
+The voice worker forks a **job process per room**; livekit-agents logs a memory warning above
+500 MB (advisory) and kills a job process that stops answering health pings — which is what a slow
+cold start inside a contended container looks like. Per-turn spans (`common/tracing.py`) are
+recorded on every `TurnResult.trace` for step-level latency.
+
+Knobs that move the needle: `WHISPER_MODEL` (`tiny.en` ≫ faster than `base.en`), `EMBEDDER`
+(`hashing` skips the BGE load entirely), `LLM_PROVIDER=echo` (no model call at all),
+`KB_LLM_ROUTER=false` (default — it adds a model call in front of a Cypher lookup, ~6s on
+llama3.2:3b), and `EPISODIC_RECALL=false` (default).
+
+### 9. Shut down
+
+```bash
+make docker-down          # stop + remove containers; named volumes survive
+```
+
+Data survives a `down`: Neo4j (`neo4j_data`), Qdrant (`qdrant_data`), the model cache (`hf_cache`),
+and everything under `./data` (reports, plots, uploads, audit log) are volumes or bind mounts.
+Redis is in-memory by design (`--save ""`), so the **bus backlog and working memory do not survive**.
+
+```bash
+docker compose -f infra/docker-compose.yml down -v      # ⚠️ ALSO deletes graph + vectors + model cache
+docker compose -f infra/docker-compose.yml stop consumer   # stop one service
+docker compose -f infra/docker-compose.yml restart voice-worker
+```
+
+After `down -v` you are back to step 3 — re-initialize the KB, then re-ingest.
+
+---
+
+## End-to-end testing
+
+### 0. Demo bring-up sequence
+
+**All in Docker** — one command brings up the stores, LiveKit, and the three app services:
+
+```bash
+make docker-up
+make docker-ps        # every service should be Up (gateway: Up (healthy))
+make docker-logs      # tail consumer + voice-worker + gateway
+
+# drive a scenario: produce an event into the bus (steps 2-4 below run the same way)
+docker compose -f infra/docker-compose.yml run --rm tools \
+    python -m cli.ingest --file data/inference/<f>.h5 \
+    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+```
+
+**Hybrid** (containers for the infrastructure, host terminals for whatever you're editing) — this
+is the loop the rest of this section is written for, since it shows each process's output directly:
+
+```bash
+# 1. Backing services only — needed even though the CLIs run on the host
+make stores-up
+make stores-check          # redis / neo4j / qdrant / livekit reachability
+
+# 2. (voice) agent worker — joins rooms, runs STT → Handler → TTS. Leave running in its own terminal.
 uv run python -m cli.voice_worker dev
 
-# 4. Drive a scenario (separate terminals): produce an event, then consume/dial. See steps 2–6 below.
+# 3. Drive a scenario (separate terminals): produce an event, then consume/dial. See steps 2–6 below.
 ```
+
+Stop the container of any service you want to run by hand — `docker compose -f
+infra/docker-compose.yml stop voice-worker` — so the two don't both join the same rooms.
+
+> A voice worker started against a missing LiveKit server just retry-loops on `:7880`
+> (`Connect call failed ('127.0.0.1', 7880)`) — that error means *the server isn't running*, not a
+> bug in the worker. LiveKit now starts with a plain `up`; it is no longer `later`-profiled.
 
 > Start order matters for in-app chat: the **worker must be running before** a room is created, or
 > the `/session` dispatch won't reach it. If you **restart the worker** while the app is connected,
@@ -550,24 +1017,124 @@ uv run pytest -q -m "not infra"        # skip infra-dependent tests
 ### 2. Generate synthetic events (vendored simulator)
 
 ```bash
-# writes HDF5 under external/ecgtranscnn/data/inference/
-uv run python external/ecgtranscnn/scripts/generate_inference_data.py
+# writes HDF5 under <cwd>/data/inference/ — run from the repo root, or pass --output-dir
+uv run python external/ecgtranscnn/scripts/generate_inference_data.py --output-dir data/inference
 ```
 
 ### 3. Direct relay path (HDF5 → call, bypasses the bus)
 
 ```bash
 uv run python -m cli.outbound \
-    --file external/ecgtranscnn/data/inference/<file>.h5 \
+    --file data/inference/<file>.h5 \
     --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt
 ```
+
+### 3a. Upload protocols / SOPs / checklists to the KB
+
+Puts your own reference material behind the Q&A, so "what is the SOP for handling a patient with
+AF?" is answered from your documents with a citation instead of declined. PDF, markdown, and text.
+
+```bash
+uv run --extra pdf python -m cli.kb_upload --file protocols/af_sop.pdf --dry-run  # preview only
+uv run --extra pdf python -m cli.kb_upload --file protocols/af_sop.pdf            # one file
+uv run --extra pdf python -m cli.kb_upload --dir protocols/ --glob '*.pdf'        # a folder
+uv run --extra pdf python -m cli.kb_upload --dir protocols/ --extract             # + graph entities
+```
+
+`--extra pdf` pulls in `pypdf`; drop it if you are only uploading `.md`/`.txt`. `--dry-run` prints
+the chunk plan and touches nothing. `--extract` also pulls `Condition`/`Treatment` entities into the
+graph, so the hybrid retriever can relate the document to patients and events.
+
+Uploads are incremental and idempotent (chunk ids are content-addressed), so re-uploading an
+unchanged file is a no-op and an edited one replaces only what changed. PDF pages are cited
+individually — an answer from `af_sop.pdf#page 3` tells the clinician which page to turn to — and a
+scanned/image PDF is rejected with that diagnosis rather than silently indexed as empty.
+
+**The embedder must match the collection.** Vectors are only comparable within one embedder
+(hashing=256-dim / BGE=384-dim), so every KB path defaults `--embedder` to **`EMBEDDER`** from
+`.env` — set it once and `kb_upload`, `consume`, `outbound`, `text_chat`, and the voice worker all
+agree. A mismatch is refused with the fix rather than corrupting the store. (`cli.kb_vector` is the
+exception: it defaults to `auto`, which prefers BGE and falls back to hashing offline — pass
+`--embedder` explicitly there if `EMBEDDER=hashing`.)
+
+Each upload is **copied into a managed folder** (`KB_UPLOAD_DIR`, default `data/kb_uploads/`) and a
+corpus rebuild re-indexes it automatically, so uploads survive `index --reset`:
+
+```bash
+uv run --extra pdf --extra rag python -m cli.kb_vector --embedder bge index --dir docs --reset
+# [index] re-indexed 3 uploaded document(s) from data/kb_uploads
+# {"indexed_chunks": 18, "embedder": "BAAI/bge-small-en-v1.5", "mode": "reset", "uploads": 3}
+```
+
+Pass `--no-keep` to index a file in place without a managed copy (a rebuild will then drop it), or
+`--upload-dir ""` on `index` to rebuild from `docs/` alone.
+
+**Sample document to test the path with.** [`docs/samples/critical_alarm_sop.md`](docs/samples/critical_alarm_sop.md)
+is a synthetic critical-alarm SOP + escalation checklist (9 sections → 9 chunks). It lives in
+`docs/samples/`, which the **non-recursive** `docs/*.md` corpus glob deliberately excludes — so it is
+*not* auto-indexed, and uploading it actually exercises the upload path:
+
+```bash
+uv run python -m cli.kb_upload --file docs/samples/critical_alarm_sop.md
+# [upload] critical_alarm_sop.md: 9 chunk(s) across 9 section(s)
+# [upload] indexed critical_alarm_sop.md -> 9 chunk(s) (embedder bge, dim 384)
+```
+
+#### Verify the KB
+
+```bash
+# ranked chunks + citations — did the document actually land, and does it win the query?
+uv run python -m cli.kb_vector --embedder bge retrieve "what is the escalation checklist for a critical alarm" -k 3
+
+# grounded, cited answer (declines when out-of-corpus rather than fabricating)
+uv run python -m cli.kb_vector --embedder bge ask "what happens if the on-call clinician does not respond to an alarm"
+
+# hybrid: vector passages + graph relationships, both blocks shown
+uv run python -m cli.kb --embedder bge --show-context "which conditions are co-morbid with atrial fibrillation"
+
+# inventory — every document in the collection, by chunk count
+curl -s -X POST http://localhost:6333/collections/rmsai_docs/points/scroll \
+  -H 'Content-Type: application/json' -d '{"limit":500,"with_payload":true}' \
+| python3 -c "import sys,json,collections; c=collections.Counter(p['payload'].get('doc_id') for p in json.load(sys.stdin)['result']['points']); [print(f'{v:4d}  {k}') for k,v in sorted(c.items())]"
+```
+
+A healthy result for the sample SOP looks like this — the uploaded document out-ranks the committed
+corpus on its own subject, and each hit names the section to cite:
+
+```
+[1] score=0.859  (critical_alarm_sop.md#Escalation checklist)
+[2] score=0.769  (critical_alarm_sop.md#Escalation ladder and response times)
+[3] score=0.756  (critical_alarm_sop.md#Immediate response in the first sixty seconds)
+```
+
+The inventory lists `docs/*.md` chunks, each uploaded document, and one `report:<event_id>` group per
+consumed event. If an upload is missing from it, the usual causes are: a PDF dropped into `docs/`
+(the corpus glob is markdown-only — it must go through `kb_upload`), a file under a subdirectory of
+`docs/` (the glob is non-recursive), or `index --reset` run with `--upload-dir ""`. Qdrant's own
+dashboard at `http://localhost:6333/dashboard` shows the same collection interactively.
+
+### 3b. On-demand call (no event at all)
+
+Rings `OUTBOUND_CALL_NUMBER` because you asked it to, not because something happened. Each call gets
+its own room (`rmsai-call-<id>`); the agent is dispatched there **before** the dial, and with no
+alert staged in that room the worker runs the PIN-gated Q&A handler — so the callee authenticates,
+then asks grounded questions.
+
+```bash
+uv run python -m cli.call                    # simulated: whole path, no telephony
+uv run python -m cli.call --caller livekit   # real SIP via LIVEKIT_SIP_TRUNK_ID
+uv run python -m cli.call --caller livekit --to +15551234567 --no-dispatch   # trunk test only
+```
+
+Needs an outbound trunk (`LIVEKIT_SIP_TRUNK_ID`) and a caller ID (`OUTBOUND_FROM`) — most carriers
+reject a call presenting no valid from-number. Exit code is 0 answered / 1 no-answer / 2 invalid.
 
 ### 4. Bus path: producer → Redis Stream → consumer
 
 ```bash
 # PRODUCER — classify + publish to rmsai.events
 uv run python -m cli.ingest \
-    --file external/ecgtranscnn/data/inference/<file>.h5 \
+    --file data/inference/<file>.h5 \
     --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt \
     --emit bus --stream rmsai.events
 
@@ -586,11 +1153,14 @@ uv run python -m cli.consume --channel text --once
 ### 5. Real WebRTC audio loop (browser, no phone)
 
 ```bash
-# PREREQ — the LiveKit media server must be running (it is `later`-profiled; a plain `up` skips it).
-# Skip this only if `docker ps` already shows infra-livekit-1 healthy on :7880.
+# PREREQ — the LiveKit media server must be running. `make docker-up` (or a plain `up`) starts it;
+# skip this if `docker ps` already shows infra-livekit-1 on :7880.
 docker compose -f infra/docker-compose.yml up -d livekit
 
-# TERMINAL A — agent worker (joins rooms; runs Whisper STT → Handler → Piper TTS)
+# TERMINAL A — agent worker (joins rooms; runs Whisper STT → Handler → Piper TTS).
+# Already running as a container under `make docker-up`; run it by hand only to watch its output,
+# and stop the container first so the two don't both join the room:
+#   docker compose -f infra/docker-compose.yml stop voice-worker
 uv run python -m cli.voice_worker dev
 ```
 
@@ -646,7 +1216,7 @@ uv run python -m cli.consume --channel voice --caller livekit --transport sip --
 
 ```bash
 uv run python external/ecgtranscnn/scripts/generate_inference_data.py
-uv run python -m cli.ingest --file external/ecgtranscnn/data/inference/<file>.h5 \
+uv run python -m cli.ingest --file data/inference/<file>.h5 \
     --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
 uv run python -m cli.consume --channel voice --once \
     --follow-up "what were the vitals" --ack "yes I acknowledge"
@@ -660,8 +1230,12 @@ persisted but skipped (`below_threshold`).
 ```bash
 uv run python -m cli.gen_synthetic ...     # synthetic signal/event generation
 uv run python -m cli.kb_vector index --dir docs/   # index the clinical corpus (vector)
+uv run python -m cli.kb_upload --dir protocols/    # add SOPs/guidelines/checklists (PDF + markdown)
+uv run python -m cli.kb_route --llm "..."  # which path a question takes (regex / LLM / documents)
+uv run python -m cli.call --caller livekit # ring the on-call number on demand (no event needed)
+uv run python -m cli.inbox_probe --ptt     # probe in-app chat/PTT without the browser
 uv run python -m cli.graph migrate         # graph schema migrate / seed
-uv run python -m cli.kb ask "..."          # hybrid (vector + graph) KB query
+uv run python -m cli.kb "..."              # hybrid (vector + graph) KB query
 uv run python -m cli.kb_dump <event_id>    # dump one event: graph node + report file + vector chunks
 uv run python -m cli.kb_eval               # vector vs hybrid over the gold question set
 uv run python -m cli.memory demo           # working + episodic + semantic memory round-trip

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from common.audit import AuditLog
 from common.config import DEFAULT, Config
-from common.criticality import at_least, event_criticality, vitals_override
+from common.criticality import alert_basis, at_least, event_criticality
 from common.schemas import DeviceEvent
 from kb.graph.driver import GraphDriver
 from kb.graph.events import set_event_status
@@ -48,26 +48,38 @@ def should_call(event: DeviceEvent, config: Config = DEFAULT) -> tuple[bool, str
     deteriorating trend) **overrides** that guard — the patient is deteriorating regardless of the
     rhythm, so we still call. The returned reason names the override for the audit/console log.
 
-    Symmetric gate on the other side: a **non-normal (arrhythmia)** prediction only dials out when the
-    model's confidence in it is at/above `outbound_min_arrhythmia_confidence` — a low-confidence
-    arrhythmia is likely a misdetection, not worth a call on the rhythm alone. The same vitals-driven
-    escalation overrides this too, so a deteriorating patient always calls regardless of confidence.
+    Gate on the other side: a **non-normal (arrhythmia)** prediction only alerts *as a rhythm* when
+    the model's confidence in it is at/above `outbound_min_arrhythmia_confidence`. Deteriorating
+    vitals do not raise that bar — they cannot make an uncertain classification true — but they do
+    change the **basis** of the alert rather than being ignored: an uncertain rhythm on a
+    deteriorating patient still reaches the clinician, as a *vitals-driven* alert that names the
+    vital and treats the rhythm as unconfirmed (`alert_basis`). Only an uncertain rhythm on a patient
+    whose vitals are unremarkable is withheld, and even then the event is still persisted.
+
+    Reasons distinguish the three ways through: `ok` (the rhythm carries it), `fp_override (why)`
+    (rhythm is a confident NORMAL_SINUS, vitals carry it), `vitals_alert (why)` (rhythm is
+    unconfirmed, vitals carry it).
     """
     if not config.outbound_enabled:
         return False, "outbound_disabled"
     crit = event_criticality(event, config)
-    vitals_warn, why = vitals_override(event, config)
-    fp_override = event.is_false_positive and config.criticality_fp_override_on_vitals and vitals_warn
-    if event.is_false_positive and not fp_override:
+    basis, why = alert_basis(event, config)
+    vitals_driven = basis == "vitals"
+    if event.is_false_positive and not vitals_driven:
         return False, "false_positive"
-    # Arrhythmia confidence gate (vitals override it, mirroring the FP override above).
+    # Arrhythmia confidence gate. Absolute for the *rhythm claim*: an uncertain classification never
+    # gets asserted as a finding. But when the vitals independently warrant a call, the alert is
+    # re-based on them rather than dropped, so a deteriorating patient is never silently withheld.
     is_arrhythmia = event.event_type != config.criticality_normal_event
-    if is_arrhythmia and not vitals_warn and event.confidence < config.outbound_min_arrhythmia_confidence:
+    if (is_arrhythmia and not vitals_driven
+            and event.confidence < config.outbound_min_arrhythmia_confidence):
         return False, (f"low_confidence_arrhythmia ({event.confidence:.0%} < "
                        f"{config.outbound_min_arrhythmia_confidence:.0%})")
     if not at_least(crit, config.outbound_min_criticality):
         return False, f"below_threshold ({crit} < {config.outbound_min_criticality})"
-    return True, (f"fp_override ({why})" if fp_override else "ok")
+    if event.is_false_positive:
+        return True, f"fp_override ({why})"
+    return True, (f"vitals_alert ({why})" if vitals_driven else "ok")
 
 
 def run_outbound(

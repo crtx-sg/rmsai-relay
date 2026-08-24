@@ -181,6 +181,55 @@ def test_publish_status_message():
                                             "status": "acknowledged"})]
 
 
+def test_event_message_carries_rhythm_confidence():
+    # An event can reach the worklist on the vitals override while the model is barely sure of the
+    # rhythm, so the row must be able to say so — otherwise a coin-flip read renders exactly like a
+    # certain one and reads as an asserted finding.
+    msg = build_event_message(event_id="e1", patient="PT1155", unit="ICU", bed="3",
+                              event_type="AV_BLOCK_2_TYPE2", ts=0.0, criticality="High",
+                              status="reported", links={}, confidence=0.54, low_confidence=True)
+    assert msg["confidence"] == 0.54 and msg["low_confidence"] is True
+    # Absent confidence stays absent rather than defaulting to a number the model never produced.
+    plain = build_event_message(event_id="e2", patient="PT1155", unit="ICU", bed="3",
+                                event_type="ATRIAL_FIBRILLATION", ts=0.0, criticality="High",
+                                status="reported", links={})
+    assert plain["confidence"] is None and plain["low_confidence"] is False
+
+
+def test_consumer_publishes_the_models_confidence(patched):
+    # The value must reach the row from the classified event, not be dropped in the consumer.
+    pub, captured = _publisher()
+    _run("app", patched, pub=pub, store=ArtifactTokenStore(_FakeRedis(), ttl_seconds=300))
+    _room, msg = captured[0]
+    assert msg["confidence"] == pytest.approx(0.92)  # _Afib predicts 0.92
+    assert msg["low_confidence"] is False            # 0.92 >= LOW_CONFIDENCE_CAVEAT
+    assert msg["alert_basis"] == "rhythm"            # confident: the rhythm carries the alert
+
+
+def test_vitals_driven_row_leads_with_the_vital(patched):
+    # At 40% the rhythm can't be asserted, but HR 145 (high MEWS) still warrants reaching the
+    # clinician. The row must carry the basis + the vital, so the app can lead with what we know.
+    class _WeakAfib(ECGModel):
+        def predict(self, window):
+            return "ATRIAL_FIBRILLATION", 0.40
+
+    w = next(read_hdf5_file(_FIXTURE))
+    w.vitals["HR"].value = 145.0
+    ev = process_window(w, _WeakAfib(), MewsVitalsAnalysis())
+    pub, captured = _publisher()
+    bus_consumer.process_bus_event(
+        event_to_dict(ev), driver=object(), vector=object(), orchestrator=object(),
+        beds=object(), utterances=["yes"], channel="voice",
+        config=replace(_CFG, dispatch_mode="app"), inbox_publisher=pub,
+        token_store=ArtifactTokenStore(_FakeRedis(), ttl_seconds=300),
+    )
+    _room, msg = captured[0]
+    assert msg["alert_basis"] == "vitals"
+    assert msg["alert_reason"] and "MEWS" in msg["alert_reason"]
+    assert msg["event_type"] == "ATRIAL_FIBRILLATION"  # still carried, but as the unconfirmed part
+    assert msg["low_confidence"] is True
+
+
 def test_build_event_message_refuses_non_pseudonym():
     with pytest.raises(ValueError, match="pseudonym"):
         build_event_message(event_id="e1", patient="John Doe", unit="ICU", bed="3",

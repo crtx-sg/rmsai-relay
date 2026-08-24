@@ -12,6 +12,9 @@ if it doesn't, the fault is in the worker and the browser is a red herring.
   # a typed question, scoped to a worklist event
   uv run python -m cli.inbox_probe --select <event-uuid> --say "what were the vitals at the event?"
 
+  # did selecting a row actually speak the report? (🔊 lines are what the agent said aloud)
+  uv run python -m cli.inbox_probe --select <event-uuid>
+
 Needs LiveKit configured (`LIVEKIT_URL`/`LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`) and the voice worker
 running. NOTE: joining makes this probe a room participant, so the agent may re-link its audio input
 here — run it when the app isn't mid-test, or reload the app afterwards.
@@ -27,6 +30,10 @@ from live.inbox import inbox_room
 from voice.livekit_cloud import access_token, is_configured
 
 _TOPIC = "lk.chat"
+#: The agent mirrors everything it *speaks* here (livekit.agents TOPIC_TRANSCRIPTION). Listening to
+#: it turns "did the TTS actually run?" into something you can see without audio hardware — which is
+#: the only way to tell a silent speaker apart from a speech step that never fired.
+_TOPIC_SPOKEN = "lk.transcription"
 
 
 async def _run(messages: list[str], *, wait_s: float, config: Config) -> int:
@@ -38,16 +45,21 @@ async def _run(messages: list[str], *, wait_s: float, config: Config) -> int:
 
     room = rtc.Room()
     replies: list[str] = []
+    spoken: list[str] = []
 
-    def _on_text(reader, participant_identity: str) -> None:
-        async def _read() -> None:
-            text = await reader.read_all()
-            replies.append(text)
-            print(f"  <- {participant_identity}: {text}", flush=True)
+    def _reader_for(sink: list[str], arrow: str):
+        def _handler(reader, participant_identity: str) -> None:
+            async def _read() -> None:
+                text = await reader.read_all()
+                sink.append(text)
+                print(f"  {arrow} {participant_identity}: {text}", flush=True)
 
-        asyncio.create_task(_read())  # noqa: RUF006 - fire-and-forget print task
+            asyncio.create_task(_read())  # noqa: RUF006 - fire-and-forget print task
 
-    room.register_text_stream_handler(_TOPIC, _on_text)
+        return _handler
+
+    room.register_text_stream_handler(_TOPIC, _reader_for(replies, "<-"))
+    room.register_text_stream_handler(_TOPIC_SPOKEN, _reader_for(spoken, "🔊"))
     await room.connect(config.livekit_url, token)
     print(f"joined {room_name!r} as {identity}", flush=True)
     agents = [p.identity for p in room.remote_participants.values()
@@ -64,8 +76,9 @@ async def _run(messages: list[str], *, wait_s: float, config: Config) -> int:
     finally:
         await room.disconnect()
 
-    print(f"\n{len(replies)} repl{'y' if len(replies) == 1 else 'ies'} received", flush=True)
-    return 0 if replies else 1
+    print(f"\n{len(replies)} typed repl{'y' if len(replies) == 1 else 'ies'}, "
+          f"{len(spoken)} spoken segment{'' if len(spoken) == 1 else 's'}", flush=True)
+    return 0 if (replies or spoken) else 1
 
 
 def build_messages(*, select: str | None, say: list[str], ptt: bool) -> list[str]:

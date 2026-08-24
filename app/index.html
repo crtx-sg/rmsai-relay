@@ -26,6 +26,13 @@
     .crit { font-weight: 600; }
     .crit-Critical { color: #c0392b; }
     .crit-High { color: #e67e22; }
+    /* Rhythm confidence: quiet when the model is sure, marked when it isn't — an uncertain read
+       must not look like an asserted finding (it can reach the worklist on the vitals override). */
+    .conf { font-variant-numeric: tabular-nums; color: #6b6b6b; }
+    .conf.low { color: #c0392b; font-weight: 600; }
+    /* Vitals-driven alert: the vital is the claim, the rhythm is only a suggestion. */
+    .vitals-led { display: block; font-weight: 600; color: #8e44ad; }
+    .sub { display: block; font-size: .74rem; color: #6b6b6b; }
     .badge { font-size: .7rem; padding: .1rem .45rem; border-radius: 999px; border: 1px solid #8886; }
     .badge.new { background: #e67e2222; border-color: #e67e22; }
     .badge.acknowledged { background: #27ae6022; border-color: #27ae60; }
@@ -72,7 +79,7 @@
     <div id="empty">Waiting for critical events…</div>
     <table id="table" class="hidden">
       <thead>
-        <tr><th>Patient</th><th>Bed</th><th>Event</th><th>Criticality</th><th>Time</th><th>Status</th><th></th></tr>
+        <tr><th>Patient</th><th>Bed</th><th>Event</th><th>Conf.</th><th>Criticality</th><th>Time</th><th>Status</th><th></th></tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>

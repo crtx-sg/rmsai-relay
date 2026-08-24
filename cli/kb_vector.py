@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from common.config import DEFAULT
 from kb.vector.answer import answer
+from kb.vector.loader import SUPPORTED_SUFFIXES
 from kb.vector.retriever import VectorRetriever
 from kb.vector.store import QdrantStore
 
@@ -27,6 +29,17 @@ def _make_store(args: argparse.Namespace) -> QdrantStore:
     if args.in_memory:
         return QdrantStore.in_memory()
     return QdrantStore.connect(args.qdrant_url)
+
+
+def _managed_uploads(upload_dir: str | None) -> list[Path]:
+    """Documents in the managed upload folder, or [] when it is disabled/absent/empty."""
+    if not upload_dir:
+        return []
+    directory = Path(upload_dir)
+    if not directory.is_dir():
+        return []
+    return [p for p in sorted(directory.iterdir())
+            if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES]
 
 
 def _make_retriever(args: argparse.Namespace) -> VectorRetriever:
@@ -47,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     p_index.add_argument("--dir", default="docs")
     p_index.add_argument("--reset", action="store_true",
                          help="recreate the collection first (wipes event-report narratives)")
+    p_index.add_argument("--upload-dir", default=DEFAULT.kb_upload_dir,
+                         help="also re-index uploaded documents from here (\"\" to skip)")
 
     p_ret = sub.add_parser("retrieve", help="ranked chunks + citations")
     p_ret.add_argument("query")
@@ -65,8 +80,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "index":
         n = retriever.index_dir(args.dir, reset=args.reset)
+        # Uploaded documents (cli.kb_upload) live only as vectors, so a --reset rebuild would delete
+        # them. The managed folder holds their sources; re-index it here so "rebuild the corpus"
+        # means the whole corpus, not just the committed part.
+        uploads = _managed_uploads(args.upload_dir)
+        if uploads:
+            n += retriever.index_paths(uploads, reset=False)
+            print(f"[index] re-indexed {len(uploads)} uploaded document(s) from {args.upload_dir}",
+                  flush=True)
         print(json.dumps({"indexed_chunks": n, "embedder": retriever.embedder.name,
-                          "mode": "reset" if args.reset else "append"}))
+                          "mode": "reset" if args.reset else "append",
+                          "uploads": len(uploads)}))
         return 0
 
     if args.cmd == "retrieve":

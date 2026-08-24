@@ -29,6 +29,7 @@ from voice.livekit_agent import (  # noqa: E402
     build_handler,
     build_room_input_options,
     build_worker_options,
+    chat_sender_allowed,
     duplicate_agent_should_yield,
     ptt_command,
     relink_target,
@@ -101,6 +102,16 @@ def test_audio_relinks_to_a_reconnected_clinician():
                          rtc.ParticipantKind.PARTICIPANT_KIND_AGENT) is None
     # A phone caller (SIP) is a legitimate audio source for the per-event call rooms.
     assert relink_target(None, "sip-caller", rtc.ParticipantKind.PARTICIPANT_KIND_SIP) == "sip-caller"
+
+
+def test_agent_text_never_drives_a_turn():
+    # The worker answers on the same topic it listens to. If a second agent's reply were read back
+    # as a question the two would volley the same answer forever (observed: the console and the app
+    # filled with one repeated reply). Only callers may open a turn.
+    assert not chat_sender_allowed(rtc.ParticipantKind.PARTICIPANT_KIND_AGENT)
+    assert not chat_sender_allowed(None)  # sender not in the roster -> not a known caller
+    assert chat_sender_allowed(rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD)  # the app
+    assert chat_sender_allowed(rtc.ParticipantKind.PARTICIPANT_KIND_SIP)      # a phone caller
 
 
 def test_duplicate_agent_tiebreak_keeps_exactly_one():

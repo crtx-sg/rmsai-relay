@@ -55,7 +55,29 @@ class EpisodicMemory:
         return cls(QdrantClient(location=":memory:"), get_embedder(embedder_name), collection)
 
     def _ensure(self) -> None:
+        """Create the collection, or rebuild it if a *different* embedder wrote it.
+
+        Episodes stored under another embedder are not merely stale, they are unusable: their
+        vectors have the wrong dimension, so every `add`/`recall` would fail deep inside Qdrant
+        with an opaque error mid-event. Episodic memory is regenerable session history, so the
+        safe recovery is to recreate it (loudly) rather than crash the relay.
+        """
         if not self.client.collection_exists(self.collection):
+            self.client.create_collection(
+                self.collection,
+                vectors_config=VectorParams(size=self.embedder.dim, distance=Distance.COSINE),
+            )
+            return
+        params = self.client.get_collection(self.collection).config.params.vectors
+        # Single unnamed vector -> VectorParams(.size); named vectors -> dict (take the first).
+        if isinstance(params, dict):
+            params = next(iter(params.values()))
+        if params.size != self.embedder.dim:
+            print(f"[episodic] collection '{self.collection}' holds {params.size}-dim vectors but "
+                  f"embedder '{self.embedder.name}' produces {self.embedder.dim}; recreating "
+                  f"(past episodes are dropped — they are not comparable under this embedder).",
+                  flush=True)
+            self.client.delete_collection(self.collection)
             self.client.create_collection(
                 self.collection,
                 vectors_config=VectorParams(size=self.embedder.dim, distance=Distance.COSINE),

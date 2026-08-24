@@ -23,6 +23,7 @@ from common.bed_assignment import BedAssignmentStub
 from common.config import DEFAULT, Config
 from common.deid import get_deidentifier
 from common.notify import SimulatedSmsNotifier
+from common.preflight import service_unreachable
 from common.providers import DeidentifyingLLM, get_llm_provider
 from dataclasses import replace
 
@@ -38,12 +39,17 @@ from orchestrator.orchestrator import Orchestrator
 from voice.outbound import CallOutcome, SimulatedCaller, get_caller
 
 
-def _ensure_group(client, stream: str, group: str) -> None:
+def _ensure_group(client, stream: str, group: str, redis_url: str) -> None:
     """Create the consumer group at the stream head (id=0 → includes backlog); ignore if it exists."""
     import redis  # noqa: PLC0415
 
     try:
         client.xgroup_create(stream, group, id="0", mkstream=True)
+    except redis.exceptions.ConnectionError as exc:
+        # First Redis call of the run — the natural place to catch "the stores aren't running" and
+        # say so, rather than emitting a connection-pool traceback. `from None` drops that noise.
+        # Report the URL actually used (--redis-url), not the config default.
+        raise service_unreachable("Redis (the event bus)", redis_url, exc) from None
     except redis.ResponseError as exc:  # noqa: PERF203
         if "BUSYGROUP" not in str(exc):
             raise
@@ -67,7 +73,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--notifier", choices=["simulated", "twilio"], default="simulated")
     parser.add_argument("--number", default="+15551234567")
     parser.add_argument("--min-criticality", default="High")
-    parser.add_argument("--embedder", default="hashing", choices=["auto", "bge", "hashing"])
+    parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
+                        help="Must match the embedder the KB collections were built with "
+                             f"(default from EMBEDDER: {DEFAULT.embedder}).")
     parser.add_argument("--count", type=int, default=10, help="Max messages per read batch.")
     parser.add_argument("--block-ms", type=int, default=5000, help="Block this long awaiting messages.")
     parser.add_argument("--once", action="store_true", help="Process one batch (incl. backlog) then exit.")
@@ -152,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     # socket_timeout must outlive the server-side BLOCK window, else an idle blocking read
     # (no new messages) raises redis TimeoutError instead of returning nil. Give it headroom.
     client = redis.Redis.from_url(args.redis_url, socket_timeout=args.block_ms / 1000 + 5)
-    _ensure_group(client, args.stream, args.group)
+    _ensure_group(client, args.stream, args.group, args.redis_url)
     print(f"[consume] group={args.group} consumer={args.consumer} stream={args.stream}")
 
     processed = 0

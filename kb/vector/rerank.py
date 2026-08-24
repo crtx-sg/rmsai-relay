@@ -28,16 +28,22 @@ class LexicalReranker:
         self.weight = weight
 
     def rerank(self, query: str, hits: list[SearchHit]) -> list[SearchHit]:
+        """Reorder by the blend, but leave `score` as the retriever's own similarity.
+
+        The blend is an *ordering* signal. Writing it back over `score` also made it a relevance
+        signal, and a half-lexical one — so a caller asking "how similar is this passage really?"
+        got a number that moved when the question was reworded. Ordering is unchanged; the score
+        now means what its name says.
+        """
         q = _tokens(query)
         if not q:
             return hits
-        rescored = []
-        for h in hits:
-            overlap = len(q & _tokens(h.text)) / len(q)
-            score = (1 - self.weight) * h.score + self.weight * overlap
-            rescored.append(SearchHit(text=h.text, source=h.source, doc_id=h.doc_id, score=score))
-        rescored.sort(key=lambda h: h.score, reverse=True)
-        return rescored
+        ranked = sorted(
+            hits,
+            key=lambda h: (1 - self.weight) * h.score + self.weight * (len(q & _tokens(h.text)) / len(q)),
+            reverse=True,
+        )
+        return ranked
 
 
 class CrossEncoderReranker:

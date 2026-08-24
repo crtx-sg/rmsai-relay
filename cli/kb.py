@@ -1,7 +1,7 @@
 """Phase 2C hybrid KB CLI.
 
-  python -m cli.kb ask "which conditions are commonly co-morbid with atrial fibrillation"
-  python -m cli.kb ask --mode vector "..."     # baseline: passages only
+  python -m cli.kb "which conditions are commonly co-morbid with atrial fibrillation"
+  python -m cli.kb --mode vector "..."     # baseline: passages only
 
 Runs the vector search (live Qdrant) + graph lookup (live Neo4j), assembles the two labelled
 blocks, and answers grounded in both. `--show-context` prints the blocks.

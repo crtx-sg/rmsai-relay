@@ -15,10 +15,12 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from common.config import DEFAULT
 from common.providers import DeidentifyingLLM
 from common.schemas import ChatTurn
 from common.tracing import Tracer
 from kb.graph.driver import GraphDriver
+from kb.graph.llm_router import route as llm_route
 from kb.graph.lookup import match_intent
 from kb.graph.templates import run_template
 from kb.hybrid.retriever import HybridRetriever
@@ -29,6 +31,53 @@ from memory.working import WorkingMemory
 from .guardrails import Guardrails
 
 _MIN_OVERLAP = 0.18
+
+
+def is_relevant(result, overlap: float, top_score: float, *,
+                min_relevance: float, min_overlap: float = _MIN_OVERLAP) -> bool:
+    """Whether retrieval found something worth answering from.
+
+    Three independent ways to vouch, any one of which is enough: the graph returned a fact, the best
+    passage *means* the same thing (semantic similarity, which survives rewording), or it *says* the
+    same words. The lexical arm alone used to decide — which refused correctly-retrieved passages
+    that happened to be phrased differently from the question, the single largest source of
+    "I don't have information on that". The two arms fail in different directions, so keeping both
+    costs nothing: word overlap carries the hashing embedder, whose similarity scores do not
+    separate on-topic from off-topic at all.
+    """
+    if result.relationships:
+        return True
+    if not result.passages:
+        return False
+    return top_score >= min_relevance or overlap >= min_overlap
+
+
+def explain_decline(result, overlap: float, top_score: float = 0.0, *,
+                    min_relevance: float = 0.60, min_overlap: float = _MIN_OVERLAP) -> str:
+    """Why this turn declined, and the lever that would fix it. Empty string if it shouldn't have.
+
+    A decline has exactly three causes, and they need opposite responses — an empty corpus needs a
+    document, a rejected passage needs a threshold or a better retriever, and a wrong-topic passage
+    needs nothing at all (the decline was correct). Without this the clinician and the log both just
+    see "I don't have information on that", which reads as a broken knowledge base every time.
+    """
+    if result.relationships:
+        return ""
+    if not result.passages:
+        return ("retrieval returned nothing — no vector passages and no graph relationships. The "
+                "corpus has no document on this topic: add one under docs/ and re-index "
+                "(cli.kb_vector index).")
+    top = result.passages[0]
+    return (
+        f"{len(result.passages)} passage(s) retrieved, but neither relevance signal vouched for "
+        f"them: semantic similarity {top_score:.2f} < {min_relevance:.2f} AND word overlap "
+        f"{overlap:.2f} < {min_overlap:.2f} (top: {top.source}). If that passage is ON-topic, the "
+        f"gate is too strict — lower KB_MIN_RELEVANCE; note the similarity arm only discriminates "
+        f"under EMBEDDER=bge (hashing scores on- and off-topic queries alike). If it is off-topic, "
+        f"the decline was correct and the corpus is missing this subject."
+    )
+
+
 _DECLINE = "I don't have information on that in the knowledge base."
 # "say that again" — re-voice the previous answer from working memory (basic conversational memory).
 _REPEAT = re.compile(
@@ -237,6 +286,8 @@ class Orchestrator:
         guardrails: Guardrails | None = None,
         llm_retries: int = 1,
         episodic_recall: bool = False,
+        min_relevance: float | None = None,
+        llm_router: bool | None = None,
     ) -> None:
         self.working = working
         self.hybrid = hybrid
@@ -246,6 +297,10 @@ class Orchestrator:
         self.guardrails = guardrails or Guardrails()
         self.llm_retries = llm_retries
         self.episodic_recall = episodic_recall  # gate recalled "past interactions" in free-text answers
+        # Semantic arm of the relevance gate; see Config.kb_min_relevance for the calibration.
+        self.min_relevance = DEFAULT.kb_min_relevance if min_relevance is None else min_relevance
+        # LLM fallback routing for operational questions the regexes miss (kb/graph/llm_router.py).
+        self.llm_router = DEFAULT.kb_llm_router if llm_router is None else llm_router
 
     def _generate(self, prompt: str) -> tuple[str, bool]:
         """Generate with one retry on transient failure; return (text, failed). Never raises."""
@@ -300,6 +355,16 @@ class Orchestrator:
         with tracer.span("retrieve") as sp:
             intent = match_intent(user_text, now=now, patient_ref=state.patient_ref,
                                   event_ref=state.event_ref)
+            if intent is None and self.llm_router:
+                # The regexes only fire on phrasings someone anticipated. When one misses a question
+                # that is plainly about a bed/patient/event, ask the model which template was meant
+                # — it picks a name from a fixed menu and never supplies an identity. Gated on
+                # `looks_operational` inside, so document questions never pay for this.
+                intent = llm_route(user_text, self.llm, patient_ref=state.patient_ref,
+                                   event_ref=state.event_ref, now=now)
+                if intent is not None:
+                    print(f"[orchestrator] llm-routed to template {intent[0]!r}", flush=True)
+                    sp.attributes["llm_routed"] = intent[0]
             if intent:
                 name, params = intent
                 operational_rows = run_template(self.driver, name, **params)
@@ -310,10 +375,23 @@ class Orchestrator:
                 mode = "hybrid"
                 result = self.hybrid.retrieve(user_text, mode="hybrid")
                 kb_context, citations = _render_blocks(result)
-                relevant = bool(result.relationships) or (
-                    bool(result.passages) and _best_overlap(user_text, result.passages) >= _MIN_OVERLAP
-                )
-                declined = not relevant
+                overlap = _best_overlap(user_text, result.passages) if result.passages else 0.0
+                top_score = result.passages[0].score if result.passages else 0.0
+                # Two independent ways a passage can vouch for itself: it *means* the same thing
+                # (semantic similarity, which survives rewording) or it *says* the same words. Either
+                # is enough. The lexical arm alone used to decide, which is why a correctly retrieved
+                # passage phrased differently from the question was refused.
+                declined = not is_relevant(result, overlap, top_score,
+                                           min_relevance=self.min_relevance)
+                sp.attributes.update(top_score=round(top_score, 3), overlap=round(overlap, 3))
+                if declined:
+                    # "I don't have information on that" is indistinguishable from a broken KB
+                    # unless the turn says which of the three ways it got there. Logged, traced,
+                    # and carried on the result so a caller can surface it.
+                    decline_detail = explain_decline(result, overlap, top_score,
+                                                     min_relevance=self.min_relevance)
+                    sp.attributes["decline_reason"] = decline_detail
+                    print(f"[orchestrator] declined: {decline_detail}", flush=True)
             sp.attributes.update(mode=mode, declined=declined)
 
         # --- output policy: answer / decline / escalate ---

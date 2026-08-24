@@ -103,6 +103,37 @@ def vitals_override(event, config) -> tuple[bool, str]:
     return False, ""
 
 
+def alert_basis(event, config) -> tuple[str, str]:
+    """What an alert for this event actually rests on: `("rhythm", "")` or `("vitals", why)`.
+
+    An alert is **vitals-driven** whenever the rhythm can't carry it but the patient's vitals can:
+
+    * the ECG reads `NORMAL_SINUS` — a normal rhythm is never itself a reason to alert, so *any*
+      alert on one rests on the vitals. That covers both the confident reading (the false-positive
+      override) and the uncertain one (below `fp_suppress_min_confidence`, so never suppressed in the
+      first place, and equally not a finding).
+    * the ECG is a *non-normal* prediction the classifier isn't confident in (below
+      `outbound_min_arrhythmia_confidence`) while the vitals warrant a call.
+
+    Both reach the clinician, but neither may be presented as a rhythm finding — the deteriorating
+    vitals are the claim, and the rhythm is either benign or at best unconfirmed. Callers use this to
+    lead with the vital (`why` names it) instead of asserting an event type the model guessed.
+    Everything else is `("rhythm", "")`: the classification stands on its own.
+    """
+    triggered, why = vitals_override(event, config)
+    if not triggered:
+        return "rhythm", ""
+    if event.event_type == config.criticality_normal_event:
+        # Override switched off: nothing rescues a suppressed false positive, and `should_call`
+        # drops it — so there is no alert to attribute to anything.
+        if event.is_false_positive and not config.criticality_fp_override_on_vitals:
+            return "rhythm", ""
+        return "vitals", why
+    if event.confidence < config.outbound_min_arrhythmia_confidence:
+        return "vitals", why
+    return "rhythm", ""
+
+
 def event_criticality(event, config) -> Criticality:
     """Configurable criticality for a `DeviceEvent` (duck-typed), reading thresholds from `config`."""
     return assess_criticality(

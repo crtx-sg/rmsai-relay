@@ -309,6 +309,52 @@ def access_token(
     return f"{signing_input}.{_b64url(sig)}"
 
 
+def build_sip_participant_kwargs(
+    *, room: str, number: str, config: Config = DEFAULT, trunk_id: str | None = None,
+    identity: str = "clinician", name: str = "rmsai-alert", wait_until_answered: bool = True,
+) -> dict:
+    """Fields for `CreateSIPParticipantRequest`, as a plain dict so they can be asserted offline.
+
+    Split out from the SDK call because the request is where a real trunk rejects us and where a
+    runaway call gets expensive, and neither is something to discover on a live carrier:
+
+    * `sip_number` is the caller ID (`OUTBOUND_FROM`). Most carrier trunks drop a call presenting no
+      valid from-number, and it is what shows on the clinician's handset — omitting it is why an
+      otherwise correct trunk config still fails to ring.
+    * `ringing_timeout` bounds how long an unanswered call holds a trunk channel.
+    * `max_call_duration` is the backstop for a call answered by voicemail, which otherwise bills
+      until somebody notices.
+
+    Raises `ValueError` when no trunk is configured — fail fast rather than let the SDK report it as
+    a generic dial failure that the retry policy would then dutifully repeat.
+    """
+    trunk = trunk_id or config.livekit_sip_trunk_id
+    if not trunk:
+        raise ValueError("LIVEKIT_SIP_TRUNK_ID is not configured")
+    kwargs = {
+        "sip_trunk_id": trunk,
+        "sip_call_to": number,
+        "room_name": room,
+        "participant_identity": identity,
+        "participant_name": name,
+        "wait_until_answered": wait_until_answered,
+        "ringing_timeout": _duration(config.sip_ringing_timeout_s),
+        "max_call_duration": _duration(config.sip_max_call_duration_s),
+    }
+    if config.outbound_from:  # caller ID; omitted entirely when unset so the trunk default applies
+        kwargs["sip_number"] = config.outbound_from
+    return kwargs
+
+
+def _duration(seconds: int):
+    """Seconds -> protobuf `Duration` (the SIP request's timeout fields), or None to leave unset."""
+    if not seconds or seconds <= 0:
+        return None
+    from google.protobuf.duration_pb2 import Duration  # noqa: PLC0415
+
+    return Duration(seconds=int(seconds))
+
+
 class LiveKitClient:  # pragma: no cover - needs the SDK + a live LiveKit endpoint
     """Room + SIP operations via the official `livekit-api` SDK (lazy)."""
 
@@ -338,20 +384,15 @@ class LiveKitClient:  # pragma: no cover - needs the SDK + a live LiveKit endpoi
         """Dial `number` into `room` via the outbound SIP trunk. Returns SIPParticipantInfo."""
         from livekit.protocol.sip import CreateSIPParticipantRequest  # noqa: PLC0415
 
-        trunk = trunk_id or self.config.livekit_sip_trunk_id
-        if not trunk:
-            raise ValueError("LIVEKIT_SIP_TRUNK_ID is not configured")
+        kwargs = build_sip_participant_kwargs(
+            room=room, number=number, config=self.config, trunk_id=trunk_id,
+            identity=identity, name=name, wait_until_answered=wait_until_answered,
+        )
 
         async def _go():
             lk = self._api()
             try:
-                return await lk.sip.create_sip_participant(
-                    CreateSIPParticipantRequest(
-                        sip_trunk_id=trunk, sip_call_to=number, room_name=room,
-                        participant_identity=identity, participant_name=name,
-                        wait_until_answered=wait_until_answered,
-                    )
-                )
+                return await lk.sip.create_sip_participant(CreateSIPParticipantRequest(**kwargs))
             finally:
                 await lk.aclose()
 

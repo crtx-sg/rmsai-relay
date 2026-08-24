@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from common.config import DEFAULT
+from tests.live_kb import docs_embedder_or_skip
 
 _FIXTURE = next((Path(__file__).resolve().parents[1] / "data" / "fixtures").glob("*.h5"))
 
@@ -31,7 +32,9 @@ def test_full_loop_cli(capsys):
         "--file", str(_FIXTURE),
         "--follow-up", "what is the rate control for atrial fibrillation",
         "--ack", "yes I acknowledge",
-        "--embedder", "hashing",
+        # The CLI talks to the deployed `rmsai_docs`, so the embedder must match the one that
+        # built it — a hardcoded choice fails whenever the deployment uses the other one.
+        "--embedder", docs_embedder_or_skip(),
     ])
     out = capsys.readouterr().out
     assert rc == 0

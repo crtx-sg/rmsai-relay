@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from common.bed_assignment import BedAssignmentStub
 from common.config import DEFAULT, Config
-from common.criticality import event_criticality, vitals_override
+from common.criticality import alert_basis, event_criticality
 from inference.serialize import dict_to_event
 from kb.graph.driver import GraphDriver
 from kb.vector.retriever import VectorRetriever
@@ -101,16 +101,15 @@ def process_bus_event(
             event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
             bed=bed_label, persisted=True, called=False, decision_reason=reason,
         )
-    # Name the *other* silent override too: an arrhythmia below `outbound_min_arrhythmia_confidence`
-    # is dispatched anyway when the vitals warrant it, and `should_call` reports that as a plain
-    # "ok" — which reads as "the confidence gate is ignoring my threshold" in the console.
-    warn, why = vitals_override(event, config)
-    if (warn and event.event_type != config.criticality_normal_event
-            and event.confidence < config.outbound_min_arrhythmia_confidence):
-        print(f"[consume] VITALS OVERRIDE: {event.event_type} confidence {event.confidence:.0%} is "
-              f"below OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE "
-              f"({config.outbound_min_arrhythmia_confidence:.0%}), but {why} — dispatching anyway.",
-              flush=True)
+    # What the alert actually rests on — the rhythm, or the vitals with the rhythm unconfirmed. Both
+    # the worklist row and the spoken call alert lead with this, so neither asserts a rhythm the
+    # classifier could not stand behind.
+    basis, basis_why = alert_basis(event, config)
+    if basis == "vitals" and not event.is_false_positive:
+        print(f"[consume] VITALS-DRIVEN ALERT: {event.event_type} is only "
+              f"{event.confidence:.0%} confident (< "
+              f"{config.outbound_min_arrhythmia_confidence:.0%}), but {basis_why} — reporting on "
+              f"the vitals, rhythm flagged unconfirmed.", flush=True)
     if reason.startswith("fp_override"):
         print(f"[consume] FALSE-POSITIVE OVERRIDE: ECG classified {event.event_type} "
               f"(false positive), but the patient's vitals warrant a call [{reason}]. "
@@ -127,6 +126,8 @@ def process_bus_event(
             event_id=w.event_id, patient=w.patient_ref, unit=unit, bed=bed,
             event_type=event.event_type, ts=w.event_timestamp,
             criticality=event_criticality(event, config), status="reported", links=links,
+            confidence=event.confidence, low_confidence=event.low_confidence,
+            alert_basis=basis, alert_reason=basis_why or None,
         )
         # Best-effort: the event is already persisted, and the worklist is live-push-only, so a
         # transient LiveKit hiccup (or no app connected yet) must not poison a persisted event.

@@ -7,6 +7,7 @@ import uuid
 import pytest
 
 from common.config import DEFAULT
+from tests.live_kb import docs_embedder_or_skip
 
 pytestmark = pytest.mark.infra
 
@@ -40,7 +41,9 @@ def test_text_chat_pin_gate_then_grounded(monkeypatch, capsys):
         return next(lines)
 
     monkeypatch.setattr("builtins.input", fake_input)
-    rc = main(["--session", sid, "--embedder", "hashing"])
+    # The CLI talks to the deployed `rmsai_docs`, so the embedder must match the one that built
+    # it — a hardcoded choice fails whenever the deployment uses the other one.
+    rc = main(["--session", sid, "--embedder", docs_embedder_or_skip()])
     out = capsys.readouterr().out
 
     assert rc == 0

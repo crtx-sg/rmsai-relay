@@ -15,6 +15,7 @@ import sys
 
 from common.audit import AuditLog
 from common.config import DEFAULT
+from common.preflight import service_unreachable
 from inference.ecg_model import get_ecg_model
 from inference.pipeline import process_window
 from inference.serialize import event_summary_line, event_to_dict
@@ -34,7 +35,11 @@ def publish_to_bus(redis_url: str, stream: str, payload: dict) -> str:
         "criticality": payload["criticality"],
         "is_false_positive": str(payload["is_false_positive"]),
     }
-    return client.xadd(stream, fields).decode()
+    try:
+        return client.xadd(stream, fields).decode()
+    except redis.exceptions.ConnectionError as exc:
+        # `from None`: the pool's traceback is noise once the cause has a name and a fix.
+        raise service_unreachable("Redis (the event bus)", redis_url, exc) from None
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -54,7 +54,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="text channel: 'simulated' prints the message; 'twilio' sends real SMS")
     parser.add_argument("--number", default="+15551234567")
     parser.add_argument("--min-criticality", default="High")
-    parser.add_argument("--embedder", default="hashing", choices=["auto", "bge", "hashing"])
+    parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
+                        help="Must match the embedder the KB collections were built with "
+                             f"(default from EMBEDDER: {DEFAULT.embedder}).")
     parser.add_argument("--checkpoint", default=None,
                         help="ECG model checkpoint (.pt); falls back to the stub if absent.")
     args = parser.parse_args(argv)

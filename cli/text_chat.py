@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 
+from common.config import DEFAULT
 from orchestrator.chat import build_orchestrator
 from voice.handlers import OrchestratorHandler
 
@@ -18,7 +19,8 @@ from voice.handlers import OrchestratorHandler
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", default="text-desk")
-    parser.add_argument("--embedder", default="hashing", choices=["auto", "bge", "hashing"])
+    parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
+                        help=f"Must match the KB collections (default from EMBEDDER: {DEFAULT.embedder}).")
     parser.add_argument("--llm", default="echo", choices=["echo", "ollama"])
     args = parser.parse_args(argv)
 

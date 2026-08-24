@@ -1,13 +1,64 @@
-# All POC services are declared here, but only the lean always-on datastores
-# (redis, neo4j, qdrant) are started in Phase 0. Heavy services are tagged with the
-# `later` profile so a plain `up` skips them; bring them up at their phase with
-# `--profile later` (or by name).
+# Every rmsai-relay service — backing stores AND the application processes — runs here.
 #
-#   Phase 0:  docker compose up -d redis neo4j qdrant
-#   Phase 1:  docker compose up -d mosquitto
-#   Phase 5+: docker compose --profile later up -d livekit model-server
+#   docker compose -f infra/docker-compose.yml build     # once (and after dependency changes)
+#   docker compose -f infra/docker-compose.yml up -d     # the whole relay
+#
+# A plain `up` starts the lean datastores (redis, neo4j, qdrant), the LiveKit media server, and the
+# three long-running app services (consumer, voice-worker, gateway). Three optional backends stay
+# behind profiles because they collide with, or are not needed by, the default POC setup:
+#
+#   --profile telemetry   mosquitto     MQTT ingest (Phase 1)
+#   --profile llm         model-server  containerized Ollama — SKIP THIS if you already run Ollama
+#                                       on the host; both bind 11434 and the container will fail
+#   --profile emr         hapi-fhir     real FHIR server (Phase 8); binds 8080, same as the gateway
+#   --profile tools       tools         one-shot CLI runner (see the bottom of this file)
+#
+# The legacy `later` profile still selects all four, so existing `--profile later up` commands keep
+# working.
+#
+# ---------------------------------------------------------------------------------------------
+# Why the app services use `network_mode: host`
+#
+# This is a single-host, self-hosted POC and host networking is what makes it behave identically to
+# running the CLIs by hand:
+#
+#   * `.env` needs no rewriting. Every URL in it (redis://localhost:6379, bolt://localhost:7687,
+#     http://localhost:6333, http://localhost:11434, ws://localhost:7880) resolves from inside the
+#     container exactly as it does on the host, because the stores publish those ports.
+#   * LiveKit WebRTC works. infra/livekit.yaml advertises `rtc.node_ip: 127.0.0.1` so a browser on
+#     the host can reach the media ports. A container on a bridge network would receive that same
+#     candidate and try to connect to *itself* — signaling would succeed and audio would never flow.
+#     Sharing the host netns makes 127.0.0.1 mean the same thing to the worker as to the browser.
+#   * An Ollama running on the host (rather than the `llm` profile) stays reachable.
+#
+# The tradeoff is no port isolation between app containers and the host, and host networking is
+# Linux-only (on Docker Desktop for Mac/Windows it is a newer opt-in feature). Both are acceptable
+# for a POC; a multi-host deployment would move to a bridge network, service-name URLs, and a
+# LiveKit `node_ip` reachable from every participant.
+
+# Shared definition for the application services: same image, same mounts, same user.
+x-app: &app
+  build:
+    context: ..
+    dockerfile: infra/Dockerfile
+  image: rmsai-relay/app:local
+  network_mode: host
+  working_dir: /app
+  # Run as the invoking user so files written into ./data (plots, reports, audit log) are owned by
+  # you on the host, not root. Override with APP_UID/APP_GID if your uid is not 1000.
+  user: "${APP_UID:-1000}:${APP_GID:-1000}"
+  volumes:
+    # The repo itself — source, .env, docs/, data/, and the vendored checkpoints under external/.
+    # No `env_file:` here on purpose: the app parses /app/.env itself (common/config.py), which
+    # strips inline comments. Compose's env_file parser does not, and would set values like
+    # "auto   # regex (offline) | presidio".
+    - ..:/app
+    # Whisper + BGE weights, downloaded on first use and shared by every service.
+    - hf_cache:/models/hf
+  restart: unless-stopped
 
 services:
+  # =============================== backing stores ===============================
   redis:
     image: redis:7.4-alpine
     ports:
@@ -51,49 +102,10 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
-  # --- Phase 1: telemetry stream broker ---
-  mosquitto:
-    image: eclipse-mosquitto:2.0
-    profiles: ["telemetry", "later"]
-    ports:
-      - "${MQTT_PORT:-1883}:1883"
-    command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
-    healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 -W 2 >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # --- Phase 2/4: local LLM + embeddings serving (Ollama for the POC) ---
-  model-server:
-    image: ollama/ollama:latest
-    profiles: ["later"]
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-    volumes:
-      - ollama_data:/root/.ollama
-
-  # --- Phase 8: real EMR (HAPI FHIR) ---
-  hapi-fhir:
-    image: hapiproject/hapi:v7.4.0
-    profiles: ["later"]
-    ports:
-      - "${HAPI_FHIR_PORT:-8080}:8080"
-    healthcheck:
-      test: ["CMD-SHELL", "true"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  # --- Phase 5+: voice / media transport ---
+  # --- Phase 5+: voice / media transport. Started by default now that the voice worker is a
+  #     service — the worker cannot do anything without it.
   livekit:
     image: livekit/livekit-server:latest
-    profiles: ["later"]
     # Use a config file (not bare `--dev`) so the server binds all interfaces AND advertises a
     # host-reachable RTC node IP — otherwise the WebRTC data channel never forms and the browser
     # worklist stays empty. See infra/livekit.yaml.
@@ -110,7 +122,131 @@ services:
       timeout: 5s
       retries: 3
 
+  # --- Phase 1: telemetry stream broker ---
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    profiles: ["telemetry", "later"]
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+    command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 -W 2 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Phase 2/4: local LLM + embeddings serving (Ollama for the POC).
+  #     Profiled: if you already run `ollama serve` on the host, leave this alone — it binds the
+  #     same 11434 and OLLAMA_URL=http://localhost:11434 already reaches the host daemon.
+  model-server:
+    image: ollama/ollama:latest
+    profiles: ["llm", "later"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - ollama_data:/root/.ollama
+
+  # --- Phase 8: real EMR (HAPI FHIR). Profiled: binds 8080, which the gateway also defaults to.
+  hapi-fhir:
+    image: hapiproject/hapi:v7.4.0
+    profiles: ["emr", "later"]
+    ports:
+      - "${HAPI_FHIR_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ============================ rmsai-relay application ============================
+
+  # Drains the Redis Stream: persists each event to the graph + vector store, then runs the
+  # criticality-gated dispatch (app worklist push and/or outbound voice). Long-running — no
+  # `--once`, so it blocks on XREADGROUP and picks up whatever `cli.ingest --emit bus` publishes.
+  # Override the arguments with CONSUME_ARGS, e.g.
+  #   CONSUME_ARGS="--channel text" docker compose -f infra/docker-compose.yml up -d consumer
+  consumer:
+    <<: *app
+    command: >
+      python -m cli.consume
+      ${CONSUME_ARGS:---channel voice --caller livekit --transport webrtc}
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      livekit:
+        condition: service_started
+
+  # The LiveKit agent worker: joins rooms and runs the real audio loop
+  # (STT -> Handler[PIN gate -> de-id -> KB/graph -> grounded answer] -> TTS).
+  # `start` rather than `dev` — the autoreload watcher is for host development; restart the
+  # container instead (`docker compose restart voice-worker`).
+  voice-worker:
+    <<: *app
+    command: ["python", "-m", "cli.voice_worker", "start"]
+    environment:
+      # livekit-agents binds a health-check HTTP server (its default: 8081). Under host networking
+      # that collides with a worker run by hand on the host — `[errno 98] address already in use`,
+      # and the container exits. Default the container to 8091 so both can run; the host worker
+      # keeps 8081. Only one of them should be registered under the same LIVEKIT_AGENT_NAME at a
+      # time anyway, or LiveKit will split dispatches between them.
+      LIVEKIT_WORKER_HTTP_PORT: "${LIVEKIT_WORKER_HTTP_PORT:-8091}"
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    # Cold start loads Whisper/Piper/orchestrator; give it room to shut down cleanly mid-call.
+    stop_grace_period: 30s
+
+  # Phase 9 companion app: FastAPI serving the worklist SPA, /session (PIN + LiveKit token),
+  # /ack, and the scoped /artifact endpoints.
+  gateway:
+    <<: *app
+    command: >
+      python -m cli.gateway --host 0.0.0.0 --port ${GATEWAY_PORT:-8080}
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${GATEWAY_PORT:-8080}/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # One-shot CLI runner: the same image and mounts, but nothing long-running. Use it for the
+  # producer and every other harness, so you never need a host Python environment:
+  #
+  #   docker compose -f infra/docker-compose.yml run --rm tools \
+  #       python -m cli.ingest --file external/ecgtranscnn/data/inference/<f>.h5 \
+  #       --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+  #
+  #   docker compose -f infra/docker-compose.yml run --rm tools \
+  #       python -m cli.kb_upload --file docs/samples/critical_alarm_sop.md
+  #
+  #   docker compose -f infra/docker-compose.yml run --rm tools python -m pytest -q -m "not infra"
+  tools:
+    <<: *app
+    profiles: ["tools"]
+    restart: "no"
+
 volumes:
   neo4j_data:
   qdrant_data:
   ollama_data:
+  hf_cache:

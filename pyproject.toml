@@ -34,6 +34,11 @@ dev = [
 rag = [
     "sentence-transformers>=2.2",
 ]
+# PDF text extraction for `cli.kb_upload` (clinical protocols / SOPs / checklists arrive as PDFs).
+# Pure-python and light, so it stays out of the base install but costs nothing to add.
+pdf = [
+    "pypdf>=4.0",
+]
 # NLP-backed de-identification (Presidio). Also requires a spaCy model:
 #   uv run python -m spacy download en_core_web_lg   (or en_core_web_sm)
 deid = [

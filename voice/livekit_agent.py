@@ -401,6 +401,18 @@ def duplicate_agent_should_yield(my_identity: str, agent_identities) -> bool:
 _LINKABLE_KINDS = (0, 3, 5)
 
 
+def chat_sender_allowed(kind: int | None) -> bool:
+    """Whether a `lk.chat` message from a participant of this kind may drive a turn.
+
+    Agents are excluded, and that exclusion is load-bearing: the worker answers on the same topic it
+    listens to, so two agents sharing a room would each treat the other's reply as a fresh question
+    and volley forever — the console fills with the same answer and the app shows it endlessly
+    (observed 2026-08-19). RoomIO's own handler never hit this because it only accepted the linked
+    participant; owning the topic means owning that filter too. Only humans and SIP callers speak.
+    """
+    return kind in _LINKABLE_KINDS
+
+
 def relink_target(linked_identity: str | None, new_identity: str, kind: int) -> str | None:
     """Identity the room's audio input should switch to when `new_identity` joins, or `None`.
 
@@ -483,20 +495,30 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
 
     await ctx.connect()
     print(f"[worker] joined room {ctx.room.name!r} over WebRTC — {kind}", flush=True)
-    if is_inbox:
-        # Last line of defence against a dispatch race putting two agents in the persistent inbox
-        # room (every reply doubled). Dispatch-time de-duplication can't see a concurrent dispatch;
-        # here we can see the other agent as a participant.
-        from livekit import rtc as _rtc  # noqa: PLC0415
+    from livekit import rtc as _rtc  # noqa: PLC0415
 
-        await asyncio.sleep(_DUP_AGENT_SETTLE_S)
+    def _yield_if_duplicate(_participant=None) -> bool:
+        """Leave if a lower-identity agent shares this room. Returns True if we yielded."""
         agents = [p.identity for p in ctx.room.remote_participants.values()
                   if p.kind == _rtc.ParticipantKind.PARTICIPANT_KIND_AGENT]
-        if duplicate_agent_should_yield(ctx.room.local_participant.identity, agents):
-            print(f"[worker] duplicate agent in {ctx.room.name!r} (also: {agents}) — yielding, "
-                  f"this job will exit so exactly one agent serves the room", flush=True)
-            ctx.shutdown(reason="duplicate agent")
+        if not duplicate_agent_should_yield(ctx.room.local_participant.identity, agents):
+            return False
+        print(f"[worker] duplicate agent in {ctx.room.name!r} (also: {agents}) — yielding, "
+              f"this job will exit so exactly one agent serves the room", flush=True)
+        ctx.shutdown(reason="duplicate agent")
+        return True
+
+    if is_inbox:
+        # Last line of defence against a dispatch race putting two agents in the persistent inbox
+        # room (every reply doubled, and — until the sender filter above — an infinite volley).
+        # Checking ONCE after connecting is not enough: agents cold-start ~45s apart, so the first
+        # to arrive sees an empty room and the second may sort higher and keep serving too, leaving
+        # both. Re-checking whenever an agent joins closes that hole — whatever the arrival order,
+        # every agent above the lowest identity leaves, and exactly one survives.
+        await asyncio.sleep(_DUP_AGENT_SETTLE_S)
+        if _yield_if_duplicate():
             return
+        ctx.room.on("participant_connected", _yield_if_duplicate)
     vad = (ctx.proc.userdata or {}).get("vad") or silero.VAD.load()
     session = AgentSession(
         stt=LocalSTT(stt_adapter),  # session + vad wrap the non-streaming STT for endpointing
@@ -626,11 +648,18 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
     _chat_tasks: set = set()
 
     def _on_chat_text(reader, participant_identity: str) -> None:
+        participant = ctx.room.remote_participants.get(participant_identity)
+        if not chat_sender_allowed(getattr(participant, "kind", None)):
+            # Silently dropping this is the point: our own replies go out on this topic, so a second
+            # agent's reply must never be read back as a question. Logged, not answered.
+            print(f"[worker] lk.chat ignoring {participant_identity} "
+                  f"(kind={getattr(participant, 'kind', None)}, not a caller)", flush=True)
+            return
+
         async def _read() -> None:
             try:
                 text = await reader.read_all()
                 print(f"[worker] lk.chat rx from {participant_identity}: {text!r}", flush=True)
-                participant = ctx.room.remote_participants.get(participant_identity)
                 await _text_only_reply(session, _TextInputEvent(
                     text=text, info=reader.info, participant=participant))
             except Exception:  # noqa: BLE001 - one bad message must not kill the chat path
@@ -703,6 +732,9 @@ def build_worker_options(config: Config | None = None):
         ws_url=config.livekit_url,
         api_key=config.livekit_api_key,
         api_secret=config.livekit_api_secret,
+        # livekit-agents' health-check HTTP server. Configurable so a containerized worker on host
+        # networking can coexist with one running on the host (both would bind 8081 otherwise).
+        port=config.livekit_worker_http_port,
     )
 
 

@@ -80,8 +80,23 @@ def build_event_message(
     criticality: str,
     status: str,
     links: dict[str, dict[str, Any]],
+    confidence: float | None = None,
+    low_confidence: bool = False,
+    alert_basis: str = "rhythm",
+    alert_reason: str | None = None,
 ) -> dict:
-    """Assemble a `type:"event"` worklist notification. Fails closed if `patient` isn't a pseudonym."""
+    """Assemble a `type:"event"` worklist notification. Fails closed if `patient` isn't a pseudonym.
+
+    `confidence`/`low_confidence` travel with the row because an event can reach the worklist on the
+    *vitals* override while the model is barely sure of the rhythm. Without them a coin-flip rhythm
+    read renders identically to a certain one, so the clinician cannot tell an asserted finding from
+    a guess.
+
+    `alert_basis` is `"rhythm"` or `"vitals"` (`common.criticality.alert_basis`), with `alert_reason`
+    naming the vital when it is the latter. A vitals-driven row must lead with the vital and mark the
+    rhythm unconfirmed — the app keys its rendering off this, so the claim on screen matches the claim
+    the relay can actually support.
+    """
     if not _PSEUDONYM_RE.match(patient or ""):
         raise ValueError(f"refusing to publish non-pseudonym patient ref: {patient!r}")
     return {
@@ -93,6 +108,10 @@ def build_event_message(
         "event_type": event_type,
         "ts": ts,
         "criticality": criticality,
+        "confidence": confidence,
+        "low_confidence": low_confidence,
+        "alert_basis": alert_basis,
+        "alert_reason": alert_reason,
         "status": status,
         "artifact_kinds": list(links.keys()),
         "links": links,

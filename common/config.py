@@ -77,10 +77,11 @@ class Config:
     outbound_call_number: str = ""
     outbound_from: str = ""
     outbound_min_criticality: str = "High"
-    # Arrhythmia confidence gate: a non-normal (arrhythmia) prediction only dials out when the model's
-    # confidence in it is at/above this — a low-confidence arrhythmia is likely a misdetection. A
-    # vitals-driven escalation (MEWS >= threshold or deteriorating) overrides this, mirroring the
-    # false-positive override, so a deteriorating patient always calls regardless of classifier confidence.
+    # Arrhythmia confidence gate: a non-normal prediction is only asserted AS A RHYTHM when the
+    # model's confidence is at/above this. Vitals never raise the bar (they cannot make an uncertain
+    # classification true) — below it the alert is either withheld (calm vitals; event still
+    # persisted) or re-based as a vitals-driven alert naming the vital, with the rhythm marked
+    # unconfirmed. See common.criticality.alert_basis.
     outbound_min_arrhythmia_confidence: float = 0.60
     outbound_max_retries: int = 2
     outbound_retry_delay_s: int = 30
@@ -110,6 +111,23 @@ class Config:
     # Embeddings (semantic + episodic memory, vector RAG)
     embedder: str = "hashing"  # hashing (offline) | bge | auto
     bge_model: str = "BAAI/bge-small-en-v1.5"
+    # Relevance gate: answer when the best passage's *semantic* similarity clears this, even if it
+    # shares few words with the question. Calibrated on the committed corpus with BGE, where
+    # on-topic queries scored 0.688-0.827 and off-topic 0.408-0.551. The hashing embedder's scores
+    # do NOT separate the two (0.16-0.41 vs 0.11-0.42, indistinguishable), so this arm of the gate
+    # only does useful work with EMBEDDER=bge; the lexical arm below carries the hashing path.
+    kb_min_relevance: float = 0.60
+    # When the operational regexes miss a question that is plainly about a bed/patient/event, ask
+    # the LLM which graph template was meant (kb/graph/llm_router.py). Costs one extra model call,
+    # but only on a miss AND only when the question looks operational — document questions never
+    # trigger it. Off by default: it puts a model call in front of a Cypher lookup, which is a
+    # deliberate choice to make rather than inherit.
+    kb_llm_router: bool = False
+    # Managed upload folder. `cli.kb_upload` copies each uploaded document here, and a corpus
+    # rebuild (`cli.kb_vector index --reset`) re-indexes it alongside docs/ — so an uploaded SOP
+    # survives the rebuild that would otherwise silently delete it (uploads live only in the vector
+    # store, and --reset recreates the collection from disk).
+    kb_upload_dir: str = "data/kb_uploads"
 
     # De-identification backend (before any model call)
     deid_backend: str = "regex"  # regex (offline) | presidio | auto
@@ -141,6 +159,15 @@ class Config:
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
     livekit_sip_trunk_id: str = ""  # outbound SIP trunk id (LiveKit Cloud Telephony)
+    # Room each on-demand phone call gets (one per call, `<prefix><call-id>`). Shares the prefix the
+    # inbound dispatch rule routes to (voice/gateway/sip-inbound.example.yaml), so both legs of the
+    # phone pipeline land in the same shape of room and the worker treats them identically.
+    call_room_prefix: str = "rmsai-call-"
+    # Call safety rails, both passed to CreateSIPParticipantRequest. Ringing timeout bounds how long
+    # we hold a trunk channel on an unanswered call; max duration is the backstop against a call that
+    # is answered by voicemail and then billed until someone notices.
+    sip_ringing_timeout_s: int = 30
+    sip_max_call_duration_s: int = 600
     livekit_sip_room: str = "rmsai-outbound"
     # Named-agent for EXPLICIT dispatch. The worker registers under this name and no longer auto-joins
     # new rooms; instead every room that needs the agent (inbox on /session, outbound per event,
@@ -151,6 +178,11 @@ class Config:
     # (e.g. after a worker restart) so the companion app doesn't need a re-login to re-wire chat/voice.
     # Runs in a background thread; idempotent (skips rooms that already have an agent). See cli.dispatch.
     livekit_redispatch_on_start: bool = True
+    # livekit-agents runs a health-check HTTP server; 8081 is its own default. It is a real bind, so
+    # two workers on the same network namespace collide (`[errno 98] address already in use`) — which
+    # is exactly what happens when the containerized worker uses host networking while one is also
+    # running on the host. Give the container a different port instead of stopping one of them.
+    livekit_worker_http_port: int = 8081
     # Wake word: after the alert, follow-up *audio* Q&A must start with this phrase (so room noise
     # and Whisper hallucinations don't trigger replies). The agent stays "awake" for the window
     # after each wake word so follow-ups don't repeat it. Text-chat turns are never gated.
@@ -211,6 +243,9 @@ class Config:
             llm_model=os.environ.get("LLM_MODEL", "llama3.2"),
             embedder=os.environ.get("EMBEDDER", "hashing"),
             bge_model=os.environ.get("BGE_MODEL", "BAAI/bge-small-en-v1.5"),
+            kb_min_relevance=_f("KB_MIN_RELEVANCE", 0.60),
+            kb_llm_router=_b("KB_LLM_ROUTER", False),
+            kb_upload_dir=os.environ.get("KB_UPLOAD_DIR", "data/kb_uploads"),
             deid_backend=os.environ.get("DEID_BACKEND", "regex"),
             deid_spacy_model=os.environ.get("DEID_SPACY_MODEL", "en_core_web_lg"),
             stt_backend=os.environ.get("STT_BACKEND", "stub"),
@@ -229,9 +264,13 @@ class Config:
             livekit_api_key=os.environ.get("LIVEKIT_API_KEY", ""),
             livekit_api_secret=os.environ.get("LIVEKIT_API_SECRET", ""),
             livekit_sip_trunk_id=os.environ.get("LIVEKIT_SIP_TRUNK_ID", ""),
+            call_room_prefix=os.environ.get("LIVEKIT_CALL_ROOM_PREFIX", "rmsai-call-"),
+            sip_ringing_timeout_s=_i("SIP_RINGING_TIMEOUT_S", 30),
+            sip_max_call_duration_s=_i("SIP_MAX_CALL_DURATION_S", 600),
             livekit_sip_room=os.environ.get("LIVEKIT_SIP_ROOM", "rmsai-outbound"),
             livekit_agent_name=os.environ.get("LIVEKIT_AGENT_NAME", "rmsai-agent"),
             livekit_redispatch_on_start=_b("LIVEKIT_REDISPATCH_ON_START", True),
+            livekit_worker_http_port=_i("LIVEKIT_WORKER_HTTP_PORT", 8081),
             audio_wake_word=os.environ.get("AUDIO_WAKE_WORD", "hey vios"),
             audio_wake_window_s=_f("AUDIO_WAKE_WINDOW_S", 30.0),
             audio_wake_required=_b("AUDIO_WAKE_REQUIRED", True),

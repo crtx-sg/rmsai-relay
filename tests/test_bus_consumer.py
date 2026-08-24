@@ -91,19 +91,18 @@ def test_false_positive_persists_but_never_calls(patched):
     assert patched["persist"] and not patched["voice"] and not patched["text"]
 
 
-def test_sub_threshold_arrhythmia_dispatch_names_the_vitals_override(patched, capsys):
-    # A below-threshold arrhythmia still dispatches when the vitals warrant it (by design), but
-    # should_call reports that as a bare "ok" — which reads in the console as the confidence
-    # threshold being ignored. The consumer must say which override let it through.
-    class _WeakAfib(ECGModel):
-        def predict(self, window):
-            return "ATRIAL_FIBRILLATION", 0.40  # < the 60% default gate
+class _WeakAfib(ECGModel):
+    def predict(self, window):
+        return "ATRIAL_FIBRILLATION", 0.40  # < the 60% default gate
 
+
+def test_uncertain_rhythm_on_a_deteriorating_patient_alerts_on_the_vitals(patched, capsys):
+    # HR 145 -> high MEWS. The rhythm can't carry the alert at 40%, so the vitals do: the clinician
+    # is still reached, and the console says the alert was re-based rather than asserted.
     res = _run(event_to_dict(_event(_WeakAfib())), patched, channel="voice")
-    assert res.called  # HR 145 -> MEWS escalation overrides the confidence gate
+    assert res.called and res.decision_reason.startswith("vitals_alert")
     out = capsys.readouterr().out
-    assert "VITALS OVERRIDE" in out
-    assert "OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE" in out
+    assert "VITALS-DRIVEN ALERT" in out and "rhythm flagged unconfirmed" in out
 
 
 def test_false_positive_overridden_by_vitals_calls(patched):

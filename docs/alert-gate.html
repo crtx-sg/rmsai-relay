@@ -1,0 +1,324 @@
+<title>rmsai-relay · Alert gate logic</title>
+<style>
+  :root {
+    --ground: #f2f5f7;
+    --surface: #ffffff;
+    --ink: #151b21;
+    --muted: #5b6b78;
+    --rule: #d3dce3;
+    --critical: #b4342a;
+    --pass: #2c6f52;
+    --warn: #a9631c;
+    --display: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --body: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f1418;
+      --surface: #161d23;
+      --ink: #e3eaef;
+      --muted: #93a3b0;
+      --rule: #2a353e;
+      --critical: #e8756a;
+      --pass: #63bb92;
+      --warn: #d09048;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0f1418;
+    --surface: #161d23;
+    --ink: #e3eaef;
+    --muted: #93a3b0;
+    --rule: #2a353e;
+    --critical: #e8756a;
+    --pass: #63bb92;
+    --warn: #d09048;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 3rem 1.5rem 5rem;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; display: flex; flex-direction: column; gap: 2.75rem; }
+  .col { max-width: 68ch; }
+
+  header { display: flex; flex-direction: column; gap: .6rem; }
+  h1 {
+    font-family: var(--display);
+    font-size: clamp(1.9rem, 4.2vw, 2.6rem);
+    font-weight: 600;
+    line-height: 1.15;
+    text-wrap: balance;
+    margin: 0;
+  }
+  .dek { color: var(--muted); font-size: 1.05rem; margin: 0; max-width: 62ch; }
+  .src {
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--muted);
+    letter-spacing: .01em;
+    margin: .35rem 0 0;
+  }
+
+  section { display: flex; flex-direction: column; gap: 1rem; }
+  h2 {
+    font-family: var(--display);
+    font-size: 1.3rem;
+    font-weight: 600;
+    margin: 0;
+    padding-top: 1.4rem;
+    border-top: 1px solid var(--rule);
+  }
+  p { margin: 0; }
+  .col p + p { margin-top: .85rem; }
+  code {
+    font-family: var(--mono);
+    font-size: .86em;
+    background: color-mix(in srgb, var(--ink) 7%, transparent);
+    padding: .1em .35em;
+    border-radius: 3px;
+  }
+
+  figure {
+    margin: 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1.5rem 1.25rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .canvas { overflow-x: auto; }
+  svg.flow { display: block; width: 100%; min-width: 760px; max-width: 980px; height: auto; margin: 0 auto; color: var(--ink); }
+  figcaption { color: var(--muted); font-size: .88rem; line-height: 1.55; max-width: 76ch; }
+
+  /* diagram vocabulary: neutral flow in the page ink, one hue for the mechanism under discussion */
+  .n { fill: none; stroke: currentColor; stroke-width: 1.5; }
+  .n-drop { fill: none; stroke: currentColor; stroke-width: 1; stroke-dasharray: 4 3; opacity: .55; }
+  .n-pass { fill: none; stroke: var(--pass); stroke-width: 2; }
+  .n-ovr { fill: none; stroke: var(--critical); stroke-width: 1.5; }
+  .e { stroke: currentColor; stroke-width: 1.4; fill: none; }
+  .e-ovr { stroke: var(--critical); stroke-width: 1.6; fill: none; }
+  .e-lead { stroke: currentColor; stroke-width: 1; stroke-dasharray: 3 3; opacity: .45; fill: none; }
+  .t { fill: currentColor; font-family: var(--body); font-size: 13px; font-weight: 600; }
+  .t-mono { fill: currentColor; font-family: var(--mono); font-size: 11px; opacity: .78; }
+  .t-edge { fill: currentColor; font-family: var(--mono); font-size: 11px; opacity: .68; }
+  .t-note { fill: currentColor; font-family: var(--body); font-size: 11px; opacity: .62; }
+  .t-ovr { fill: var(--critical); font-family: var(--mono); font-size: 10.5px; }
+  .ah-ovr { fill: var(--critical); }
+  .t-pass { fill: var(--pass); font-family: var(--body); font-size: 13px; font-weight: 600; }
+  .t-drop { fill: currentColor; font-family: var(--mono); font-size: 11px; opacity: .62; }
+
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  caption { text-align: left; color: var(--muted); font-size: .88rem; padding-bottom: .6rem; }
+  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+  td.k { font-family: var(--mono); font-size: .8rem; white-space: nowrap; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+  .no { color: var(--critical); font-weight: 600; }
+  .yes { color: var(--pass); font-weight: 600; }
+  ul { margin: 0; padding-left: 1.1rem; }
+  li + li { margin-top: .5rem; }
+</style>
+
+<div class="wrap">
+  <header class="col">
+    <h1>How an event reaches the clinician</h1>
+    <p class="dek">The false-positive, confidence, and criticality gates in <code>should_call</code>, and the one gate the vitals override is still allowed to walk past.</p>
+    <p class="src">orchestrator/outbound_flow.py · inference/pipeline.py:31 · common/criticality.py:91</p>
+  </header>
+
+  <figure>
+    <div class="canvas">
+      <svg class="flow" viewBox="0 0 980 620" role="img"
+           aria-label="Flowchart: a classified event passes four gates — outbound enabled, false-positive, confidence, and criticality — before the clinician is alerted. The vitals override rescues a confident normal-sinus reading, and re-bases a below-threshold rhythm into a vitals-driven alert that names the vital and marks the rhythm unconfirmed, rather than dropping it.">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+          <marker id="ah-ovr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="ah-ovr" d="M 0 0 L 10 5 L 0 10 z"/>
+          </marker>
+        </defs>
+
+        <!-- spine -->
+        <rect class="n" x="380" y="20" width="260" height="44" rx="4"/>
+        <text class="t" x="510" y="40" text-anchor="middle">Classified event</text>
+        <text class="t-mono" x="510" y="56" text-anchor="middle">event_type · confidence</text>
+
+        <rect class="n" x="380" y="100" width="260" height="48" rx="4"/>
+        <text class="t" x="510" y="122" text-anchor="middle">Outbound enabled?</text>
+        <text class="t-mono" x="510" y="138" text-anchor="middle">OUTBOUND_ENABLED</text>
+
+        <rect class="n" x="380" y="192" width="260" height="64" rx="4"/>
+        <text class="t" x="510" y="214" text-anchor="middle">False-positive gate</text>
+        <text class="t-mono" x="510" y="230" text-anchor="middle">NORMAL_SINUS and conf ≥</text>
+        <text class="t-mono" x="510" y="245" text-anchor="middle">FP_SUPPRESS_MIN_CONFIDENCE</text>
+
+        <rect class="n" x="380" y="300" width="260" height="64" rx="4"/>
+        <text class="t" x="510" y="322" text-anchor="middle">Confidence gate</text>
+        <text class="t-mono" x="510" y="338" text-anchor="middle">arrhythmia and conf &lt;</text>
+        <text class="t-mono" x="510" y="353" text-anchor="middle">OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE</text>
+
+        <rect class="n" x="380" y="408" width="260" height="48" rx="4"/>
+        <text class="t" x="510" y="430" text-anchor="middle">Criticality gate</text>
+        <text class="t-mono" x="510" y="446" text-anchor="middle">crit ≥ OUTBOUND_MIN_CRITICALITY</text>
+
+        <rect class="n-pass" x="380" y="500" width="260" height="52" rx="4"/>
+        <text class="t-pass" x="510" y="522" text-anchor="middle">Published</text>
+        <text class="t-mono" x="510" y="539" text-anchor="middle">worklist row · call per DISPATCH_MODE</text>
+
+        <!-- spine edges -->
+        <line class="e" x1="510" y1="64" x2="510" y2="98" marker-end="url(#ah)"/>
+        <line class="e" x1="510" y1="148" x2="510" y2="190" marker-end="url(#ah)"/>
+        <text class="t-edge" x="520" y="172">pass</text>
+        <line class="e" x1="510" y1="256" x2="510" y2="298" marker-end="url(#ah)"/>
+        <text class="t-edge" x="520" y="280">pass</text>
+        <line class="e" x1="510" y1="364" x2="510" y2="406" marker-end="url(#ah)"/>
+        <text class="t-edge" x="520" y="388">pass</text>
+        <line class="e" x1="510" y1="456" x2="510" y2="498" marker-end="url(#ah)"/>
+        <text class="t-edge" x="520" y="480">pass</text>
+
+        <!-- drop terminals -->
+        <rect class="n-drop" x="700" y="106" width="250" height="36" rx="4"/>
+        <text class="t-drop" x="825" y="128" text-anchor="middle">outbound_disabled</text>
+        <line class="e" x1="640" y1="124" x2="698" y2="124" marker-end="url(#ah)"/>
+        <text class="t-edge" x="669" y="116" text-anchor="middle">drop</text>
+
+        <rect class="n-drop" x="700" y="206" width="250" height="36" rx="4"/>
+        <text class="t-drop" x="825" y="228" text-anchor="middle">false_positive</text>
+        <line class="e" x1="640" y1="224" x2="698" y2="224" marker-end="url(#ah)"/>
+        <text class="t-edge" x="669" y="216" text-anchor="middle">drop</text>
+
+        <rect class="n-drop" x="700" y="314" width="250" height="36" rx="4"/>
+        <text class="t-drop" x="825" y="336" text-anchor="middle">low_confidence_arrhythmia</text>
+        <line class="e" x1="640" y1="332" x2="698" y2="332" marker-end="url(#ah)"/>
+        <text class="t-edge" x="669" y="324" text-anchor="middle">drop</text>
+
+        <rect class="n-drop" x="700" y="414" width="250" height="36" rx="4"/>
+        <text class="t-drop" x="825" y="436" text-anchor="middle">below_threshold</text>
+        <line class="e" x1="640" y1="432" x2="698" y2="432" marker-end="url(#ah)"/>
+        <text class="t-edge" x="669" y="424" text-anchor="middle">drop</text>
+
+        <!-- the mechanism under discussion -->
+        <rect class="n-ovr" x="24" y="228" width="250" height="88" rx="4"/>
+        <text class="t" x="149" y="252" text-anchor="middle">Vitals override</text>
+        <text class="t-mono" x="149" y="270" text-anchor="middle">MEWS ≥ CRITICALITY_MEWS_</text>
+        <text class="t-mono" x="149" y="285" text-anchor="middle">THRESHOLD, or ANY vital</text>
+        <text class="t-mono" x="149" y="300" text-anchor="middle">trending deteriorating</text>
+
+        <line class="e-ovr" x1="274" y1="252" x2="378" y2="226" marker-end="url(#ah-ovr)"/>
+        <text class="t-ovr" x="327" y="214" text-anchor="middle">rescues a</text>
+        <text class="t-ovr" x="327" y="226" text-anchor="middle">false positive</text>
+
+        <!-- the confidence gate's failure path forks: withheld, or re-based on the vitals -->
+        <rect class="n-ovr" x="24" y="352" width="250" height="52" rx="4"/>
+        <text class="t" x="149" y="372" text-anchor="middle">Vitals-driven alert</text>
+        <text class="t-ovr" x="149" y="390" text-anchor="middle">lead with the vital · rhythm</text>
+        <text class="t-ovr" x="149" y="400" text-anchor="middle">marked unconfirmed</text>
+
+        <line class="e-ovr" x1="149" y1="316" x2="149" y2="350" marker-end="url(#ah-ovr)"/>
+        <line class="e-ovr" x1="378" y1="344" x2="276" y2="368" marker-end="url(#ah-ovr)"/>
+        <text class="t-ovr" x="327" y="342" text-anchor="middle">below the gate,</text>
+        <text class="t-ovr" x="327" y="353" text-anchor="middle">but vitals warrant it</text>
+
+        <path class="e-ovr" d="M 149 404 L 149 432 L 376 432" marker-end="url(#ah-ovr)"/>
+        <text class="t-ovr" x="262" y="426" text-anchor="end">still gated on criticality</text>
+
+        <!-- annotations -->
+        <text class="t-note" x="566" y="266">a NORMAL_SINUS below the threshold is not</text>
+        <text class="t-note" x="566" y="280">suppressed — it continues, flagged uncertain</text>
+
+        <path class="e-lead" d="M 292 478 L 378 452"/>
+        <text class="t-note" x="24" y="466">assess_criticality escalates every non-normal</text>
+        <text class="t-note" x="24" y="480">event to High, so this gate only ever stops</text>
+        <text class="t-note" x="24" y="494">NORMAL_SINUS.</text>
+      </svg>
+    </div>
+    <figcaption>Every gate is a test the event must pass; failing one withholds the alert with the named reason, but the event is persisted and stays queryable either way. The red paths are where the vitals speak for a patient the rhythm cannot: a confident <code>NORMAL_SINUS</code> is rescued outright, and a rhythm below the confidence gate is not dropped but <em>re-based</em> — the alert goes out naming the vital, with the classification demoted to unconfirmed. Vitals never raise the confidence bar; they only change what the alert claims.</figcaption>
+  </figure>
+
+  <section class="col">
+    <h2>What each knob actually governs</h2>
+    <div class="scroll">
+      <table>
+        <caption>Values as configured in your <code>.env</code>.</caption>
+        <thead>
+          <tr><th>Setting</th><th>Value</th><th>Applies to</th><th>Vitals can override?</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="k">FP_SUPPRESS_MIN_CONFIDENCE</td>
+            <td class="num">0.80</td>
+            <td><code>NORMAL_SINUS</code> only — how sure before discarding as a false positive</td>
+            <td><span class="yes">yes</span></td>
+          </tr>
+          <tr>
+            <td class="k">OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE</td>
+            <td class="num">0.60</td>
+            <td>Whether a non-normal prediction may be asserted <em>as a rhythm</em></td>
+            <td><span class="no">never raised</span> — but bad vitals re-base the alert</td>
+          </tr>
+          <tr>
+            <td class="k">OUTBOUND_MIN_CRITICALITY</td>
+            <td class="num">High</td>
+            <td>Criticality rank — but non-normal auto-escalates to High</td>
+            <td>n/a — never bites</td>
+          </tr>
+          <tr>
+            <td class="k">CRITICALITY_MEWS_THRESHOLD</td>
+            <td class="num">3</td>
+            <td>First arm of the override</td>
+            <td><span class="no">is the override</span></td>
+          </tr>
+          <tr>
+            <td class="k">CRITICALITY_ESCALATE_ON_DETERIORATING</td>
+            <td class="num">true</td>
+            <td>Second arm — <em>any</em> of six vital trends</td>
+            <td><span class="no">is the override</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Raising <code>FP_SUPPRESS_MIN_CONFIDENCE</code> publishes <em>more</em>, not less: a normal-sinus read below it is no longer suppressed, it just continues flagged uncertain.</p>
+  </section>
+
+  <section class="col">
+    <h2>Why the override could not stay as it was</h2>
+    <p>The second arm of the override is an <code>any()</code> across six independent Mann-Kendall trends — HR, SpO₂, systolic, diastolic, respiratory rate, temperature. Six chances to trip one boolean. Measured across 15 events from <code>data/inference/*2026-08*.h5</code>:</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Signal</th><th>Windows flagged deteriorating</th></tr></thead>
+        <tbody>
+          <tr><td>HR</td><td class="num">10 / 15</td></tr>
+          <tr><td>Respiratory rate</td><td class="num">7 / 15</td></tr>
+          <tr><td>SpO₂</td><td class="num">6 / 15</td></tr>
+          <tr><td>Diastolic</td><td class="num">3 / 15</td></tr>
+          <tr><td>Systolic</td><td class="num">2 / 15</td></tr>
+          <tr><td>Temperature</td><td class="num">0 / 15</td></tr>
+          <tr><td><strong>Any of the six</strong></td><td class="num"><strong>14 / 15</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The one window with no deteriorating trend — <code>AV_BLOCK_2_TYPE2</code> at 0.54 confidence — came through the other arm on MEWS 3. Between them, 15 of 15 published, the lowest at 0.54, and moving the threshold from 0.60 to 0.80 changed nothing. A threshold that never fires is not a conservative default; it is a setting that reads as protection while providing none. The fix was not to start dropping those patients, but to stop <em>asserting their rhythm</em>.</p>
+  </section>
+
+  <section class="col">
+    <h2>What changed</h2>
+    <ul>
+      <li><strong>The row shows its confidence.</strong> Each worklist event carries the model's certainty, flagged <span class="no">⚠</span> when below <code>LOW_CONFIDENCE_CAVEAT</code>. A coin-flip rhythm read no longer renders identically to a certain one.</li>
+      <li><strong>Vitals no longer raise the confidence bar.</strong> An uncertain rhythm is never asserted as a finding, however bad the vitals are.</li>
+      <li><strong>…but a deteriorating patient is never silently withheld.</strong> Below the gate the alert is re-based rather than dropped: the row leads with <em>Vitals alert</em> and the named vital, the rhythm is demoted to <code>unconfirmed: &lt;type&gt;</code>, and the spoken call alert says “Possible …, treat the rhythm as unconfirmed”. Only an uncertain rhythm on a patient whose vitals are unremarkable is withheld — and that event is still persisted and answerable in chat.</li>
+    </ul>
+    <p>One predicate decides this for every surface: <code>common.criticality.alert_basis</code> returns <code>("rhythm", "")</code> or <code>("vitals", why)</code>, and the worklist row, the spoken alert, and the console all lead with what it says. The claim on screen is the claim the relay can actually support.</p>
+    <p>Applied to the 15 measured events, nothing is lost from the worklist — the two sub-threshold rhythms (<code>SINUS_BRADYCARDIA</code> at 0.59, <code>AV_BLOCK_2_TYPE2</code> at 0.54) both had vitals that warranted attention, so both still alert, now as vitals-driven rather than as asserted rhythms.</p>
+  </section>
+</div>

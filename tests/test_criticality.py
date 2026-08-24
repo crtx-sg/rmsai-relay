@@ -1,8 +1,12 @@
-"""Criticality lookup (G1)."""
+"""Criticality lookup (G1) + what an alert is allowed to claim (alert_basis)."""
 
 from __future__ import annotations
 
-from common.criticality import assess_criticality, at_least, criticality
+from dataclasses import replace
+from types import SimpleNamespace
+
+from common.config import DEFAULT
+from common.criticality import alert_basis, assess_criticality, at_least, criticality
 
 
 def test_vf_is_critical_regardless_of_mews():
@@ -64,3 +68,57 @@ def test_at_least():
     assert at_least("Critical", "High")
     assert at_least("High", "High")
     assert not at_least("Medium", "High")
+
+
+# --- alert basis: what an alert is allowed to claim ---------------------------------------------
+
+
+class _Ev:
+    """Duck-typed DeviceEvent: only the fields `alert_basis` reads."""
+
+    def __init__(self, event_type, confidence, *, fp=False, mews=0, deteriorating=False):
+        self.event_type = event_type
+        self.confidence = confidence
+        self.is_false_positive = fp
+        trend = SimpleNamespace(direction="deteriorating" if deteriorating else "stable")
+        self.analysis = SimpleNamespace(mews=SimpleNamespace(score=mews, risk="Low"),
+                                        vital_trends={"HR": trend})
+
+
+def test_confident_rhythm_is_its_own_basis():
+    # Bad vitals do not demote a rhythm the classifier stands behind.
+    assert alert_basis(_Ev("ATRIAL_FIBRILLATION", 0.92, deteriorating=True), DEFAULT) == ("rhythm", "")
+    assert alert_basis(_Ev("ATRIAL_FIBRILLATION", 0.92, mews=4), DEFAULT)[0] == "rhythm"
+
+
+def test_uncertain_rhythm_with_bad_vitals_is_vitals_driven():
+    # The alert still goes out, but it rests on the vital — which the caller must name instead of
+    # asserting a rhythm at 30% confidence.
+    basis, why = alert_basis(_Ev("ATRIAL_FIBRILLATION", 0.30, deteriorating=True), DEFAULT)
+    assert basis == "vitals" and "deteriorating" in why
+    basis, why = alert_basis(_Ev("ATRIAL_FIBRILLATION", 0.30, mews=4), DEFAULT)
+    assert basis == "vitals" and "MEWS 4" in why
+
+
+def test_uncertain_rhythm_with_calm_vitals_has_no_basis_at_all():
+    # Nothing to re-base onto; should_call withholds this one.
+    assert alert_basis(_Ev("ATRIAL_FIBRILLATION", 0.30), DEFAULT) == ("rhythm", "")
+
+
+def test_false_positive_with_bad_vitals_is_vitals_driven():
+    assert alert_basis(_Ev("NORMAL_SINUS", 0.99, fp=True, mews=4), DEFAULT)[0] == "vitals"
+    # ...unless the FP override is switched off, which returns it to a rhythm (and a no-call).
+    off = replace(DEFAULT, criticality_fp_override_on_vitals=False)
+    assert alert_basis(_Ev("NORMAL_SINUS", 0.99, fp=True, mews=4), off) == ("rhythm", "")
+
+
+def test_uncertain_normal_sinus_with_bad_vitals_is_also_vitals_driven():
+    # Below fp_suppress_min_confidence a NORMAL_SINUS is never suppressed, so it isn't flagged a
+    # false positive — but a normal rhythm is not a finding either. Any alert on one rests on the
+    # vitals, or the row would show a bare NORMAL_SINUS at High criticality with no stated reason.
+    basis, why = alert_basis(_Ev("NORMAL_SINUS", 0.65, fp=False, mews=4), DEFAULT)
+    assert basis == "vitals" and "MEWS 4" in why
+
+
+def test_normal_sinus_with_calm_vitals_is_not_an_alert_at_all():
+    assert alert_basis(_Ev("NORMAL_SINUS", 0.65, fp=False), DEFAULT) == ("rhythm", "")

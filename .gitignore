@@ -5,25 +5,47 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
-data/
+.mypy_cache/
+.coverage
+htmlcov/
 
-# uv: the lockfile (uv.lock) is committed for reproducibility.
+# uv: `uv.lock` IS committed — do not ignore it. This is an application, not a library, so the
+# lockfile is the reproducibility contract. It is also load-bearing for the container build:
+# infra/Dockerfile runs `uv sync --frozen`, which fails outright without a committed lockfile.
 
-# Vendored upstream (cloned in Phase 0, not committed) — keep only the placeholder
+# Vendored upstream (cloned in Phase 0, not committed) — keep only the placeholder.
+# Carries the simulator scripts, model checkpoints, and generated HDF5, none of which belong in git.
 external/ecgtranscnn/*
 !external/ecgtranscnn/PLACEHOLDER.md
 
-# Generated synthetic data (committed fixtures live in data/fixtures/)
-data/synthetic/
+# Runtime state: plots, reports, KB uploads, audit log, generated + inference HDF5.
+# Everything under data/ is generated EXCEPT the two entries negated below, which are committed
+# on purpose — the deterministic test fixture and the directory's own README. Listing them here
+# (rather than relying on `git add -f`) keeps that intent visible.
+data/*
+!data/README.md
+!data/fixtures/
+# A `data/` written elsewhere by a process run from another cwd (e.g. `cwd=infra/`). The old
+# unanchored `data/` rule caught these implicitly; `data/*` is root-relative, so name it.
+infra/data/
 
-# Runtime audit log
-data/audit.jsonl
-
-# Local env / secrets
+# Local env / secrets. `.env.example` is the committed template.
 .env
+.env.*
+!.env.example
+
+# Per-developer Claude Code settings. `.claude/settings.json` (shared, checked in) is NOT ignored;
+# only the local override is. Without this rule it shows up as untracked on every clone but this
+# one, where a global ~/.config/git/ignore happens to cover it.
+.claude/settings.local.json
+
+# Logs
+*.log
 
 # OS / editor
 .DS_Store
+.idea/
+.vscode/
 *.swp
 *.swo
 *~

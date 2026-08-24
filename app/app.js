@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-08-18 ptt-2";
+const APP_BUILD = "2026-08-19 vitals-alert-2";
 
 const LK = window.LivekitClient;
 
@@ -45,6 +45,30 @@ function fmtTime(ts) {
   return isNaN(d) ? "" : d.toLocaleTimeString();
 }
 
+// Model confidence in the *rhythm*. An event can reach this worklist on the vitals override alone
+// (deteriorating patient, uncertain classification), so a bare event type would present a coin-flip
+// read as an asserted finding. Flagged when the relay marked it low-confidence.
+function fmtConfidence(r) {
+  if (typeof r.confidence !== "number") return ""; // older publisher / status-only row
+  const pct = `${Math.round(r.confidence * 100)}%`;
+  return r.low_confidence
+    ? `<span class="conf low" title="Below the low-confidence threshold — the rhythm is uncertain">⚠ ${pct}</span>`
+    : `<span class="conf">${pct}</span>`;
+}
+
+// What the alert rests on. A vitals-driven row leads with the vital that triggered it and demotes
+// the rhythm to "unconfirmed" — the relay could not stand behind that classification, so the row
+// must not print it as a finding.
+function fmtEvent(r) {
+  const rhythm = esc(r.event_type);
+  if (r.alert_basis !== "vitals") return rhythm;
+  const why = r.alert_reason ? esc(r.alert_reason) : "vitals escalation";
+  // A normal rhythm isn't "unconfirmed" — it's confirmed benign, and simply not the reason we called.
+  const note = r.event_type === "NORMAL_SINUS" ? "rhythm reads normal" : `unconfirmed: ${rhythm}`;
+  return `<span class="vitals-led">Vitals alert</span><span class="sub">${why}</span>` +
+    `<span class="sub">${note}</span>`;
+}
+
 function render() {
   const rows = [...state.rows.values()].sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const tbody = document.getElementById("rows");
@@ -75,7 +99,8 @@ function render() {
     tr.innerHTML = `
       <td>${esc(r.patient)}</td>
       <td>${esc(bed)}</td>
-      <td>${esc(r.event_type)}</td>
+      <td>${fmtEvent(r)}</td>
+      <td>${fmtConfidence(r)}</td>
       <td class="crit crit-${esc(r.criticality)}">${esc(r.criticality)}</td>
       <td>${esc(fmtTime(r.ts))}</td>
       <td><span class="badge ${acked ? "acknowledged" : "new"}">${esc(r.status || "new")}</span></td>
