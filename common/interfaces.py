@@ -40,7 +40,12 @@ class ECGModel(ABC):
 
     @abstractmethod
     def predict(self, window: SignalWindow) -> tuple[str, float]:
-        """Return `(event_type, confidence)` — `event_type` is one of the 16 classes."""
+        """Return `(event_type, confidence)`.
+
+        `event_type` is drawn from the 16-name vocabulary in `common.event_types.CLASS_NAMES`.
+        The concrete *head* is the checkpoint's and may be a subset: the real-ECG `real_v2`
+        model predicts 13 of the 16. Callers must key off the vocabulary, never a head size.
+        """
 
 
 class VitalsAnalysis(ABC):

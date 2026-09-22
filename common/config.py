@@ -53,6 +53,12 @@ def _b(name: str, default: bool) -> bool:
     return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _paths(name: str) -> tuple[str, ...]:
+    """Comma- or whitespace-separated path list from the environment; empty when unset."""
+    raw = os.environ.get(name, "").replace(",", " ")
+    return tuple(part for part in raw.split() if part)
+
+
 @dataclass(frozen=True)
 class Config:
     # Confidence thresholds (G7)
@@ -209,6 +215,13 @@ class Config:
     # log). The graph `Report.uri` points at the written file; the vector index is the search copy.
     report_dir: str = "data/reports"
 
+    # ECG classifier checkpoints. Empty ⇒ the deterministic `StubECGModel` (no weights needed).
+    # Several paths load as one softmax-averaging ensemble; `models/real_v2/fold{0..4}.pt` (the
+    # real-ECG 5-fold release) is the recommended artifact. The class head, lead order and filter
+    # preset are read from the checkpoint, so nothing else here needs to change with the model.
+    # Weights are gitignored on both sides — run `make weights` before pointing at them.
+    ecg_checkpoints: tuple[str, ...] = ()
+
     # ECG strip plots — the producer renders an event's ECG lead to `{plot_dir}/{event_id}.png`
     # (gitignored) and stores the path in `MonitoredEvent.ecg_plot_ref`. Off keeps the pipeline lean.
     ecg_plot_enabled: bool = True
@@ -278,6 +291,7 @@ class Config:
             episodic_recall=_b("EPISODIC_RECALL", False),
             audit_log_path=os.environ.get("AUDIT_LOG_PATH", "data/audit.jsonl"),
             report_dir=os.environ.get("REPORT_DIR", "data/reports"),
+            ecg_checkpoints=_paths("ECG_CHECKPOINTS"),
             ecg_plot_enabled=_b("ECG_PLOT_ENABLED", True),
             plot_dir=os.environ.get("PLOT_DIR", "data/plots"),
         )

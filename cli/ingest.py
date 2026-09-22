@@ -48,12 +48,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--emit", choices=["stdout", "bus"], default="stdout")
     parser.add_argument("--stream", default="rmsai.events", help="Redis Stream name (--emit bus).")
     parser.add_argument("--redis-url", default=DEFAULT.redis_url)
-    parser.add_argument("--checkpoint", default=None, help="ECG model checkpoint (.pt); else stub.")
+    parser.add_argument(
+        "--checkpoint", nargs="*", default=None,
+        help="ECG model checkpoint(s) (.pt). Several load as one softmax-averaging ensemble. "
+             "Defaults to ECG_CHECKPOINTS; with neither, the deterministic stub is used.",
+    )
     parser.add_argument("--strict-units", action="store_true", help="Fail if waveform_units absent.")
     parser.add_argument("--show-report", action="store_true", help="Print markdown report (stdout).")
     args = parser.parse_args(argv)
 
-    model = get_ecg_model(args.checkpoint)
+    # `--checkpoint` with no values means "stub, ignore the env"; omitting it falls back to config.
+    checkpoints = DEFAULT.ecg_checkpoints if args.checkpoint is None else args.checkpoint
+    model = get_ecg_model(checkpoints)
     vitals = MewsVitalsAnalysis()
     audit = AuditLog(DEFAULT.audit_log_path)
 

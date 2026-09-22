@@ -84,7 +84,7 @@ e5 = box(113, 81, 24, 14, "FP gate + criticality\n+ care guidance\n→ DeviceEve
 e6 = box(141, 82.5, 16, 11, "Redis Stream\n(event bus)", C_BUS, fs=8.8)
 e7 = box(161, 81, 26, 14, "Consumer\npersist + decide\n(should_call?)", fs=8.8)
 
-note(69, 79.3, "→ 1 of 16 arrhythmia classes + confidence")
+note(69, 79.3, "→ 1 arrhythmia class + confidence")
 note(42, 79.3, "no diagnosis yet")
 
 arrow(e1["right"], e2["left"]); arrow(e2["right"], e3["left"]); arrow(e3["right"], e4["left"])

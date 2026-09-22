@@ -234,7 +234,11 @@ services:
   #
   #   docker compose -f infra/docker-compose.yml run --rm tools \
   #       python -m cli.ingest --file external/ecgtranscnn/data/inference/<f>.h5 \
-  #       --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+  #       --checkpoint external/ecgtranscnn/models/real_v2/fold{0,1,2,3,4}.pt --emit bus
+  #
+  #   (omit --checkpoint to use ECG_CHECKPOINTS from .env; run `make weights` on the host
+  #    first — the repo is bind-mounted, so the containers see them. The noise_robust /
+  #    avblock_fix checkpoints are simulator-only; use real_v2 for real ECG.)
   #
   #   docker compose -f infra/docker-compose.yml run --rm tools \
   #       python -m cli.kb_upload --file docs/samples/critical_alarm_sop.md

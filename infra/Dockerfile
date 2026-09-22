@@ -13,7 +13,9 @@
 #
 # Build context is the repo root (see `build.context: ..`), because the vendored package lives at
 # external/ecgtranscnn/. That directory is gitignored, so a fresh clone must run
-# `git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn` before building.
+# `git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn` (pinned commit:
+# bac4a01, see external/ecgtranscnn/PLACEHOLDER.md) before building. Model weights are NOT
+# needed at build time — they are bind-mounted with the repo; see `make weights`.
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 

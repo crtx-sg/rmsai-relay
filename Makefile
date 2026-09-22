@@ -3,9 +3,13 @@
 # The vendored ecgtranscnn package (external/ecgtranscnn/) is gitignored and NOT a declared
 # dependency, so `uv sync` does not track it and drops the editable install every time it runs.
 # Always pair a sync with the editable re-install — that is what `make setup` does.
+#
+# Model weights are a separate step: ecgtranscnn gitignores `models/**/*.pt`, so a clone of it
+# never carries checkpoints. `make weights` copies the real_v2 ensemble in from a local
+# ecgtranscnn working copy (ECGTRANSCNN_DIR). Without it the pipeline runs the deterministic stub.
 
 .DEFAULT_GOAL := setup
-.PHONY: setup setup-all external test lint \
+.PHONY: setup setup-all external weights test lint \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps docker-shell \
         stores-up stores-down stores-check
 
@@ -29,6 +33,21 @@ setup-all:
 # (Re)install the vendored ecgtranscnn editable. Run this after ANY `uv sync` you do by hand.
 external:
 	uv pip install -e external/ecgtranscnn
+
+# Copy the real-ECG model weights in from a local ecgtranscnn working copy (~42 MB: the 5-fold
+# ensemble plus best_model.pt, the single-model fallback that .env.example documents).
+# They are gitignored on both sides, so this is the reproducible form of "place the files manually".
+# Override the source with: make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn
+ECGTRANSCNN_DIR ?= ../ecgtranscnn
+weights:
+	@test -d "$(ECGTRANSCNN_DIR)/models/real_v2" || { \
+	    echo "no real_v2 in $(ECGTRANSCNN_DIR)/models — set ECGTRANSCNN_DIR=/path/to/ecgtranscnn"; \
+	    exit 1; }
+	mkdir -p external/ecgtranscnn/models/real_v2
+	cp $(ECGTRANSCNN_DIR)/models/real_v2/fold[0-4].pt \
+	   $(ECGTRANSCNN_DIR)/models/real_v2/best_model.pt \
+	   external/ecgtranscnn/models/real_v2/
+	@ls -la external/ecgtranscnn/models/real_v2/*.pt
 
 test:
 	uv run pytest -q

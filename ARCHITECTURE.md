@@ -62,11 +62,15 @@ rule: the reader never guesses `event_type`).
 
 **Step 2 · The ECG model runs** (`inference/ecg_model.py`). This is the one real neural network:
 - **Model:** `ECGTransCovNet` (the "ECG_TransConv" model, vendored from `ecgtranscnn`) — a PyTorch
-  CNN + Transformer, loaded from a `.pt` checkpoint.
+  CNN + Transformer, loaded from one `.pt` checkpoint or several as a softmax-averaging ensemble
+  (`ECG_CHECKPOINTS`; the real-ECG `models/real_v2` 5-fold release is the recommended artifact).
 - **What it does:** `predict(window)` runs the upstream preprocessing → the network → `softmax` →
-  `argmax`, yielding **one of 16 arrhythmia classes** (e.g. `ATRIAL_FIBRILLATION`, `NORMAL_SINUS`)
-  plus a **confidence** in `[0, 1]`.
-- If the checkpoint is missing it falls back to `StubECGModel` so everything downstream still runs.
+  `argmax`, yielding **one arrhythmia class** (e.g. `ATRIAL_FIBRILLATION`, `NORMAL_SINUS`) plus a
+  **confidence** in `[0, 1]`. The vocabulary is 16 names; the *head* is whatever the checkpoint
+  carries and is read from it — `real_v2` predicts 13 of the 16, the simulator checkpoints all 16.
+- If a checkpoint is missing, or its head/leads do not match this repo, it falls back to
+  `StubECGModel` so everything downstream still runs. See `inference/README.md` for the input
+  contract and the per-class reliability caveats.
 
 **Step 3 · Vitals + false-positive gate** (`inference/pipeline.py`). Separately — and **not ML** — the
 pipeline computes the **MEWS** score (Modified Early Warning Score: a **rule-based clinical rubric**,

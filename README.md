@@ -152,7 +152,9 @@ A few design points that aren't obvious from the diagram:
 - **`RetrievalResult`** — two labelled blocks: *Retrieved passages* (vector) + *Known relationships*
   (graph), separately cited; relationships empty under `vector` mode.
 - **Interfaces**: `LLMProvider`, `ECGModel`, `VitalsAnalysis`, `EventStore` (+ `BedAssignment` /
-  `PatientHistory` stubs). `event_type` ∈ the 16 `ecgtranscnn` classes; `NORMAL_SINUS` ⇒ FP.
+  `PatientHistory` stubs). `event_type` ∈ the 16-name `ecgtranscnn` vocabulary (a given
+  checkpoint's head is a subset — the real-ECG `real_v2` model predicts 13 of them);
+  `NORMAL_SINUS` ⇒ FP.
 
 ---
 
