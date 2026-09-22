@@ -164,7 +164,7 @@ A few design points that aren't obvious from the diagram:
 |-------|-----------|
 | Language / runtime | Python ≥3.10, managed with **`uv`**; `pytest` + `ruff`, type hints throughout |
 | Contracts | **pydantic v2** schemas (`common/schemas.py`) |
-| ECG classifier | **`ECG_TransConv`** (vendored `crtx-sg/ecgtranscnn`, PyTorch CPU), wrapped never reimplemented |
+| ECG classifier | **`ECG_TransConv`** (vendored `crtx-sg/ecgtranscnn`, PyTorch CPU), wrapped never reimplemented. Default artifact: the real-ECG `real_v2` 5-fold ensemble (13 classes) |
 | Vitals analysis | `ecgtranscnn` MEWS + Mann-Kendall trend + ECG-vital correlation (statistical) |
 | Event bus | **Redis Streams** (`rmsai.events`, consumer groups; partition by `patient_id`) |
 | Graph KB | **Neo4j** + Cypher (patient ↔ event ↔ condition ↔ treatment ↔ guideline ↔ bed/unit) |
@@ -291,8 +291,11 @@ retriever:
 > expected to **decline**, never fabricate.
 
 Event names in the event-scoped questions (9, 10, "all patients with …") are **parameterized**:
-substitute any of the 16 classes — "AFib", "v-tach", "ST elevation", "mobitz 2", "SVT", … — and the
-same template runs with a different `event_type` (NL→class resolved by `event_type_from_text`).
+substitute any of the 16 vocabulary classes — "AFib", "v-tach", "ST elevation", "mobitz 2", "SVT",
+… — and the same template runs with a different `event_type` (NL→class resolved by
+`event_type_from_text`). Resolution covers all 16; *detection* is limited to the loaded checkpoint's
+head, so with `real_v2` a query for "ST elevation" or "mobitz 2" is well-formed but will never match
+a stored event — that model cannot predict those three classes at all.
 
 The matrix is wired identically for **voice and text** (the voice handler routes through the same
 `match_intent`). Spoken queries are normalized first (`kb/graph/spoken.py`) so STT phrasing resolves
@@ -406,12 +409,14 @@ touching callers.
 | `GATEWAY_PORT` | `8080` | host port for the containerized gateway. Move it if `hapi-fhir` (`--profile emr`) or a hand-run gateway already holds 8080 |
 | `EPISODIC_RECALL` | `false` | condition free-text answers on recalled cross-session past Q&A; off keeps answers grounded in the live KB + current conversation only |
 | `STT_LANGUAGE` | `en` | force the STT language (ISO 639-1); blank/`auto` = auto-detect. Stops Whisper/Scribe "hearing" other languages on noise |
+| `ECG_CHECKPOINTS` | *(unset)* | ECG classifier checkpoint path(s), comma- or space-separated. Unset ⇒ the deterministic stub. Several paths load as one softmax-averaging ensemble; `external/ecgtranscnn/models/real_v2/fold{0..4}.pt` is the recommended artifact (run `make weights` first). Head, lead order and filter preset are read from the checkpoint |
 | `ECG_PLOT_ENABLED` / `PLOT_DIR` | `true` / `data/plots` | producer renders each event's ECG lead to `{PLOT_DIR}/<event_id>.png` (gitignored); path persisted as `MonitoredEvent.ecg_plot_ref` |
 | `DEID_BACKEND` | `auto` | `auto` / `regex` / `presidio` |
 
 **Stubs (POC → production):** `PatientHistory` (synthetic, seeded by `patient_id` → EMR/FHIR) ·
-`BedAssignment` (≤25 beds/unit, overflow, clear ops → ADT feed) · `ECGModel` (vendored checkpoint or
-deterministic test stub → validated SaMD model on Triton) · `EventStore` (Neo4j → Postgres/
+`BedAssignment` (≤25 beds/unit, overflow, clear ops → ADT feed) · `ECGModel` (vendored `real_v2`
+research checkpoint, or the deterministic test stub when none is configured → validated SaMD model
+on Triton) · `EventStore` (Neo4j → Postgres/
 TimescaleDB at scale) · FHIR client (stub → HAPI) · outbound (single number → escalation tree) ·
 caller auth (shared PIN → per-user identity/MFA) · audit (JSONL → tamper-evident store).
 
@@ -491,6 +496,12 @@ They share the same `.env` and the same datastores, so you can mix them.
 ```bash
 # 1. Vendor the ECG model + simulator (gitignored; baked into the image, so clone it FIRST)
 git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn
+git -C external/ecgtranscnn checkout bac4a01
+
+# 1b. Model weights (optional). They are gitignored upstream, so the clone carries none — copy
+#     them from a local ecgtranscnn working copy that has them. Without this the pipeline still
+#     runs, on the deterministic stub.
+make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn   # then set ECG_CHECKPOINTS in .env
 
 # 2. Configure
 cp .env.example .env      # then set LIVEKIT_API_KEY / LIVEKIT_API_SECRET, HOSPITAL_ID, …
@@ -515,8 +526,9 @@ Run any CLI harness in the same image, with no host Python:
 
 ```bash
 docker compose -f infra/docker-compose.yml run --rm tools \
-    python -m cli.ingest --file data/inference/<f>.h5 \
-    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+    python -m cli.ingest --file data/inference/<f>.h5 --emit bus
+    # uses ECG_CHECKPOINTS from .env; override per-run with
+    #   --checkpoint external/ecgtranscnn/models/real_v2/fold{0,1,2,3,4}.pt
 make docker-shell        # or an interactive shell in that image
 ```
 
@@ -539,6 +551,9 @@ still selects all of them.
 ```bash
 # 1. Vendor the ECG model + simulator (gitignored; see external/ecgtranscnn/PLACEHOLDER.md)
 git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn
+git -C external/ecgtranscnn checkout bac4a01
+#    Weights are gitignored upstream; copy them from a local ecgtranscnn working copy:
+#    make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn   (skip it to run on the stub)
 
 # 2. Install everything (recommended for a demo). `make setup-all` = all extras
 #    (rag, deid, voice, livekit, app) + the vendored ecgtranscnn editable + the spaCy model.
@@ -578,6 +593,7 @@ uv run pytest
 | `make setup` | `uv sync --extra dev` + `make external` (core + dev only) |
 | `make setup-all` | all extras (rag, deid, voice, livekit, app) + `make external` + spaCy `en_core_web_sm` |
 | `make external` | (re)install the vendored `external/ecgtranscnn` editable — run after any manual `uv sync` |
+| `make weights` | copy the `real_v2` checkpoints in from a local ecgtranscnn working copy (`ECGTRANSCNN_DIR`, default `../ecgtranscnn`) — they are gitignored, so no clone carries them |
 | `make stores-up` / `make stores-down` | start / stop **only** the backing stores (redis, neo4j, qdrant, livekit) — the target to use when you run the CLIs on the host |
 | `make stores-check` | which backing stores are reachable, and what to run if one is down |
 | `make docker-build` | build the shared app image (`infra/Dockerfile`) |
@@ -643,26 +659,38 @@ $RMSAI cli.kb_dump --list          # …and so on for every cli.* below
 ### 1. Prerequisites and the vendored ECG model
 
 The `ECG_TransConv` classifier and the synthetic-data simulator are **vendored, not vendorable by
-pip** — the clone carries the `scripts/` simulators and `models/` checkpoints that a wheel would
+pip** — the clone carries the `scripts/` simulators and the `models/` metadata that a wheel would
 not. It is gitignored but **baked into the image**, so clone it *before* the first build:
 
 ```bash
-git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn   # pinned: 0bc646da
+git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn   # pinned: bac4a01
+git -C external/ecgtranscnn checkout bac4a01
 cp .env.example .env    # then set LIVEKIT_API_KEY / LIVEKIT_API_SECRET / HOSPITAL_ID
 ```
 
-Check the checkpoints arrived — weights may be Git-LFS and a plain clone can omit them:
+**The clone carries no weights.** `models/**/*.pt` is gitignored upstream, so this is expected, not
+a failed download. Copy them in from a local ecgtranscnn working copy that has them:
 
 ```bash
-ls external/ecgtranscnn/models/*/best_model.pt
-# external/ecgtranscnn/models/avblock_fix/best_model.pt
-# external/ecgtranscnn/models/noise_robust/best_model.pt
+make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn
+ls external/ecgtranscnn/models/real_v2/*.pt
+# external/ecgtranscnn/models/real_v2/best_model.pt   (single-model fallback)
+# external/ecgtranscnn/models/real_v2/fold0.pt … fold4.pt
 ```
 
+Then point `ECG_CHECKPOINTS` at the five folds (see `.env.example`), or pass them per-run as
+`--checkpoint` to `cli.ingest` / `cli.outbound` (below).
+
 **Without weights the pipeline still runs** — `ECGModel` falls back to the deterministic stub, so
-every phase and test works; only the predictions are synthetic. With weights, pass one as
-`--checkpoint` to `cli.ingest` / `cli.outbound` (below). `noise_robust/best_model.pt` is the
-general-purpose one.
+every phase and test works; only the predictions are synthetic.
+
+**Which checkpoint.** `real_v2` is the real-ECG release (13 classes, 5-fold ensemble, trained on
+ecg_sigma `ecgpkg` v2) and is what you want for real recordings. The older simulator checkpoints
+(`models/best_model.pt`, `noise_robust/`, `avblock_fix/`; 16 classes) score 10–26 % on real ECG —
+use them only against simulator-generated HDF5. The head, lead order and filter preset travel
+inside the checkpoint, so switching between them needs no code change. See `inference/README.md`
+for the input contract and the per-class reliability caveats — several classes are **not** safe to
+rule out on, and `VENTRICULAR_FIBRILLATION` is not validated as an alarm source.
 
 Generate synthetic HDF5 to feed the pipeline. The generator's `--output-dir` defaults to
 `data/inference` **relative to the current directory**, so run it from the repo root (or pass the
@@ -744,8 +772,10 @@ both stores, and dispatches per the criticality gate:
 
 ```bash
 $RMSAI cli.ingest \
-    --file data/inference/PT6580_2026-06.h5 \
-    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+    --file data/inference/PT6580_2026-06.h5 --emit bus
+# uses ECG_CHECKPOINTS from .env; override per-run with
+#   --checkpoint external/ecgtranscnn/models/real_v2/fold{0,1,2,3,4}.pt
+# omit --checkpoint AND ECG_CHECKPOINTS to run on the deterministic stub
 ```
 
 ```
@@ -805,10 +835,16 @@ make test                               # host equivalent (uv run pytest -q)
 Then the end-to-end smoke test — generate, classify, publish, consume, alert, acknowledge:
 
 ```bash
-$RMSAI cli.ingest --file data/inference/<f>.h5 \
-    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+$RMSAI cli.ingest --file data/inference/<f>.h5 --emit bus
 docker compose -f infra/docker-compose.yml logs --tail=40 consumer
 ```
+
+> These smoke tests exercise **plumbing, not accuracy**, so they take whatever `ECG_CHECKPOINTS`
+> holds (or the stub, if it is unset). Note the input here is *simulator*-generated: `real_v2` is
+> trained on real ECG and scores 10–26 % on synthetic data, so its labels on these files are
+> meaningless even though the pipeline is working. To judge the model itself, feed it real
+> recordings; to check a simulator file classifies plausibly, pass
+> `--checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt` explicitly.
 
 Expect critical events (AFib/VT, High/Critical) persisted **and** dispatched; `NORMAL_SINUS`/Low
 persisted but skipped with a printed reason (`below_threshold`, `low_confidence_arrhythmia`,
@@ -972,8 +1008,7 @@ make docker-logs      # tail consumer + voice-worker + gateway
 
 # drive a scenario: produce an event into the bus (steps 2-4 below run the same way)
 docker compose -f infra/docker-compose.yml run --rm tools \
-    python -m cli.ingest --file data/inference/<f>.h5 \
-    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+    python -m cli.ingest --file data/inference/<f>.h5 --emit bus
 ```
 
 **Hybrid** (containers for the infrastructure, host terminals for whatever you're editing) — this
@@ -1027,8 +1062,7 @@ uv run python external/ecgtranscnn/scripts/generate_inference_data.py --output-d
 
 ```bash
 uv run python -m cli.outbound \
-    --file data/inference/<file>.h5 \
-    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt
+    --file data/inference/<file>.h5
 ```
 
 ### 3a. Upload protocols / SOPs / checklists to the KB
@@ -1137,7 +1171,6 @@ reject a call presenting no valid from-number. Exit code is 0 answered / 1 no-an
 # PRODUCER — classify + publish to rmsai.events
 uv run python -m cli.ingest \
     --file data/inference/<file>.h5 \
-    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt \
     --emit bus --stream rmsai.events
 
 # CONSUMER — persist (graph+vector) + criticality-gated dispatch; drain backlog then exit
@@ -1218,8 +1251,7 @@ uv run python -m cli.consume --channel voice --caller livekit --transport sip --
 
 ```bash
 uv run python external/ecgtranscnn/scripts/generate_inference_data.py
-uv run python -m cli.ingest --file data/inference/<file>.h5 \
-    --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt --emit bus
+uv run python -m cli.ingest --file data/inference/<file>.h5 --emit bus
 uv run python -m cli.consume --channel voice --once \
     --follow-up "what were the vitals" --ack "yes I acknowledge"
 ```

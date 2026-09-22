@@ -1,7 +1,6 @@
 """Phase 7 full loop: drop an HDF5 file -> detect -> persist -> call out -> follow-up -> ack.
 
   python -m cli.outbound --file data/fixtures/PT1155_2026-06.h5 \
-      --checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt \
       --follow-up "what were the vitals at the event" --ack "yes I acknowledge"
 
 For each event in the file: run the Phase 1 pipeline -> DeviceEvent, persist it (Phase 4
@@ -57,8 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
                         help="Must match the embedder the KB collections were built with "
                              f"(default from EMBEDDER: {DEFAULT.embedder}).")
-    parser.add_argument("--checkpoint", default=None,
-                        help="ECG model checkpoint (.pt); falls back to the stub if absent.")
+    parser.add_argument(
+        "--checkpoint", nargs="*", default=None,
+        help="ECG model checkpoint(s) (.pt). Several load as one softmax-averaging ensemble. "
+             "Defaults to ECG_CHECKPOINTS; with neither, the deterministic stub is used.",
+    )
     args = parser.parse_args(argv)
 
     config = replace(
@@ -67,7 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     utterances = [*args.follow_ups, args.ack, "yes"]  # follow-ups, then ack + confirm-back
 
-    model = get_ecg_model(args.checkpoint)  # real wrapper if checkpoint present, else stub
+    # `--checkpoint` with no values means "stub, ignore the env"; omitting it falls back to config.
+    checkpoints = DEFAULT.ecg_checkpoints if args.checkpoint is None else args.checkpoint
+    model = get_ecg_model(checkpoints)  # real wrapper if checkpoints present, else stub
     vitals = MewsVitalsAnalysis()
     beds = BedAssignmentStub()
 
