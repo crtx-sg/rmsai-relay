@@ -709,6 +709,38 @@ ATRIAL_FIBRILLATION:3,NORMAL_SINUS:1` to weight the mix, and `--noise-level {low
 `data/` is gitignored and bind-mounted into every container, so these files are visible to both the
 host CLIs and the `tools` service at the same path.
 
+#### Feeding it real ECG (what `real_v2` is actually for)
+
+The generator above produces **simulator** output. `real_v2` is trained on real recordings and
+scores 10–26 % on synthetic data, so to exercise it meaningfully you need real-ECG HDF5 — a file
+derived from an ecg_sigma `ecgpkg` package, carrying the same event/lead layout.
+
+Two `/metadata` layouts are in circulation and the reader accepts **both**: the simulator writes
+each field as a dataset, ecg_sigma-derived files write them as attributes. No conversion needed.
+
+```bash
+ECG_CHECKPOINTS="$(ls external/ecgtranscnn/models/real_v2/fold[0-4].pt | tr '\n' ' ')" \
+uv run python -m cli.ingest --file data/inference/<real>.h5
+```
+
+```
+INFO rmsai.inference.ecg: ECG model loaded: 5 checkpoint(s), 13 classes,
+     filter_preset=default, package=v2 manifest=096bdfbafa04
+{"patient": "105", "event_id": "8b9c551a…", "event_type": "PVC", "confidence": 0.823,
+ "false_positive": false, "criticality": "Medium", "mews": 1, "ground_truth": "PVC"}
+```
+
+The startup line is the check that matters: **13 classes** and **`filter_preset=default`** confirm
+the real checkpoint loaded. A 16-class line means a simulator checkpoint; no line at all means the
+stub, and the ERROR above it says why.
+
+> **Sanity-check your own files before trusting a number.** Running the 51-event MIT-BIH record 105
+> file through this path scores 0.780 — but `mitbih:105` is in `ecgpkg` v2's **train** split, so
+> that figure is measured on data the model was fitted to and is *not* a performance estimate. It
+> shows the pipeline works end to end on real ECG, nothing more. For a real number, use held-out
+> subjects and read `models/real_v2/reports/test.md` upstream (test accuracy 0.782, primary
+> macro-F1 0.587).
+
 ### 2. Build and start
 
 ```bash

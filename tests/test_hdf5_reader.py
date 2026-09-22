@@ -122,3 +122,53 @@ def test_corrupt_file_yields_nothing_without_crashing(tmp_path):
     path = tmp_path / "corrupt.h5"
     path.write_bytes(b"\x89HDF\r\n\x1a\n" + b"not a real hdf5 file" * 5)
     assert list(read_hdf5_file(path)) == []  # logged + empty, no exception
+
+
+# --- /metadata layout: attributes (ecg_sigma / real-ECG) vs datasets (simulator) --------------
+
+
+def _rewrite_metadata_as_attrs(src: Path, dst: Path) -> None:
+    """Copy `src`, moving every `/metadata` dataset to an attribute of the same name.
+
+    That is the layout ecg_sigma-derived (real-ECG) files use; the simulator writes datasets.
+    """
+    import shutil
+
+    shutil.copy(src, dst)
+    with h5py.File(dst, "r+") as hf:
+        md = hf["metadata"]
+        for key in list(md.keys()):
+            value = md[key][()]
+            del md[key]
+            md.attrs[key] = value
+
+
+def test_reads_metadata_from_attributes(tmp_path):
+    """A real-ECG file stores /metadata as attributes — it must read identically."""
+    converted = tmp_path / "attrs_metadata.h5"
+    _rewrite_metadata_as_attrs(_FIXTURE, converted)
+
+    with h5py.File(converted) as hf:          # guard the fixture actually changed shape
+        assert not list(hf["metadata"].keys())
+        assert "patient_id" in hf["metadata"].attrs
+
+    from_attrs = list(read_hdf5_file(converted))
+    from_datasets = list(read_hdf5_file(_FIXTURE))
+    assert len(from_attrs) == len(from_datasets)
+
+    a, d = from_attrs[0], from_datasets[0]
+    assert a.patient_ref == d.patient_ref
+    assert a.sample_rates == d.sample_rates
+    assert a.window == d.window
+    assert a.signals[ECG_LEADS[0]] == d.signals[ECG_LEADS[0]]
+
+
+def test_missing_metadata_field_is_rejected_loudly(tmp_path):
+    from ingest.hdf5_reader import ReaderError, _read_metadata  # noqa: PLC0415
+
+    stripped = tmp_path / "no_patient_id.h5"
+    _rewrite_metadata_as_attrs(_FIXTURE, stripped)
+    with h5py.File(stripped, "r+") as hf:
+        del hf["metadata"].attrs["patient_id"]
+    with h5py.File(stripped) as hf, pytest.raises(ReaderError, match="patient_id"):
+        _read_metadata(hf, strict_units=False)

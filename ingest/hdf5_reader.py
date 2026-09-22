@@ -41,6 +41,27 @@ def _decode(value: Any) -> Any:
     return value.decode("utf-8") if isinstance(value, bytes) else value
 
 
+_MISSING = object()
+
+
+def _meta_field(md: h5py.Group, key: str, default: Any = _MISSING) -> Any:
+    """Read `/metadata/<key>` from an **attribute or a dataset**.
+
+    The simulator writes these as datasets; ecg_sigma-derived (real-ECG) files write them as
+    attributes. Both layouts are in circulation, so accept either — this mirrors upstream's
+    `ecg_transcovnet.hdf5_io.read_metadata_field`, reimplemented here only to keep `ingest/`
+    free of the torch/matplotlib import that touching `ecg_transcovnet` would pull in
+    (same reasoning as the `CLASS_NAMES` mirror in `common/event_types.py`). Parity-tested.
+    """
+    if key in md.attrs:
+        return _decode(md.attrs[key])
+    if key in md and isinstance(md[key], h5py.Dataset):
+        return _decode(md[key][()])
+    if default is _MISSING:
+        raise ReaderError(f"metadata/{key} missing (neither attribute nor dataset)")
+    return default
+
+
 def _load_extras(group: h5py.Group) -> dict:
     """Decode a group's `extras` UTF-8 JSON byte string; tolerate empty/missing."""
     if "extras" not in group:
@@ -57,7 +78,7 @@ def _load_extras(group: h5py.Group) -> dict:
 
 def _read_metadata(hf: h5py.File, *, strict_units: bool) -> dict:
     md = hf["metadata"]
-    waveform_units = _decode(md["waveform_units"][()]) if "waveform_units" in md else None
+    waveform_units = _meta_field(md, "waveform_units", None)
     if waveform_units is None:
         # Decision C: waveform_units is an upstream addition. Fail loud only in strict mode;
         # default to mV otherwise (current simulator output omits it).
@@ -65,14 +86,14 @@ def _read_metadata(hf: h5py.File, *, strict_units: bool) -> dict:
             raise ReaderError("metadata/waveform_units missing (strict mode)")
         waveform_units = _DEFAULT_WAVEFORM_UNITS
     return {
-        "patient_id": _decode(md["patient_id"][()]),
-        "rate_ecg": to_rational_rate(float(md["sampling_rate_ecg"][()])),
-        "rate_ppg": to_rational_rate(float(md["sampling_rate_ppg"][()])),
-        "rate_resp": to_rational_rate(float(md["sampling_rate_resp"][()])),
+        "patient_id": str(_meta_field(md, "patient_id")),
+        "rate_ecg": to_rational_rate(float(_meta_field(md, "sampling_rate_ecg"))),
+        "rate_ppg": to_rational_rate(float(_meta_field(md, "sampling_rate_ppg"))),
+        "rate_resp": to_rational_rate(float(_meta_field(md, "sampling_rate_resp"))),
         "waveform_units": waveform_units,
-        "before_s": float(md["seconds_before_event"][()]),
-        "after_s": float(md["seconds_after_event"][()]),
-        "alarm_offset_s": float(md["alarm_offset_seconds"][()]),
+        "before_s": float(_meta_field(md, "seconds_before_event")),
+        "after_s": float(_meta_field(md, "seconds_after_event")),
+        "alarm_offset_s": float(_meta_field(md, "alarm_offset_seconds")),
     }
 
 
