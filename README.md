@@ -10,6 +10,9 @@ Built **leaf-up, test-first, one phase at a time**. Every subsystem ships a `pyt
 runnable CLI harness before it is wired upward. See [`CLAUDE.md`](CLAUDE.md) for the full working
 agreement; the source-of-truth design lives in the project spec + kickoff prompt.
 
+**Running a demo?** [`DEMO.md`](DEMO.md) is the step-by-step runbook: real ECG → real_v2 →
+worklist/voice → grounded Q&A, with a troubleshooting table.
+
 ---
 
 ## Background
@@ -742,6 +745,8 @@ stub, and the ERROR above it says why.
 > macro-F1 0.587).
 
 ##### Curating a held-out real-ECG demo set (`cli.real_samples`)
+
+> The full demo walkthrough, including every `pick` flag, lives in [`DEMO.md`](DEMO.md#3-curate-a-held-out-real-ecg-set-real-samples).
 
 A converted record is hundreds of windows, most of them in the split `real_v2` was **trained** on,
 and many carry no usable label. `cli.real_samples` picks a small, labelled, **held-out** set out of
