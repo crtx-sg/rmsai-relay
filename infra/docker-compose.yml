@@ -249,6 +249,28 @@ services:
     profiles: ["tools"]
     restart: "no"
 
+  # `tools` plus the ecg_sigma training packages (read-only), for cli.real_samples. A separate
+  # service so a host without ecg_sigma keeps a working `tools`; here a missing dir fails loudly
+  # instead of being created empty. Point ECGPKG_HOST_DIR at your packages/ dir if it lives elsewhere.
+  #   docker compose -f infra/docker-compose.yml run --rm real-samples list
+  real-samples:
+    <<: *app
+    profiles: ["tools"]
+    restart: "no"
+    entrypoint: ["python", "-m", "cli.real_samples"]
+    command: ["list"]
+    environment:
+      ECGPKG_DIR: /ecgpkg/${ECGPKG_NAME:-ecg_pkg_v2}
+    volumes:
+      - ..:/app
+      - hf_cache:/models/hf
+      - type: bind
+        source: ${ECGPKG_HOST_DIR:-../../ecg_sigma/packages}
+        target: /ecgpkg
+        read_only: true
+        bind:
+          create_host_path: false
+
 volumes:
   neo4j_data:
   qdrant_data:

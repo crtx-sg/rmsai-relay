@@ -741,6 +741,63 @@ stub, and the ERROR above it says why.
 > subjects and read `models/real_v2/reports/test.md` upstream (test accuracy 0.782, primary
 > macro-F1 0.587).
 
+##### Curating a held-out real-ECG demo set (`cli.real_samples`)
+
+A converted record is hundreds of windows, most of them in the split `real_v2` was **trained** on,
+and many carry no usable label. `cli.real_samples` picks a small, labelled, **held-out** set out of
+the ecg_sigma training package instead and writes it as reader-ready HDF5:
+
+```bash
+# which labels the package's test split can supply (default package: ECGPKG_DIR, else
+# ../ecg_sigma/packages/ecg_pkg_v2)
+uv run python -m cli.real_samples list
+
+# pick events by class; test split only, deterministic for --seed; writes data/real/<record>.h5
+uv run python -m cli.real_samples pick \
+    --pick VENTRICULAR_TACHYCARDIA:3,VENTRICULAR_FIBRILLATION:2,ATRIAL_FIBRILLATION:3,PVC:2,NORMAL_SINUS:2
+
+# feed the whole set: --dir ingests every *.h5; add --emit bus to drive the consumer/app/call path
+uv run python -m cli.ingest --dir data/real
+```
+
+```
+{"patient": "I05", "event_type": "VENTRICULAR_TACHYCARDIA", "confidence": 0.497, "criticality": "Critical", "ground_truth": "VENTRICULAR_TACHYCARDIA", …}
+{"patient": "PTBXL-14628", "event_type": "SVT", "confidence": 0.538, "criticality": "High", "ground_truth": "ATRIAL_FIBRILLATION", …}
+{"summary": {"events": 12, "scored": 12, "correct": 9, "accuracy": 0.75}}     # stderr
+```
+
+- **One output file per source record.** A file carries one `patient_id`, so subjects are never
+  merged; the patient shows up as the record id (`207`, `I05`, `PTBXL-14628`).
+- **Ground truth is the manifest label**, written to each event's `condition` attr (ecg_sigma's own
+  raw annotation is kept as `source_condition`). `cli.ingest` prints the scored summary to stderr
+  whenever events carry a known class, simulator files included.
+- **Package ↔ model check.** "Held out" only means something relative to the package the checkpoint
+  was trained on, so `pick` compares the package manifest with the one recorded in
+  `ECG_CHECKPOINTS` (or `--checkpoint`) and refuses a mismatch unless `--allow-mismatch`.
+  `--split train|val` works but warns that the numbers are not a performance estimate.
+- **A 12-event set is a demo, not an evaluation.** For performance use upstream
+  `models/real_v2/reports/test.md`.
+- **Docker:** `tools` does not see `../ecg_sigma`, so use the `real-samples` service. It mounts
+  `ECGPKG_HOST_DIR` (default `../ecg_sigma/packages`) read-only and fails loudly if that folder is
+  missing. Output lands in the mounted `data/`:
+
+  ```bash
+  docker compose -f infra/docker-compose.yml run --rm real-samples list
+  docker compose -f infra/docker-compose.yml run --rm real-samples pick --pick VENTRICULAR_TACHYCARDIA:2,ATRIAL_FIBRILLATION:2
+  $RMSAI cli.ingest --dir data/real --emit bus
+  ```
+
+  Two things must hold, or every prediction silently comes from the **stub**. `cli.ingest` now
+  flags this (`"model": "stub"` plus a WARNING):
+  1. `ECG_CHECKPOINTS` is set in `.env` (the containers read `.env`, not your shell).
+  2. The image was built **after** the vendored pin moved to `bac4a01`. An older image lacks
+     `ecg_transcovnet.checkpoint` and logs `failed to load ECG checkpoint, using stub`. Fix it with
+     `make docker-build`, then `make docker-up` so running services pick up the new image.
+- **Only the ECG (and HR) is real.** Per ecg_sigma's README: PPG/RESP/RespRate are derived from the
+  ECG, and Pulse/SpO2/BP/Temp are invented, SpO2/BP from *condition-keyed* ranges. So MEWS and
+  vitals-driven criticality on these events partly echo the label rather than the patient. On
+  MIT-BIH only leads II and V1 are recorded; the other limb leads are computed from them.
+
 ### 2. Build and start
 
 ```bash
@@ -1297,6 +1354,7 @@ persisted but skipped (`below_threshold`).
 uv run python -m cli.gen_synthetic ...     # synthetic signal/event generation
 uv run python -m cli.kb_vector index --dir docs/   # index the clinical corpus (vector)
 uv run python -m cli.kb_upload --dir protocols/    # add SOPs/guidelines/checklists (PDF + markdown)
+uv run python -m cli.real_samples pick --pick ...  # held-out real-ECG events from ecg_sigma -> data/real
 uv run python -m cli.kb_route --llm "..."  # which path a question takes (regex / LLM / documents)
 uv run python -m cli.call --caller livekit # ring the on-call number on demand (no event needed)
 uv run python -m cli.inbox_probe --ptt     # probe in-app chat/PTT without the browser
