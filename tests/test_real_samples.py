@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from ingest.real_samples import (
     SampleError,
     load_package,
     parse_pick,
+    pseudonym_for,
     select_events,
     write_samples,
 )
@@ -128,3 +131,41 @@ def test_cli_list(tmp_path, capsys):
     assert samples_main(["--package", str(root), "list"]) == 0
     out = capsys.readouterr().out
     assert "VENTRICULAR_TACHYCARDIA" in out and "ds:2" in out
+
+
+def test_pseudonym_is_stable_and_passes_both_phi_guards():
+    from common.deid import _PSEUDONYM  # de-id preserves it (not scrubbed as a name)
+    from live.inbox import _PSEUDONYM_RE  # the inbox publishes it (fails closed otherwise)
+
+    pid = pseudonym_for("vfdb:421")
+    assert pid == pseudonym_for("vfdb:421") != pseudonym_for("vfdb:419")
+    assert re.fullmatch(r"PT9\d{5}", pid)
+    assert _PSEUDONYM_RE.match(pid) and _PSEUDONYM.search(pid)
+
+
+def test_written_files_carry_pseudonym_not_source_id(pkg, tmp_path):
+    sel = select_events(pkg, {"VENTRICULAR_TACHYCARDIA": 2, "ATRIAL_FIBRILLATION": 1})
+    files = write_samples(pkg, sel, tmp_path / "out")
+    by_file = {f.name: {w.patient_ref for w in read_hdf5_file(f)} for f in files}
+    assert by_file == {"rec_a.h5": {pseudonym_for("ds:a")}, "rec_b.h5": {pseudonym_for("ds:b")}}
+    with h5py.File(tmp_path / "out" / "rec_a.h5") as hf:
+        md = hf["metadata"]
+        assert md.attrs["source_patient_id"] not in ("", pseudonym_for("ds:a"))  # original kept
+        assert md.attrs["ecgpkg_subject_id"] == "ds:a"
+
+
+def test_same_subject_across_records_shares_one_pseudonym(pkg, tmp_path):
+    rows = [dict(r, subject_id="ds:same") for r in pkg.rows]
+    pkg2 = dataclasses.replace(pkg, rows=tuple(rows))
+    files = write_samples(pkg2, select_events(pkg2, {"VENTRICULAR_TACHYCARDIA": 2}), tmp_path / "o")
+    assert {w.patient_ref for f in files for w in read_hdf5_file(f)} == {pseudonym_for("ds:same")}
+
+
+def test_pseudonym_collision_refused(pkg, tmp_path, monkeypatch):
+    import ingest.real_samples as mod
+
+    monkeypatch.setattr(mod, "pseudonym_for", lambda _s: "PT900000")
+    sel = select_events(pkg, {"VENTRICULAR_TACHYCARDIA": 2})  # subjects ds:a and ds:b
+    with pytest.raises(SampleError, match="collision"):
+        write_samples(pkg, sel, tmp_path / "out")
+    assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())

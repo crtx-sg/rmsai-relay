@@ -10,7 +10,11 @@ labelled, **held-out** set instead:
 - copies each chosen ``event_*`` group out of its source file, one output file per source record
   (a file carries one ``patient_id``, so records are never merged under one patient);
 - stamps the manifest label onto the event's ``condition`` attr (the reader's ground truth) and the
-  package identity + split onto ``/metadata`` attrs, so a run can be traced back and scored.
+  package identity + split onto ``/metadata`` attrs, so a run can be traced back and scored;
+- replaces the source ``patient_id`` (a dataset record id such as ``106`` or ``PTBXL-14792``) with a
+  ``PT9#####`` pseudonym derived from the manifest ``subject_id`` (rule #6: patients are referenced
+  by pseudonym everywhere, and the app inbox fails closed on anything else). The source id is kept
+  on ``/metadata`` for traceability.
 
 The source signals are copied byte-for-byte; nothing about the conversion is reimplemented.
 Resilience: a manifest row whose file or event group is missing is skipped with a logged error.
@@ -19,6 +23,7 @@ Resilience: a manifest row whose file or event group is missing is skipped with 
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import random
 from collections import Counter, defaultdict
@@ -33,6 +38,10 @@ from common.redacting_logger import get_redacting_logger
 _log = get_redacting_logger("rmsai.ingest.real_samples")
 
 SPLITS = ("train", "val", "test")
+
+# Six digits, leading 9: disjoint from the simulator's four-digit PT#### range, and matches the
+# `PT\d+` pseudonym pattern that de-id preserves and the inbox publisher requires.
+_PSEUDONYM_SPACE = 100_000
 
 
 class SampleError(Exception):
@@ -53,6 +62,25 @@ class Selection:
     rows: list[dict]
     #: label -> (requested, found) for every label that came up short.
     shortfall: dict[str, tuple[int, int]] = field(default_factory=dict)
+
+
+def pseudonym_for(subject_id: str) -> str:
+    """Stable ``PT9#####`` pseudonym for a package ``subject_id`` (same subject → same pseudonym).
+
+    Keyed by subject, not record, so two recordings of one person (INCART ``p2`` → I04, I05) land on
+    one patient, while distinct subjects never share one within a run (`write_samples` checks).
+    """
+    n = int.from_bytes(hashlib.sha256(subject_id.encode("utf-8")).digest()[:8], "big")
+    return f"PT9{n % _PSEUDONYM_SPACE:05d}"
+
+
+def _set_meta(md: h5py.Group, key: str, value: str) -> None:
+    """Overwrite `/metadata/<key>` in whichever layout it uses (attr: ecg_sigma, dataset: simulator)."""
+    if key in md and isinstance(md[key], h5py.Dataset):
+        del md[key]
+        md.create_dataset(key, data=value)
+    else:
+        md.attrs[key] = value
 
 
 def load_package(root: str | Path) -> Package:
@@ -155,6 +183,15 @@ def write_samples(pkg: Package, selection: Selection, out_dir: str | Path) -> li
     for r in selection.rows:
         by_file[r["h5_relpath"]].append(r)
 
+    # Fail before writing if two distinct subjects would share a pseudonym (merging two people).
+    owners: dict[str, str] = {}
+    for r in selection.rows:
+        subject = r.get("subject_id") or r["h5_relpath"]
+        pid = pseudonym_for(subject)
+        if owners.setdefault(pid, subject) != subject:
+            raise SampleError(f"pseudonym collision: {owners[pid]} and {subject} -> {pid}; "
+                              "re-run with another --seed")
+
     written: list[Path] = []
     for relpath, rows in sorted(by_file.items()):
         src_path = pkg.root / relpath
@@ -170,6 +207,13 @@ def write_samples(pkg: Package, selection: Selection, out_dir: str | Path) -> li
             with h5py.File(dst_path, "w") as dst:
                 src.copy(src["metadata"], dst, name="metadata")
                 md = dst["metadata"]
+                source_pid = md.attrs.get("patient_id")
+                if source_pid is None and "patient_id" in md:
+                    source_pid = md["patient_id"][()]
+                subject = rows[0].get("subject_id") or relpath
+                _set_meta(md, "patient_id", pseudonym_for(subject))
+                md.attrs["source_patient_id"] = source_pid if source_pid is not None else ""
+                md.attrs["ecgpkg_subject_id"] = subject
                 md.attrs["ecgpkg_version"] = pkg.version
                 md.attrs["ecgpkg_manifest_sha256"] = pkg.manifest_sha256
                 md.attrs["ecgpkg_split"] = rows[0].get("split", "")

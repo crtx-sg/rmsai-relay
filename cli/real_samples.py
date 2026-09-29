@@ -23,6 +23,7 @@ from ingest.real_samples import (
     available,
     load_package,
     parse_pick,
+    pseudonym_for,
     select_events,
     write_samples,
 )
@@ -85,7 +86,8 @@ def _cmd_pick(pkg, args) -> int:
         return 1
     files = write_samples(pkg, sel, args.out)
     for r in sel.rows:
-        print(json.dumps({"label": r["label"], "dataset": r["dataset"], "subject": r["subject_id"],
+        print(json.dumps({"label": r["label"], "patient": pseudonym_for(r["subject_id"]),
+                          "dataset": r["dataset"], "subject": r["subject_id"],
                           "event_key": r["event_key"], "file": r["h5_relpath"]}))
     print(json.dumps({"events": len(sel.rows), "files": [str(f) for f in files],
                       "package": pkg.version, "split": args.split, "seed": args.seed}))

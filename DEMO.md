@@ -167,12 +167,20 @@ docker compose -f infra/docker-compose.yml run --rm real-samples  pick --pick VE
 4. **Copies** each chosen `event_*` group out of its source recording, one output file per
    recording (`data/real/<record>.h5`). A file carries a single `patient_id`, so subjects are never
    merged. Signals are copied byte-for-byte; no conversion is reimplemented.
-5. **Stamps** labels and provenance:
+5. **Pseudonymizes** the patient. The source record id (`106`, `I05`, `PTBXL-14792`) is replaced
+   with a `PT9#####` pseudonym derived from the manifest `subject_id`:
+   - The same subject always gets the same pseudonym, and two recordings of one person share it
+     (INCART `p2` → I04 and I05).
+   - Rule #6 requires this: the app inbox publishes only `PT…`-style pseudonyms and refuses
+     anything else. The de-identifier also preserves only `PT\d+`.
+   - Six digits with a leading 9 keeps these ids clear of the simulator's four-digit `PT####`.
+   - The original is kept as `/metadata` `source_patient_id` and `ecgpkg_subject_id`.
+6. **Stamps** labels and provenance:
    - The manifest label goes on each event's `condition` attr. This becomes the reader's ground
      truth, which `cli.ingest` scores against.
    - ecg_sigma's raw annotation is kept as `source_condition`.
    - `/metadata` gets `ecgpkg_version`, `ecgpkg_manifest_sha256` and `ecgpkg_split`.
-6. **Prints** one JSON line per event, then a summary line with the files written.
+7. **Prints** one JSON line per event (including its `patient` pseudonym), then a summary line with the files written.
 
 **Options**
 
@@ -219,6 +227,14 @@ are the usual confusions), re-pick with another `--seed`.
 
 ## 5. Drive the demo
 
+### Open the app first
+
+Log in to `http://localhost:8080/` (PIN `1234`) **before** publishing. The worklist is
+live-push-only, with no backlog fetch. The inbox room `rmsai-inbox-h1` only exists while the app is
+connected, and an event pushed while it's closed is lost to the worklist. The consumer then logs
+`inbox push failed … 503 … inbox room not open`. Publishing again is safe: the graph is keyed by
+event id.
+
 ### Publish to the bus
 
 ```bash
@@ -229,7 +245,7 @@ $RMSAI cli.ingest --dir data/real --emit bus
 
 ```bash
 docker compose -f infra/docker-compose.yml logs -f consumer
-# [consume] received event … type=VENTRICULAR_TACHYCARDIA conf=0.50 patient=I05
+# [consume] received event … type=VENTRICULAR_TACHYCARDIA conf=0.50 patient=PT992591
 # [consume] persisted MonitoredEvent … -> Neo4j graph
 # [consume] archived report narrative -> Qdrant vector store
 # [consume] dispatch=app: pushed inbox event … -> rmsai-inbox-h1
@@ -240,9 +256,9 @@ reason (`below_threshold`, …).
 
 ### A. Companion app (default, `DISPATCH_MODE=app`)
 
-1. Open `http://localhost:8080/` and enter the PIN (`INBOUND_AUTH_PIN`, default `1234`).
-2. The worklist fills live. Patients appear as their source record ids (`I05`, `207`,
-   `PTBXL-14628`).
+1. (Already done above.) Open `http://localhost:8080/` and enter the PIN (`INBOUND_AUTH_PIN`, default `1234`).
+2. The worklist fills live. Patients appear as `PT9#####` pseudonyms. The dry-run output in §4
+   and the `pick` output map each one back to its dataset subject.
 3. Select a row. Chat is scoped to that event, and its summary is spoken (`INBOX_SPEAK_ON_SELECT`).
 4. Ask follow-ups, typed or by voice:
    - *"what were the vitals at the time of the event?"*
@@ -294,8 +310,8 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
   - On MIT-BIH, only leads II and V1 are recorded; the other limb leads are computed from them.
 - **Never use the train split for numbers.** For example, MIT-BIH record 105 scores 0.780, but it
   is in ecgpkg v2's *train* split. `pick` defaults to `test` for this reason.
-- **The data is public, de-identified research data** (PhysioNet). Patient ids are record ids, not
-  people.
+- **The data is public, de-identified research data** (PhysioNet). It is still pseudonymized
+  (`PT9#####`) like any other patient, because the relay enforces that for every patient.
 
 ---
 
@@ -310,6 +326,9 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | Worklist empty / `cli.kb_dump --list` returns `[]` | `tests/test_graph_templates.py`, `tests/test_orchestrator.py`, `cli.kb_eval` reset the **live** Neo4j | redo §2, then republish (§5) |
 | In-app chat gets no reply | voice worker restarted after the app connected | `$RMSAI cli.dispatch --all-inbox` |
 | Voice worker loops on `:7880` | LiveKit container not running | `docker compose -f infra/docker-compose.yml up -d livekit` |
+| `[poison] … refusing to publish non-pseudonym patient ref: '106'` | `data/real` curated before pseudonymization (older `cli.real_samples`) | re-run `pick`; purge the old ids from Neo4j/Qdrant before republishing, or the same event ids end up under two patients |
+| `inbox push failed … TwirpError … 503 no response from servers` | app not connected, so the inbox room doesn't exist | log in to the app, then publish again |
+| Neo4j `warn: null value eliminated in set function` | harmless driver notice: an `OPTIONAL MATCH` over a patient with no history rows | ignore |
 | Two consumers splitting events | a host-run `cli.consume` shares group `rmsai.relay` with the container | `docker compose -f infra/docker-compose.yml stop consumer` before running one by hand |
 | Code edit not picked up | — | `make docker-restart` (source is bind-mounted); rebuild only for dependency / vendored changes |
 

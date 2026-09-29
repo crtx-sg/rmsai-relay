@@ -772,7 +772,8 @@ uv run python -m cli.ingest --dir data/real
 ```
 
 - **One output file per source record.** A file carries one `patient_id`, so subjects are never
-  merged; the patient shows up as the record id (`207`, `I05`, `PTBXL-14628`).
+  merged. The patient is a stable `PT9#####` pseudonym derived from the subject, never the record
+  id, because the app inbox refuses non-pseudonyms. The source id is kept on `/metadata`.
 - **Ground truth is the manifest label**, written to each event's `condition` attr (ecg_sigma's own
   raw annotation is kept as `source_condition`). `cli.ingest` prints the scored summary to stderr
   whenever events carry a known class, simulator files included.

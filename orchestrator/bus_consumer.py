@@ -137,8 +137,13 @@ def process_bus_event(
             print(f"[consume] dispatch=app: pushed inbox event {w.event_id} -> "
                   f"{inbox_publisher.room} (kinds={kinds})", flush=True)
         except Exception as exc:  # noqa: BLE001 - notification is best-effort; do not fail the event
+            # LiveKit answers send_data to a room that doesn't exist with a bare 503. The inbox room
+            # only exists while the companion app is connected (the worklist is live-push-only).
+            hint = (" — inbox room not open: log in to the companion app before publishing "
+                    "(the worklist has no backlog; this event will not appear)"
+                    if "no response from servers" in str(exc) else "")
             print(f"[consume] dispatch=app: inbox push failed for {w.event_id}: "
-                  f"{type(exc).__name__}: {exc}", flush=True)
+                  f"{type(exc).__name__}: {exc}{hint}", flush=True)
 
     # Call surface: unchanged per-event SIP/voice (or text) alert. Skipped for app-only mode.
     if not _mode_includes(mode, "call"):
