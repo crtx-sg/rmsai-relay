@@ -2,9 +2,10 @@
 
 Self-hostable POC for **medical IoT + AI**. It ingests physiological event data (HDF5 archives / an
 MQTT stream), classifies clinically-significant arrhythmias with the `ECG_TransConv` model, persists
-each event into a graph + vector knowledge base, **calls a remote clinician over the phone** about
-critical events, and then answers the clinician's follow-up questions — by voice or text — grounded
-in a clinical knowledge base and a per-patient knowledge graph.
+each event into a graph + vector knowledge base, **alerts a remote clinician** about critical events
+(a companion-app worklist, a voice call over WebRTC or the phone, or SMS), and then answers the
+clinician's follow-up questions — by voice or text — grounded in a clinical knowledge base and a
+per-patient knowledge graph.
 
 Built **leaf-up, test-first, one phase at a time**. Every subsystem ships a `pytest` suite and a
 runnable CLI harness before it is wired upward. See [`CLAUDE.md`](CLAUDE.md) for the full working
@@ -27,7 +28,9 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
    care guidance, and a markdown clinician report.
 3. **Persist** it into a knowledge base — a Neo4j graph (patient ↔ event ↔ condition ↔ guideline)
    and a Qdrant vector store (clinical-protocol passages + report narrative).
-4. **Report** critical events by placing an outbound voice call (LiveKit/SIP) or a text message.
+4. **Report** critical events to the companion-app worklist and/or by an outbound voice call
+   (WebRTC today; phone via Twilio → LiveKit Cloud [in progress](#phone-calls-twilio--livekit-cloud))
+   or a text message, with an SMS fallback when a call goes unanswered.
 5. **Converse** — after a shared-PIN gate, the clinician asks follow-up questions answered from the
    KB + that patient's graph, and can verbally **acknowledge** the event (flips its status).
 
@@ -51,14 +54,17 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
   chunks **and** a **graph lookup** of entity relationships, fusing both into one labelled context
   for the LLM (no cross-block re-rank, no standalone graph mode, no Wiki path).
 - **Interaction plane** — a voice surface (SIP/LiveKit → STT/TTS behind an auth gate), a text-chat
-  surface, and (planned) a companion app for visual/streaming content. Voice & chat are the
+  surface, and a companion app (worklist, chat, ack, scoped artifacts; live waveform streaming is
+  still planned). Voice & chat are the
   **control plane**; the companion app is the **data plane** for waveforms/video voice can't carry.
 
 ### Design principles (hard rules)
 
 - **Self-hosted by default; provider abstraction always.** All real/PHI processing runs against
-  local models. The LLM sits behind one `LLMProvider` interface (`OllamaProvider` default;
-  `Anthropic`/`OpenAI` swappable). Cloud APIs are used **only** on synthetic data, never PHI.
+  local models. The LLM sits behind one `LLMProvider` interface: `EchoLLM` (offline, deterministic)
+  is the code default, `LLM_PROVIDER=ollama` selects the self-hosted model. Anthropic/OpenAI
+  providers are planned behind the same interface but not implemented (an unknown name falls back
+  to echo). Cloud APIs are used **only** on synthetic data, never PHI.
 - **Synthetic data only in development.** PHI never reaches a third-party API and is never written
   to plain-text logs.
 - **Redaction by construction.** Patients are referenced by `id`/`pseudonym` everywhere, including
@@ -173,13 +179,13 @@ A few design points that aren't obvious from the diagram:
 | Graph KB | **Neo4j** + Cypher (patient ↔ event ↔ condition ↔ treatment ↔ guideline ↔ bed/unit) |
 | Vector KB | **Qdrant** + embeddings (BGE via `sentence-transformers`, deterministic Hashing fallback) |
 | Memory tiers | working (Redis) · episodic (Qdrant) · semantic (= vector KB) |
-| LLM | **Ollama** (self-hosted, default) behind `LLMProvider`; Anthropic/OpenAI swappable on synthetic data |
+| LLM | behind `LLMProvider`: `EchoLLM` (offline, code default) or **Ollama** (self-hosted, `LLM_PROVIDER=ollama`); Anthropic/OpenAI planned, not implemented |
 | De-identification | Regex (default) or **Presidio** + spaCy (`deid` extra), fail-closed before any model call |
-| Speech (self-hosted) | **faster-whisper** STT + **Piper** TTS + **silero** VAD |
-| Telephony / WebRTC | **LiveKit** (agent worker + SIP outbound + browser WebRTC) |
+| Speech | self-hosted **faster-whisper** STT + **Piper** TTS + **silero** VAD; optional cloud **ElevenLabs** STT/TTS for benchmarking on synthetic data only (`STT_BACKEND`/`TTS_BACKEND=elevenlabs`). Code default is `stub` |
+| Telephony / WebRTC | local **LiveKit** (agent worker, app inbox, browser WebRTC); optional second **LiveKit Cloud** project for phone calls (`LIVEKIT_SIP_URL`), bridged from **Twilio Programmable Voice** (TwiML `<Dial><Sip>`); **Twilio SMS** over stdlib HTTP |
 | EMR | **HAPI FHIR** (`emr/`, stub → real in Phase 8) |
 | Orchestration | LangGraph-style turn orchestrator (`orchestrator/`) |
-| Infra | Docker Compose (`infra/docker-compose.yml`) — **everything runs as a service**: the backing stores (neo4j, qdrant, redis, livekit; profiled: mosquitto, model-server/ollama, hapi-fhir) *and* the app itself (consumer, voice-worker, gateway) from one shared image (`infra/Dockerfile`) with the source bind-mounted |
+| Infra | Docker Compose (`infra/docker-compose.yml`) — **everything runs as a service**: the backing stores (neo4j, qdrant, redis, livekit; profiled: mosquitto, model-server/ollama, hapi-fhir) *and* the app itself (consumer, voice-worker, gateway; profiled: `tools` + `real-samples` one-shot runners, `telephony` phone worker) from one shared image (`infra/Dockerfile`) with the source bind-mounted |
 
 **No SQL DB in the POC.** Five stores: Neo4j (relationships + operational event log, behind an
 `EventStore` repository interface so it can migrate to Postgres/TimescaleDB later), Qdrant (text +
@@ -190,17 +196,20 @@ embeddings), Redis (working memory + bus), HDF5 (waveforms), object/file store (
 `common/` contracts + config + de-id + protocols · `ingest/` HDF5 + MQTT readers · `inference/`
 model + vitals + serialize · `kb/{vector,graph,hybrid}` retrieval · `memory/` working/episodic tiers
 · `orchestrator/` turn loop + outbound flow + bus consumer · `voice/` SIP/LiveKit + handlers +
-STT/TTS · `emr/` FHIR · `app/`+`live/` companion app & live media (Phase 9, planned) · `cli/`
-entrypoints · `infra/` compose + app `Dockerfile` · `external/ecgtranscnn/` vendored model+simulator
-(gitignored) · `data/{synthetic,fixtures}` · `docs/` clinical corpus (+ `docs/samples/` upload
-fixtures, excluded from it).
+STT/TTS + SIP provisioning (`voice/sip_setup.py`) · `emr/` FHIR · `app/`+`live/` companion app
+(worklist, chat, ack, artifacts) + inbox publishing · `cli/` entrypoints · `infra/` compose + app
+`Dockerfile` · `deploy/` public edge (nginx, public LiveKit/coturn) · `external/ecgtranscnn/`
+vendored model+simulator (gitignored) · `data/{synthetic,fixtures,real,inference}` (gitignored
+except fixtures) · `docs/` clinical corpus (+ `docs/samples/` upload fixtures and `docs/project/`,
+both excluded from it) · [`DEMO.md`](DEMO.md) demo runbook.
 
 ---
 
 ## Phase status
 
 Built leaf-up, one phase at a time; a phase is "done" only when its CLI test passes. Phases **0–8
-are complete** (see `git log`); **Phase 9 is planned/deferred** until the core loop is hardened.
+are complete** and the companion app (9a) ships; live media (9b) is deferred. Telephony over the
+public phone network is in progress (see [Phone calls](#phone-calls-twilio--livekit-cloud)).
 
 | Phase | Scope | Status |
 |-------|-------|--------|
@@ -216,8 +225,15 @@ are complete** (see `git log`); **Phase 9 is planned/deferred** until the core l
 | 6 | Voice + orchestrator inbound (PIN-gated spoken grounded answers) | ✅ |
 | 7 | Outbound full loop (event → call → grounded follow-up → ack) | ✅ |
 | 8 | Hardening — tracing, guardrails, real HAPI FHIR, failure-mode tests | ✅ |
-| 9 | Companion app + live media (MQTT→WebRTC ECG/vitals, camera relay, consent/audit) | 🔜 planned |
+| 9a | Companion app — worklist, event-scoped chat/voice, ack, scoped artifact links (`app/`, `live/`, `cli.gateway`) | ✅ |
+| 9b | Live media — MQTT→WebRTC ECG/vitals streaming, camera relay, consent/audit | 🔜 planned |
 | — | Bus consumer + event-driven LiveKit/WebRTC outbound (`cli.consume`) | ✅ |
+| — | Real-ECG model `real_v2` (13-class 5-fold ensemble) + ecg_sigma HDF5 reader | ✅ |
+| — | Held-out real-ECG curation (`cli.real_samples`, `PT9#####` pseudonyms) + `cli.ingest --dir` scoring | ✅ |
+| T1–T4 | Telephony split: `Config.telephony()`, `cli.sip_setup`, call paths → telephony LiveKit, phone worker (`make phone-up`) | ✅ |
+| T5 | SMS fallback on unanswered calls; working Twilio SMS (`--notifier twilio`) | ✅ |
+| T2b | Twilio trial bridge: inbound trunk + callee rule + TwiML Bin (`cli.sip_setup --twiml`) | ✅ code · 🔄 live call-in test |
+| T3b | Outbound phone alerts via the Twilio Calls API | 🔜 next |
 | — | File-drop auto-publish watcher (inotify → `cli.ingest --emit bus`) | 🔜 planned |
 
 ---
@@ -388,7 +404,9 @@ semantic similarity 0.17 < 0.60 AND word overlap 0.00 < 0.18 (top: vt_vf.md#Post
 Everything synthetic/simplified sits behind an interface so the real implementation swaps in without
 touching callers.
 
-**Key config defaults** (all env/`.env`-overridable):
+**Key config defaults** (all env/`.env`-overridable; the app reads the repo-root `.env` itself.
+Keys marked *Compose* are Docker Compose settings, which Compose does **not** read from that file;
+see [Two `.env` readers](#two-env-readers)):
 
 | Key | Default | Purpose |
 |-----|---------|---------|
@@ -398,9 +416,11 @@ touching callers.
 | `CRITICALITY_MEWS_THRESHOLD` | `3` | MEWS score at/above this ⇒ escalate criticality to High |
 | `CRITICALITY_ESCALATE_ON_DETERIORATING` | `true` | any deteriorating vital trend ⇒ escalate criticality to High |
 | `CRITICALITY_FP_OVERRIDE_ON_VITALS` | `true` | call even on a confident false-positive ECG (NORMAL_SINUS) when vitals warrant it (MEWS ≥ threshold or deteriorating); overrides the spec-D10 no-call guard |
-| `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` | `false` / `High` | gate which events dial out |
+| `DISPATCH_MODE` | `app+call` | where a gated event goes: `app` (worklist push only), `call` (voice/text only), `app+call` |
+| `HOSPITAL_ID` | *(empty)* | scopes the app inbox room `rmsai-inbox-<id>` |
+| `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` | `false` / `High` | read by `should_call`, but **`cli.consume` and `cli.outbound` force `OUTBOUND_ENABLED` on** and take the threshold from `--min-criticality` (default `High`). The gate governs both the worklist push and the call |
 | `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` | `0.60` | a non-normal (arrhythmia) event is only asserted *as a rhythm* if confidence is at/above this. Below it: withheld when the vitals are calm, or re-based as a **vitals-driven alert** (rhythm marked unconfirmed) when they aren't. Vitals never raise the bar |
-| `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` | — | single hard-configured destination + caller ID |
+| `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` | — | destination + caller ID (your Twilio number; also the SMS sender). **Caveat:** `cli.consume`/`cli.outbound` take the destination from `--number`, which defaults to the placeholder `+15551234567`, not `OUTBOUND_CALL_NUMBER`. Always pass `--number` for real calls/SMS. `cli.call` does use `OUTBOUND_CALL_NUMBER` |
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` | `2` / `30` | no-answer retry policy |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
@@ -408,13 +428,20 @@ touching callers.
 | `AUDIO_WAKE_REQUIRED` | `true` | require the wake word to open a follow-up audio turn (SIP/playground Q&A). Set `false` to answer **every** authenticated audio turn — the escape hatch when STT mishears the out-of-vocab brand word. The companion app already bypasses the gate (it controls the mic) |
 | `INBOX_SPEAK_ON_SELECT` | `true` | companion app: selecting a worklist row speaks that event's stored report summary aloud (in addition to scoping chat). Spoken text is the `Report.summary` — no model call |
 | `LIVEKIT_REDISPATCH_ON_START` | `true` | on worker startup, auto re-dispatch the agent into live `rmsai-inbox-*` rooms that lost their agent (e.g. after a worker restart), so the app doesn't need a re-login. On-demand equivalent: `cli.dispatch` |
-| `LIVEKIT_WORKER_HTTP_PORT` | `8081` | port for livekit-agents' health-check HTTP server. Only matters when two workers run side by side — the Docker `voice-worker` service defaults it to `8091`, because host networking would otherwise collide with a worker run by hand (`[errno 98] address already in use`) |
-| `GATEWAY_PORT` | `8080` | host port for the containerized gateway. Move it if `hapi-fhir` (`--profile emr`) or a hand-run gateway already holds 8080 |
+| `LIVEKIT_WORKER_HTTP_PORT` | `8081` | port for livekit-agents' health-check HTTP server. Only matters when two workers run side by side. The Docker `voice-worker` gets `8091` from Compose (*Compose*: set in the shell to change it), because host networking would otherwise collide with a worker run by hand (`[errno 98] address already in use`). The phone worker uses `LIVEKIT_SIP_WORKER_HTTP_PORT` (`8082`) |
+| `GATEWAY_PORT` | `8080` | *Compose*: host port for the containerized gateway. Move it (`GATEWAY_PORT=8090 make docker-up`) if `hapi-fhir` (`--profile emr`) or a hand-run gateway already holds 8080 |
+| `LLM_PROVIDER` / `LLM_MODEL` / `OLLAMA_URL` | `echo` / `llama3.2` / `http://localhost:11434` | `echo` is offline and deterministic; `ollama` for real answers. Any other name silently falls back to echo |
+| `EMBEDDER` / `KB_MIN_RELEVANCE` / `KB_LLM_ROUTER` / `KB_UPLOAD_DIR` | `hashing` / `0.60` / `false` / `data/kb_uploads` | KB embedder (must match the collection), relevance floor for grounded answers, LLM question router, managed upload folder |
+| `STT_BACKEND` / `TTS_BACKEND` | `stub` / `stub` | `whisper`/`piper` (self-hosted) or `elevenlabs` (cloud, synthetic data only) |
+| `LIVEKIT_AGENT_NAME` / `LIVEKIT_CALL_ROOM_PREFIX` | `rmsai-agent` / `rmsai-call-` | the app worker's dispatch name; prefix of on-demand and inbound phone-call rooms |
+| `SIP_RINGING_TIMEOUT_S` / `SIP_MAX_CALL_DURATION_S` | `30` / `600` | call safety rails (unanswered ring time; hard cap on a call) |
+| `LIVEKIT_SIP_*`, `SIP_INBOUND_ALLOWED_NUMBERS`, `TWILIO_SIP_*`, `LIVEKIT_SIP_TRUNK_ID` | *(empty)* | phone calls: see [Phone calls](#phone-calls-twilio--livekit-cloud) |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | *(empty)* | real SMS (`--notifier twilio`): the text channel and the unanswered-call fallback |
 | `EPISODIC_RECALL` | `false` | condition free-text answers on recalled cross-session past Q&A; off keeps answers grounded in the live KB + current conversation only |
 | `STT_LANGUAGE` | `en` | force the STT language (ISO 639-1); blank/`auto` = auto-detect. Stops Whisper/Scribe "hearing" other languages on noise |
 | `ECG_CHECKPOINTS` | *(unset)* | ECG classifier checkpoint path(s), comma- or space-separated. Unset ⇒ the deterministic stub. Several paths load as one softmax-averaging ensemble; `external/ecgtranscnn/models/real_v2/fold{0..4}.pt` is the recommended artifact (run `make weights` first). Head, lead order and filter preset are read from the checkpoint |
 | `ECG_PLOT_ENABLED` / `PLOT_DIR` | `true` / `data/plots` | producer renders each event's ECG lead to `{PLOT_DIR}/<event_id>.png` (gitignored); path persisted as `MonitoredEvent.ecg_plot_ref` |
-| `DEID_BACKEND` | `auto` | `auto` / `regex` / `presidio` |
+| `DEID_BACKEND` | `regex` | `regex` (offline) / `presidio` / `auto` (presidio if installed, else regex) |
 
 **Stubs (POC → production):** `PatientHistory` (synthetic, seeded by `patient_id` → EMR/FHIR) ·
 `BedAssignment` (≤25 beds/unit, overflow, clear ops → ADT feed) · `ECGModel` (vendored `real_v2`
@@ -547,7 +574,30 @@ Two services stay behind profiles because they collide with this setup: `--profi
 (`model-server`, containerized Ollama — **skip it if `ollama serve` already runs on the host**;
 both bind 11434) and `--profile emr` (`hapi-fhir` — binds 8080, same as the gateway; move the
 gateway with `GATEWAY_PORT`). `--profile telemetry` adds mosquitto. The legacy `--profile later`
-still selects all of them.
+still selects those three. Two more profiles hold on-demand services: `--profile tools` (`tools`,
+the one-shot CLI runner, and `real-samples`, see [real ECG](#curating-a-held-out-real-ecg-demo-set-clireal_samples);
+`docker compose run` enables it implicitly) and `--profile telephony` (`voice-worker-phone`, started
+by `make phone-up`, see [Phone calls](#phone-calls-twilio--livekit-cloud)).
+
+#### Two `.env` readers
+
+The **app** (every `python -m cli.*`, on the host or in a container) reads the repo-root `.env`
+itself; exported shell variables win over it. **Docker Compose** does *not* read that file for its
+`${…}` settings: with `-f infra/docker-compose.yml` its project directory is `infra/`, which has no
+`.env`. So Compose-level knobs in the root `.env` are silently ignored. Export them in the shell or
+pass them inline:
+
+```bash
+CONSUME_ARGS="--channel voice --caller livekit --transport webrtc" make docker-up   # consumer's CLI args (this is the default)
+GATEWAY_PORT=8090 make docker-up
+ECGPKG_HOST_DIR=/abs/path/to/packages docker compose -f infra/docker-compose.yml run --rm real-samples list
+```
+
+Compose-level keys: `CONSUME_ARGS`, `GATEWAY_PORT`, `ECGPKG_HOST_DIR`, `ECGPKG_NAME`,
+`APP_UID`/`APP_GID`, `LIVEKIT_WORKER_HTTP_PORT` (container), `LIVEKIT_SIP_WORKER_HTTP_PORT`
+(container), `NEO4J_USER`/`NEO4J_PASSWORD` (the neo4j container's auth) and the `*_PORT` host-port
+overrides. Changing `NEO4J_PASSWORD` in `.env` alone therefore changes what the app sends but not
+what the container expects.
 
 ### B. On the host
 
@@ -559,7 +609,7 @@ git -C external/ecgtranscnn checkout bac4a01
 #    make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn   (skip it to run on the stub)
 
 # 2. Install everything (recommended for a demo). `make setup-all` = all extras
-#    (rag, deid, voice, livekit, app) + the vendored ecgtranscnn editable + the spaCy model.
+#    (rag, deid, voice, livekit, app, pdf) + the vendored ecgtranscnn editable + the spaCy model.
 make setup-all
 #    Lean alternative (core + dev only): `make setup`.
 #    Re-run `make external` after ANY hand-run `uv sync` — the vendored package is gitignored, so
@@ -569,8 +619,8 @@ make setup-all
 make stores-up            # = docker compose … up -d redis neo4j qdrant livekit
 make stores-check         # which ones are actually reachable?
 
-# 4. Run tests
-uv run pytest
+# 4. Run tests (offline; the full suite needs the stores and resets the live Neo4j)
+uv run pytest -q -m "not infra"
 ```
 
 > **The stores run in Docker even in this mode.** Running the CLIs with `uv run` does *not* make
@@ -594,17 +644,18 @@ uv run pytest
 | Target | What it does |
 |---|---|
 | `make setup` | `uv sync --extra dev` + `make external` (core + dev only) |
-| `make setup-all` | all extras (rag, deid, voice, livekit, app) + `make external` + spaCy `en_core_web_sm` |
+| `make setup-all` | all extras (rag, deid, voice, livekit, app, pdf) + `make external` + spaCy `en_core_web_sm` |
 | `make external` | (re)install the vendored `external/ecgtranscnn` editable — run after any manual `uv sync` |
 | `make weights` | copy the `real_v2` checkpoints in from a local ecgtranscnn working copy (`ECGTRANSCNN_DIR`, default `../ecgtranscnn`) — they are gitignored, so no clone carries them |
 | `make stores-up` / `make stores-down` | start / stop **only** the backing stores (redis, neo4j, qdrant, livekit) — the target to use when you run the CLIs on the host |
 | `make stores-check` | which backing stores are reachable, and what to run if one is down |
 | `make docker-build` | build the shared app image (`infra/Dockerfile`) |
-| `make docker-up` / `make docker-down` | start / stop every service |
+| `make docker-up` / `make docker-down` | start every default service / stop everything (including the `telephony` phone worker) |
 | `make docker-restart` | restart the three app services to pick up source edits (no rebuild) |
 | `make docker-logs` / `make docker-ps` | tail the app services / show container state |
 | `make docker-shell` | interactive shell in the app image with the repo mounted |
-| `make test` / `make lint` | `uv run pytest -q` / linters |
+| `make phone-up` / `make phone-down` / `make phone-logs` | start / stop / tail the phone-call worker (`voice-worker-phone`, profile `telephony`) |
+| `make test` / `make lint` | `uv run pytest -q` / `ruff check .` |
 
 ### Optional extras (à la carte, if you skipped `make setup-all`)
 
@@ -613,16 +664,20 @@ uv sync --extra rag                                   # real BGE embeddings + re
 uv sync --extra deid && uv run python -m spacy download en_core_web_sm   # Presidio de-id
 uv sync --extra voice                                 # faster-whisper STT + Piper TTS
 uv sync --extra livekit                               # LiveKit agent worker + SIP/WebRTC
+uv sync --extra app                                   # companion-app gateway (FastAPI/uvicorn)
+uv sync --extra pdf                                   # PDF uploads for cli.kb_upload (pypdf)
 # NOTE: any bare `uv sync` uninstalls the vendored ecgtranscnn — follow with `make external`.
 ```
 
 `.env` keys that matter: `REDIS_URL`, `NEO4J_*`, `QDRANT_URL`, `DEID_BACKEND`, `STT_BACKEND`/
 `TTS_BACKEND`, `INBOUND_AUTH_PIN`, `AUDIO_WAKE_REQUIRED` (wake-word gate on/off),
-`INBOX_SPEAK_ON_SELECT` (voice the event on worklist select), and for live calls `LIVEKIT_URL` /
-`LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` plus `OUTBOUND_ENABLED=true`.
+`INBOX_SPEAK_ON_SELECT` (voice the event on worklist select), `LIVEKIT_URL` / `LIVEKIT_API_KEY` /
+`LIVEKIT_API_SECRET` + `HOSPITAL_ID` + `DISPATCH_MODE` for the app and WebRTC calls, and the
+telephony block for phone calls (see [Phone calls](#phone-calls-twilio--livekit-cloud)).
 
 **Swappable speech backends.** STT/TTS sit behind `STTAdapter`/`TTSAdapter` (`voice/adapters.py`),
-selected by `STT_BACKEND` / `TTS_BACKEND`: self-hosted **whisper**/**piper** (default), or cloud
+selected by `STT_BACKEND` / `TTS_BACKEND`: self-hosted **whisper**/**piper** (set them explicitly;
+the code default is `stub`, which produces no real audio and makes the worker warn), or cloud
 **elevenlabs** (STT "Scribe" + TTS; stdlib HTTP, no extra dep) for **accuracy/latency benchmarking**.
 Set `ELEVENLABS_API_KEY` (+ optional `ELEVENLABS_VOICE_ID` / `ELEVENLABS_TTS_MODEL` /
 `ELEVENLABS_STT_MODEL`). Compare backends + latency offline with
@@ -737,6 +792,12 @@ The startup line is the check that matters: **13 classes** and **`filter_preset=
 the real checkpoint loaded. A 16-class line means a simulator checkpoint; no line at all means the
 stub, and the ERROR above it says why.
 
+> **Only for `--emit stdout`.** A raw ecg_sigma file keeps the dataset's record id as the patient
+> (`"105"` above). Published with `--emit bus` while `DISPATCH_MODE` includes `app`, the consumer
+> refuses it (`[poison] … refusing to publish non-pseudonym patient ref`: the event is persisted
+> but not dispatched). For anything that goes on the bus, curate with `cli.real_samples` below,
+> which assigns `PT9#####` pseudonyms.
+
 > **Sanity-check your own files before trusting a number.** Running the 51-event MIT-BIH record 105
 > file through this path scores 0.780 — but `mitbih:105` is in `ecgpkg` v2's **train** split, so
 > that figure is measured on data the model was fitted to and is *not* a performance estimate. It
@@ -766,9 +827,9 @@ uv run python -m cli.ingest --dir data/real
 ```
 
 ```
-{"patient": "I05", "event_type": "VENTRICULAR_TACHYCARDIA", "confidence": 0.497, "criticality": "Critical", "ground_truth": "VENTRICULAR_TACHYCARDIA", …}
-{"patient": "PTBXL-14628", "event_type": "SVT", "confidence": 0.538, "criticality": "High", "ground_truth": "ATRIAL_FIBRILLATION", …}
-{"summary": {"events": 12, "scored": 12, "correct": 9, "accuracy": 0.75}}     # stderr
+{"patient": "PT992591", "event_type": "VENTRICULAR_TACHYCARDIA", "confidence": 0.497, "criticality": "Critical", "ground_truth": "VENTRICULAR_TACHYCARDIA", …}
+{"patient": "PT952625", "event_type": "SVT", "confidence": 0.538, "criticality": "High", "ground_truth": "ATRIAL_FIBRILLATION", …}
+{"summary": {"events": 12, "scored": 12, "correct": 9, "accuracy": 0.75, "model": "checkpoint"}}     # stderr
 ```
 
 - **One output file per source record.** A file carries one `patient_id`, so subjects are never
@@ -784,8 +845,10 @@ uv run python -m cli.ingest --dir data/real
 - **A 12-event set is a demo, not an evaluation.** For performance use upstream
   `models/real_v2/reports/test.md`.
 - **Docker:** `tools` does not see `../ecg_sigma`, so use the `real-samples` service. It mounts
-  `ECGPKG_HOST_DIR` (default `../ecg_sigma/packages`) read-only and fails loudly if that folder is
-  missing. Output lands in the mounted `data/`:
+  `ECGPKG_HOST_DIR` (default: the sibling `ecg_sigma/packages`) read-only at `/ecgpkg`, uses
+  `ECGPKG_NAME` (default `ecg_pkg_v2`) inside it, and fails loudly if the folder is missing. Both
+  are Compose settings: export them in the shell (an absolute path is safest), not in `.env`.
+  Output lands in the mounted `data/`:
 
   ```bash
   docker compose -f infra/docker-compose.yml run --rm real-samples list
@@ -862,6 +925,11 @@ $RMSAI cli.graph ingest --patients PT1000 PT1001 PT1002
 
 ### 4. Drive the application
 
+**Open the app first.** Log in at `http://localhost:8080/` (PIN `INBOUND_AUTH_PIN`, default `1234`)
+*before* publishing. The worklist is live-push-only with no backlog fetch: the inbox room exists
+only while the app is connected, so an event pushed earlier never appears. The consumer then logs
+`inbox push failed … 503 … inbox room not open`. Republishing is safe; events are keyed by id.
+
 Publish classified events onto the bus; the running `consumer` container picks them up, persists to
 both stores, and dispatches per the criticality gate:
 
@@ -885,11 +953,10 @@ docker compose -f infra/docker-compose.yml logs -f consumer
 # [consume] received event daf16c2d… type=VENTRICULAR_TACHYCARDIA conf=1.00 patient=PT6580
 # [consume] persisted MonitoredEvent … -> Neo4j graph
 # [consume] archived report narrative -> Qdrant vector store
-# [consume] dispatch=app: pushed inbox event … -> rmsai-inbox-h1
+# [consume] dispatch=app: pushed inbox event … -> rmsai-inbox-h1 (kinds=[…])
 ```
 
-Then **use it**: open `http://localhost:8080/`, enter the PIN (`INBOUND_AUTH_PIN`, default `1234`),
-and the worklist renders live. Selecting a row scopes chat to that event and speaks its report
+Then **use it**: the worklist in the open app fills live. Selecting a row scopes chat to that event and speaks its report
 summary (`INBOX_SPEAK_ON_SELECT`). Ask questions by typing or by voice. For the phone/WebRTC paths
 and the on-demand call, see [End-to-end testing](#end-to-end-testing) §5–6.
 
@@ -921,11 +988,15 @@ cited individually. Full detail + verification commands:
 ### 6. Test the application
 
 ```bash
-$RMSAI pytest -q                        # full suite (needs the stores up)
+$RMSAI pytest -q                        # full suite (needs the stores up; RESETS the live Neo4j, see below)
 $RMSAI pytest -q -m "not infra"         # offline only — no containers required
 $RMSAI pytest -q tests/test_criticality.py -k fp_override    # one file / one test
 make test                               # host equivalent (uv run pytest -q)
 ```
+
+> **Known failures:** 9 tests fail on `main` today, independent of recent work
+> (`test_episodic_gate` ×3, `test_graph_templates` ×3, `test_speech_check` ×1, `test_voice_config` ×2).
+> Treat a run as green when those 9 are the only failures.
 
 Then the end-to-end smoke test — generate, classify, publish, consume, alert, acknowledge:
 
@@ -941,9 +1012,10 @@ docker compose -f infra/docker-compose.yml logs --tail=40 consumer
 > recordings; to check a simulator file classifies plausibly, pass
 > `--checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt` explicitly.
 
-Expect critical events (AFib/VT, High/Critical) persisted **and** dispatched; `NORMAL_SINUS`/Low
-persisted but skipped with a printed reason (`below_threshold`, `low_confidence_arrhythmia`,
-`vitals_alert`, `fp_override`). Per-subsystem harnesses are listed under
+Expect every event persisted. Gated events are dispatched with a reason: `ok`, `vitals_alert (…)`
+(rhythm unconfirmed, vitals carry it) or `fp_override (…)` (confident NORMAL_SINUS, but vitals warrant
+it; common on simulator data). The rest are skipped with a reason: `false_positive` (confident
+NORMAL_SINUS), `low_confidence_arrhythmia (…)` or `below_threshold (…)`. Per-subsystem harnesses are listed under
 [Other CLI harnesses](#other-cli-harnesses-per-subsystem).
 
 > ⚠️ **`tests/test_graph_templates.py`, `tests/test_orchestrator.py`, and `cli.kb_eval` call
@@ -1030,6 +1102,7 @@ companion app `http://localhost:8080/`.
 | worker retry-loops on `:7880` | the LiveKit **server** isn't running, not a worker bug |
 | `collection … has vector dim 384, but embedder … 256` | `--embedder` doesn't match what built the collection |
 | `cli.kb_dump --list` returns `[]` | the graph was wiped (full pytest run / `cli.kb_eval`) — redo steps 3–4 |
+| worklist empty | most often: events were published **before** the app was logged in (live-push only; the consumer logs `inbox push failed … inbox room not open`) → log in, then republish. Also: `DISPATCH_MODE` without `app`, or a `[poison] … non-pseudonym patient ref` (curate real ECG with `cli.real_samples`) |
 | worklist empty, chat silent | worker not dispatched into the room → `cli.dispatch --all-inbox`; or a cached `app.js` (check the on-screen build tag) |
 | answer declines on an in-corpus question | relevance gate — the log names both signals and both thresholds |
 
@@ -1090,6 +1163,129 @@ After `down -v` you are back to step 3 — re-initialize the KB, then re-ingest.
 
 ---
 
+## Local-only mode (no LiveKit Cloud, no Twilio)
+
+The default, and the quickest demo: the local LiveKit, the companion app, WebRTC calls, a simulated
+caller and simulated SMS. Telephony settings can stay in `.env`; only four explicit options use
+them, and none is a default: `--transport sip`, `--caller livekit`, `--notifier twilio`, and
+`cli.sip_setup` / `make phone-up`.
+
+| Path | Goes to |
+|---|---|
+| App worklist, chat, speak-on-select, gateway, inbox push | local LiveKit |
+| `cli.consume --transport webrtc` (the consumer container's default) | local LiveKit, agent `rmsai-agent` |
+| `cli.call` / `cli.outbound` (default caller), `--notifier` default | simulated, no network |
+| `cli.consume --transport sip`, `cli.call --caller livekit`, phone worker | telephony LiveKit (Cloud), only when asked |
+
+Modes:
+- **App only:** `DISPATCH_MODE=app`, `make docker-up`, log in, publish.
+- **Event call in the browser:** `DISPATCH_MODE=app+call`, `make docker-up`. Per critical event the
+  consumer log prints a room + token; join at agents-playground.livekit.io (a page LiveKit hosts that
+  connects to your local `ws://localhost:7880`; no account, audio stays local).
+- **Offline, scripted:** `cli.consume --channel voice --once --follow-up … --ack …`,
+  `cli.outbound --file … --no-answer` (retries, then a simulated SMS), `cli.call` (simulated).
+
+To make it impossible to reach Cloud, comment out `LIVEKIT_SIP_URL`: that forces single-server mode,
+the phone worker refuses to start, and SIP paths fail against the local LiveKit (no SIP service).
+Ringing a real phone always needs the setup below. Runbook: [`DEMO.md`](DEMO.md#local-only-mode-no-livekit-cloud-no-twilio).
+
+## Phone calls (Twilio → LiveKit Cloud)
+
+> **Status:** call-in is set up and awaiting its first live test; event-driven outbound phone calls
+> are **not implemented yet** on a Twilio trial; the SMS fallback works. WebRTC calls (§5 of
+> [End-to-end testing](#end-to-end-testing)) need none of this.
+
+**Two LiveKits.** A LiveKit SIP bridge can only connect calls into rooms on its own server, and the
+local LiveKit has no SIP service. So phone calls run on a second LiveKit, a **LiveKit Cloud** project
+(`LIVEKIT_SIP_URL`), while the app inbox, chat and WebRTC stay on the local one. `Config.telephony()`
+(`common/config.py`) is the config the call paths use: in split mode it swaps only the LiveKit
+URL/key/secret, the agent name (`rmsai-agent-phone`), the worker health port (`8082`) and turns off
+inbox auto-redispatch. Redis (staged alerts), the stores and the numbers are shared. With
+`LIVEKIT_SIP_URL` unset everything behaves as a single server, exactly as before.
+
+**Twilio Programmable Voice as the carrier.** Twilio's trial blocks Elastic SIP Trunking, so calls
+reach LiveKit the other way round. Twilio handles the phone leg itself, and once the call is
+answered its TwiML `<Dial><Sip>` forwards it **into** LiveKit Cloud as an inbound SIP call. The SIP
+address names the room: `sip:rmsai-call-{{CallSid}}@<LIVEKIT_SIP_URI>` for call-ins (one room per
+call), and, in the next phase, `sip:rmsai-outbound-<event_id>@…` for alerts (exactly the room the
+alert was staged for).
+
+| Direction | How | Status |
+|---|---|---|
+| Call **in**: your phone → Twilio number → agent | TwiML Bin → inbound trunk → callee rule → `rmsai-agent-phone` → PIN → grounded Q&A | set up · live test pending |
+| Event **out**: relay → your phone | Twilio Calls API → TwiML `<Dial><Sip>` into `rmsai-outbound-<event_id>` | 🔜 next phase |
+| Event out on a **paid** account | LiveKit outbound trunk via Twilio Elastic SIP (`TWILIO_SIP_*`, `LIVEKIT_SIP_TRUNK_ID`) | code present, untested |
+| SMS when an alert call is unanswered | `--notifier twilio` | ✅ |
+
+### Configure (`.env`)
+
+| Key | What |
+|---|---|
+| `LIVEKIT_SIP_URL` / `LIVEKIT_SIP_API_KEY` / `LIVEKIT_SIP_API_SECRET` | the LiveKit Cloud project (Settings → Keys) |
+| `LIVEKIT_SIP_URI` | its SIP host (Settings → SIP URI), without `sip:`, e.g. `abc123.sip.livekit.cloud` |
+| `LIVEKIT_SIP_INBOUND_USERNAME` / `LIVEKIT_SIP_INBOUND_PASSWORD` | digest credentials you choose; the TwiML presents them to the inbound trunk |
+| `OUTBOUND_FROM` | your Twilio number (E.164): caller ID on bridged calls, SMS sender, always an allowed caller |
+| `OUTBOUND_CALL_NUMBER` / `SIP_INBOUND_ALLOWED_NUMBERS` | who may call in (the explicit list, else the on-call number, else nobody). Trial: must be a Twilio **Verified Caller ID** |
+| `LIVEKIT_SIP_AGENT_NAME` / `LIVEKIT_SIP_WORKER_HTTP_PORT` | phone worker identity; defaults `rmsai-agent-phone` / `8082` |
+| `TWILIO_SIP_TERMINATION_URI` / `_USERNAME` / `_PASSWORD`, `LIVEKIT_SIP_TRUNK_ID` | **paid** Elastic SIP path only: all three or none; the trunk id is printed by `cli.sip_setup` |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | real SMS |
+
+### Provision and connect
+
+```bash
+uv run python -m cli.sip_setup --dry-run   # masked plan; PROBLEM lines name any missing key (exit 2)
+uv run python -m cli.sip_setup             # create/update in the Cloud project (idempotent, by name)
+uv run python -m cli.sip_setup --twiml     # the TwiML Bin to paste into Twilio (unmasked password)
+make phone-up                              # phone worker; `make phone-logs` should show role=phone
+```
+
+`cli.sip_setup` creates, on the telephony LiveKit:
+- inbound trunk **`rmsai-inbound-twilio`**: digest auth plus a caller allow-list (the call-in
+  numbers and `OUTBOUND_FROM`), capped at `SIP_MAX_CALL_DURATION_S`;
+- dispatch rule **`rmsai-inbound-dispatch`**: a *callee* rule (room = the SIP user part, exactly;
+  no randomization) that dispatches `rmsai-agent-phone` and hides the caller's number;
+- outbound trunk **`rmsai-outbound-twilio`** only on the paid path.
+
+In the Twilio console:
+1. **Verified Caller IDs**: add your mobile (trial accounts only call and text verified numbers).
+2. **TwiML Bins**: create `rmsai-inbound` with the `--twiml` output.
+3. **Phone Numbers → Active numbers → your number → Voice Configuration**: "A call comes in" =
+   TwiML Bin `rmsai-inbound`, then **Save configuration**. Saving the Bin alone attaches it to
+   nothing, and the number keeps playing Twilio's default greeting.
+
+Test: call the Twilio number from your mobile. Expect the Twilio trial notice, then the agent's PIN
+prompt, then grounded Q&A (the room has no staged alert, so the worker runs the PIN-gated Q&A).
+
+**Security.** The inbound trunk accepts only INVITEs carrying the digest credentials, and only from
+allowed callers; the worker's PIN gate applies on top. The TwiML Bin holds the SIP password, so treat
+it as a secret. **PHI:** call audio passes through Twilio and LiveKit Cloud (and ElevenLabs, if it is
+the STT/TTS backend), and the SMS fallback sends the pseudonymized alert text through Twilio. Use
+synthetic or public data only until BAAs or self-hosted SIP are in place.
+
+### SMS fallback
+
+`--notifier simulated|twilio` on `cli.consume` and `cli.outbound` selects the SMS backend for the
+text channel **and** for voice calls that go unanswered after retries. The fallback texts
+"Missed call from RMS relay. <spoken alert>" to the call's destination (`--number`). Delivered keeps
+the event `reported` (alerted, awaiting an ack); failed is `notify_failed`; an invalid number is never
+texted. Each attempt is audited as `sms_fallback`. The Twilio sender uses the REST API over stdlib
+HTTP (no SDK) and needs `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `OUTBOUND_FROM`. A Twilio
+rejection (e.g. `21608`, unverified number on a trial) returns "not delivered" with the reason
+logged and the number masked; it never crashes the event. SMS to non-US numbers from a US trial
+number may also be filtered by the destination's carriers.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| The Twilio number plays Twilio's greeting ("Thanks for calling…") | the number's "A call comes in" isn't the TwiML Bin, or wasn't saved (step 3 above) |
+| `[sip_setup] PROBLEM: …` | fill the key it names; re-run `--dry-run` |
+| `voice-worker-phone` exits: `VOICE_WORKER_ROLE=phone needs LIVEKIT_SIP_URL` | set the `LIVEKIT_SIP_*` keys, then `make phone-up` |
+| `[call] … outcome=invalid` / `LIVEKIT_SIP_TRUNK_ID is not set` | no outbound trunk: expected on a trial (paid path only) |
+| `--notifier twilio needs …` | set `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `OUTBOUND_FROM` |
+| `[sms] … rejected (400) code 21608` | trial account: verify the destination number in Twilio |
+| Real calls or SMS go to `+1555…4567` | you omitted `--number` on `cli.consume`/`cli.outbound` |
+
 ## End-to-end testing
 
 ### 0. Demo bring-up sequence
@@ -1127,10 +1323,9 @@ infra/docker-compose.yml stop voice-worker` — so the two don't both join the s
 > (`Connect call failed ('127.0.0.1', 7880)`) — that error means *the server isn't running*, not a
 > bug in the worker. LiveKit now starts with a plain `up`; it is no longer `later`-profiled.
 
-> Start order matters for in-app chat: the **worker must be running before** a room is created, or
-> the `/session` dispatch won't reach it. If you **restart the worker** while the app is connected,
-> the existing room is left agent-less (chat/select hit an empty room → no reply, no speech). The
-> worker auto re-dispatches into live `rmsai-inbox-*` rooms on startup (`LIVEKIT_REDISPATCH_ON_START`,
+> If the worker **starts or restarts while the app is connected**, the inbox room can be left
+> agent-less for a moment (chat/select hit an empty room → no reply, no speech). The worker
+> re-dispatches itself into live `rmsai-inbox-*` rooms on startup (`LIVEKIT_REDISPATCH_ON_START`,
 > default on); to re-wire immediately without waiting or re-logging in:
 >
 > ```bash
@@ -1139,12 +1334,15 @@ infra/docker-compose.yml stop voice-worker` — so the two don't both join the s
 > ```
 > The agent joins a few seconds later (cold-start loads STT/TTS/orchestrator).
 
-### 1. Tests (offline, no infra)
+### 1. Tests
 
 ```bash
-uv run pytest -q                       # full suite
-uv run pytest -q -m "not infra"        # skip infra-dependent tests
+uv run pytest -q -m "not infra"        # offline: no containers needed
+uv run pytest -q                       # full suite: needs the stores, and resets the live Neo4j
 ```
+
+9 known pre-existing failures (episodic_gate, graph_templates, speech_check, voice_config); see
+[§6 of the runbook](#6-test-the-application).
 
 ### 2. Generate synthetic events (vendored simulator)
 
@@ -1253,12 +1451,16 @@ then asks grounded questions.
 
 ```bash
 uv run python -m cli.call                    # simulated: whole path, no telephony
-uv run python -m cli.call --caller livekit   # real SIP via LIVEKIT_SIP_TRUNK_ID
+uv run python -m cli.call --caller livekit   # real SIP via LIVEKIT_SIP_TRUNK_ID (paid path, see below)
 uv run python -m cli.call --caller livekit --to +15551234567 --no-dispatch   # trunk test only
 ```
 
-Needs an outbound trunk (`LIVEKIT_SIP_TRUNK_ID`) and a caller ID (`OUTBOUND_FROM`) — most carriers
-reject a call presenting no valid from-number. Exit code is 0 answered / 1 no-answer / 2 invalid.
+In split mode (`LIVEKIT_SIP_URL` set) the dial and the dispatch go to the telephony LiveKit, so the
+phone worker must be running (`make phone-up`). `--caller livekit` needs an outbound trunk
+(`LIVEKIT_SIP_TRUNK_ID`) and a caller ID (`OUTBOUND_FROM`); the trunk only exists on the paid
+Twilio Elastic SIP path. **On a Twilio trial there is no outbound trunk yet**: the call fails fast
+as invalid (exit 2). Use call-in instead; outbound via the Twilio Calls API is the next phase. See
+[Phone calls](#phone-calls-twilio--livekit-cloud). Exit code is 0 answered / 1 no-answer / 2 invalid.
 
 ### 4. Bus path: producer → Redis Stream → consumer
 
@@ -1301,7 +1503,8 @@ uv run python -m cli.livekit_token --room rmsai-call-demo
 # → speak the PIN → ask a KB question
 ```
 
-**Outbound (event-driven, carries the event context):**
+**Outbound (event-driven, carries the event context).** Needs `DISPATCH_MODE` to include `call`
+(`app+call`, the code default). With `DISPATCH_MODE=app` nothing is staged or called.
 ```bash
 # produce an event (step 4 producer), then stage the alert + print a join token
 uv run python -m cli.consume --channel voice --caller livekit --transport webrtc --once
@@ -1314,7 +1517,9 @@ uv run python -m cli.consume --channel voice --caller livekit --transport webrtc
 > that event's staged alert. The static `rmsai-outbound` name (`LIVEKIT_SIP_ROOM`) is only the
 > *default* for the standalone `cli.outbound` path (one call at a time), not the bus consumer. The
 > worker joins when the room is dispatched; a worker started before a code change won't pick it up for
-> an already-live room — restart the worker **and** place a new call.
+> an already-live room — restart the worker **and** place a new call. With `--transport sip` in split
+> mode the room is created on the telephony LiveKit (Cloud), while the staged alert stays in the
+> shared Redis, which is how the local phone worker finds it.
 
 **Talking vs typing during a call (modality-matched replies).** Once past the PIN and the spoken
 alert, you can interact two ways and the response matches the input modality:
@@ -1337,10 +1542,17 @@ never wake-word gated. Patient-scoped questions resolve "the event" to that pati
 ### 6. Real SIP phone call (outbound to a number)
 
 ```bash
-# requires SIP trunk/number in .env + OUTBOUND_ENABLED=true; worker (step 5A) running
 uv run python -m cli.consume --channel voice --caller livekit --transport sip --once \
-    --number +1XXXXXXXXXX
+    --number +1XXXXXXXXXX --notifier twilio
 ```
+
+Prerequisites (details in [Phone calls](#phone-calls-twilio--livekit-cloud)):
+- `DISPATCH_MODE` includes `call`. `OUTBOUND_ENABLED` does not matter (`cli.consume` forces it on).
+- **Always pass `--number`**: it defaults to the placeholder `+15551234567`, not `OUTBOUND_CALL_NUMBER`.
+- In split mode, the phone worker is running (`make phone-up`), not the step-5A app worker.
+- `LIVEKIT_SIP_TRUNK_ID`, i.e. the **paid** Elastic SIP path. On a Twilio trial this path is not
+  available yet (outbound via the Twilio Calls API is the next phase).
+- `--notifier twilio` texts the alert if the call goes unanswered (needs the Twilio SMS keys).
 
 ### Recommended smoke test (clean, single pass)
 
@@ -1351,8 +1563,9 @@ uv run python -m cli.consume --channel voice --once \
     --follow-up "what were the vitals" --ack "yes I acknowledge"
 ```
 
-Expect: critical events (e.g. AFib/High) persisted + called + acknowledged; NormalSinus/Low
-persisted but skipped (`below_threshold`).
+Expect (with `DISPATCH_MODE` including `call`; this uses the simulated caller): critical events
+(e.g. AFib/High) persisted + called + acknowledged; a confident NORMAL_SINUS persisted but skipped
+(`false_positive`), unless the vitals trigger `fp_override (…)`, which is common on simulator data.
 
 ### Other CLI harnesses (per-subsystem)
 
@@ -1372,4 +1585,12 @@ uv run python -m cli.memory demo           # working + episodic + semantic memor
 uv run python -m cli.speech_check          # offline Piper TTS → Whisper STT round-trip
 uv run python -m cli.text_chat             # inbound query by text (PIN-gated, KB-grounded)
 uv run python -m cli.voice                 # offline typed-text voice demo (no audio hardware)
+uv run python -m cli.consume --help        # bus consumer: --channel/--caller/--transport/--notifier/--number
+uv run python -m cli.outbound --file <f>.h5  # single-file outbound loop (--no-answer, --fail-delivery, --notifier)
+uv run python -m cli.gateway               # companion-app gateway (serves app/, /session, /ack, /artifact*)
+uv run python -m cli.inbox_publish --dry-run   # push a worklist message into the inbox room
+uv run python -m cli.voice_worker dev      # agent worker; VOICE_WORKER_ROLE=phone for the phone worker
+uv run python -m cli.livekit_token --room <r>  # join token for a room (playground testing)
+uv run python -m cli.dispatch --all-inbox  # re-dispatch the agent into agent-less inbox rooms
+uv run python -m cli.sip_setup --dry-run   # telephony trunk + dispatch rule (--twiml prints the TwiML Bin)
 ```

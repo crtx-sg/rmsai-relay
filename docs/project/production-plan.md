@@ -2,15 +2,17 @@
 
 High-level plan to take the POC to a robust, scalable, multi-tenant production platform.
 Estimates are **order-of-magnitude for planning**, assuming the POC has de-risked the core loop
-(it has). See [../ARCHITECTURE.md](../ARCHITECTURE.md) for how the system works today.
+(it has). See [../ARCHITECTURE.md](../../ARCHITECTURE.md) for how the system works today.
 
 ## Where the POC is
 
-Proves the full loop end-to-end on **one node** (Docker Compose), **one hospital**, **synthetic
-data**: HDF5/MQTT → ECG classification → graph + vector KB → criticality-gated outbound call →
-grounded voice/text Q&A. Single-instance Redis stream, Neo4j, Qdrant; self-hosted LiveKit + Ollama.
+Proves the full loop end-to-end on **one node** (Docker Compose), **one hospital**, **no PHI**
+(synthetic data plus held-out public-dataset ECG, pseudonymized): HDF5/MQTT → ECG classification
+(`real_v2`) → graph + vector KB → criticality-gated dispatch (companion-app worklist, voice call, SMS)
+→ grounded voice/text Q&A. Single-instance Redis stream, Neo4j, Qdrant; self-hosted LiveKit (app +
+WebRTC) + Ollama, with phone calls on a LiveKit Cloud project bridged from Twilio (in progress).
 **Not yet:** multi-tenancy, HA, RBAC, observability, compliance, or **continuous streaming telemetry**
-(live MQTT→WebRTC waveforms/vitals were the deferred POC Phase 9).
+(live MQTT→WebRTC waveforms/vitals were deferred out of POC Phase 9, the companion-app phase).
 
 ## Target
 
@@ -101,5 +103,7 @@ to a single line of the infra run-rate.
 - Clinical validation of the ECG model + LLM guardrails.
 - PHI compliance sign-off.
 - **PHI constraint = self-hosted STT/LLM only** (no cloud AI on real data) — this drives the GPU cost.
+- **Telephony vendors** (LiveKit Cloud, Twilio voice + SMS) carry live call audio and alert text:
+  they need BAAs, or a self-hosted `livekit-sip` plus a carrier trunk, before any PHI.
 
 **De-risk with a 2–3 hospital pilot before GA.**

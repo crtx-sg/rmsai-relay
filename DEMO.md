@@ -14,6 +14,34 @@ This is the demo path. The README has the background: [Setup](README.md#setup),
 > export RMSAI="docker compose -f infra/docker-compose.yml run --rm tools python -m"
 > ```
 
+## Local-only mode (no LiveKit Cloud, no Twilio)
+
+The default. Everything below (§0–§5B) runs on your machine: the local LiveKit, the app, WebRTC calls,
+a simulated caller and simulated SMS. The telephony settings in `.env` (`LIVEKIT_SIP_*`, `TWILIO_*`)
+can stay there. They are only used by four explicit options, none of them a default:
+`--transport sip`, `--caller livekit`, `--notifier twilio`, and `cli.sip_setup` / `make phone-up`.
+
+| Mode | Set | What you get |
+|---|---|---|
+| **App only** | `DISPATCH_MODE=app`, then `make docker-up` | worklist, event-scoped chat and voice in the app, speak-on-select (§5A) |
+| **Event call in the browser** | `DISPATCH_MODE=app+call`, then `make docker-up` | per critical event, the consumer log prints a room + token; join in the LiveKit playground → PIN → spoken alert → Q&A → acknowledge (§5B) |
+| **Offline, scripted** | nothing (host `uv run`) | the whole loop with no browser or audio (below) |
+
+```bash
+uv run python -m cli.consume --channel voice --once --follow-up "what were the vitals" --ack "yes I acknowledge"
+uv run python -m cli.outbound --file data/real/<file>.h5 --no-answer   # retries, then a simulated SMS fallback
+uv run python -m cli.call                                             # simulated on-demand call
+```
+
+- Keep the consumer on its default `--transport webrtc` (don't pass `CONSUME_ARGS` with `sip`); the
+  phone worker (`make phone-up`) isn't needed.
+- The playground (agents-playground.livekit.io) is a page LiveKit hosts, but it connects to your
+  local `ws://localhost:7880`: no Cloud account, and the audio stays local.
+- Optional hard switch: comment out `LIVEKIT_SIP_URL` in `.env` to force single-server mode. The
+  phone worker then refuses to start, and any SIP path fails against the local LiveKit (which has no
+  SIP service), so nothing can reach Cloud.
+- Not possible locally: ringing a real phone. That needs [§5C](#c-real-phone-calls-twilio--livekit-cloud--in-progress).
+
 ---
 
 ## 0. One-time setup
@@ -22,7 +50,7 @@ This is the demo path. The README has the background: [Setup](README.md#setup),
 |---|---|---|
 | Vendored model + simulator | `git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn && git -C external/ecgtranscnn checkout bac4a01` | `ls external/ecgtranscnn/ecg_transcovnet/checkpoint.py` |
 | `real_v2` weights (gitignored upstream) | `make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn` | `ls external/ecgtranscnn/models/real_v2/fold{0..4}.pt` |
-| ecg_sigma training package | a sibling checkout at `../ecg_sigma/packages/ecg_pkg_v2`, or set `ECGPKG_HOST_DIR` to your `packages/` dir | `ls ../ecg_sigma/packages/ecg_pkg_v2/{package.json,manifest.csv}` |
+| ecg_sigma training package | a sibling checkout at `../ecg_sigma/packages/ecg_pkg_v2`, or `export ECGPKG_HOST_DIR=/abs/path/to/packages` in your shell (Compose does not read the repo `.env`) | `ls ../ecg_sigma/packages/ecg_pkg_v2/{package.json,manifest.csv}` |
 | `.env` | `cp .env.example .env`, then set `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `HOSPITAL_ID` **and** `ECG_CHECKPOINTS` (below) | `grep ^ECG_CHECKPOINTS .env` |
 | App image | `make docker-build` (~5–10 min) | see [§1](#1-bring-up-and-confirm-the-real-model-is-loaded) |
 
@@ -32,8 +60,12 @@ This is the demo path. The README has the background: [Setup](README.md#setup),
 ECG_CHECKPOINTS=external/ecgtranscnn/models/real_v2/fold0.pt external/ecgtranscnn/models/real_v2/fold1.pt external/ecgtranscnn/models/real_v2/fold2.pt external/ecgtranscnn/models/real_v2/fold3.pt external/ecgtranscnn/models/real_v2/fold4.pt
 ```
 
-> **Containers read `.env`, not your shell.** Exporting `ECG_CHECKPOINTS` on the host does nothing
-> inside Docker.
+> **Two different `.env` readers.** The *app* (every `python -m cli.*`, in or out of Docker) reads
+> the repo-root `.env`; exporting `ECG_CHECKPOINTS` in your shell does nothing inside a container.
+> *Docker Compose* itself does **not** read the repo-root `.env` for its `${…}` settings (its project
+> directory is `infra/`), so Compose-level knobs (`CONSUME_ARGS`, `ECGPKG_HOST_DIR`, `ECGPKG_NAME`,
+> port overrides) must be exported in the shell or passed inline, e.g.
+> `CONSUME_ARGS="…" make docker-up`.
 >
 > **Rebuild after the vendored pin moves.** The image installs `ecg_transcovnet` non-editable at
 > build time. An image built before the pin reached `bac4a01` has no `ecg_transcovnet.checkpoint`,
@@ -121,7 +153,7 @@ docker compose -f infra/docker-compose.yml run --rm real-samples pick \
 ```
 
 ```
-{"label": "VENTRICULAR_TACHYCARDIA", "dataset": "incart", "subject": "incart:p2", "event_key": "event_1082", "file": "data/incart/I05_2025-01.h5"}
+{"label": "VENTRICULAR_TACHYCARDIA", "patient": "PT992591", "dataset": "incart", "subject": "incart:p2", "event_key": "event_1082", "file": "data/incart/I05_2025-01.h5"}
 …
 {"events": 5, "files": ["data/real/06995_2025-01.h5", "data/real/106_2025-01.h5", …], "package": "v2", "split": "test", "seed": 42}
 ```
@@ -214,8 +246,8 @@ $RMSAI cli.ingest --dir data/real
 ```
 
 ```
-{"patient": "I05", "event_type": "VENTRICULAR_TACHYCARDIA", "confidence": 0.497, "criticality": "Critical", "ground_truth": "VENTRICULAR_TACHYCARDIA", …}
-{"patient": "106", "event_type": "NORMAL_SINUS", "confidence": 0.577, "criticality": "Low", "ground_truth": "NORMAL_SINUS", …}
+{"patient": "PT992591", "event_type": "VENTRICULAR_TACHYCARDIA", "confidence": 0.497, "criticality": "Critical", "ground_truth": "VENTRICULAR_TACHYCARDIA", …}
+{"patient": "PT935761", "event_type": "NORMAL_SINUS", "confidence": 0.577, "criticality": "Low", "ground_truth": "NORMAL_SINUS", …}
 {"summary": {"events": 5, "scored": 5, "correct": 5, "accuracy": 1.0, "model": "checkpoint"}}
 ```
 
@@ -276,8 +308,32 @@ again. For each critical event, the consumer log prints an `rmsai-outbound-<even
 3. Ask follow-ups with the wake word: *"hey vios, what were the vitals?"*
 4. Say *"acknowledge"* to flip the event's status.
 
-Full detail: [README §5](README.md#5-real-webrtc-audio-loop-browser-no-phone). A real SIP call
-needs a trunk and `OUTBOUND_ENABLED=true`: [README §6](README.md#6-real-sip-phone-call-outbound-to-a-number).
+Full detail: [README §5](README.md#5-real-webrtc-audio-loop-browser-no-phone).
+
+### C. Real phone calls (Twilio → LiveKit Cloud) — in progress
+
+Phone calls run on a **second LiveKit** (a LiveKit Cloud project, `LIVEKIT_SIP_URL`), because a
+LiveKit SIP bridge only connects calls into rooms on its own server. The app, inbox and WebRTC stay
+on the local LiveKit. Twilio carries the phone leg and bridges the answered call into Cloud with
+TwiML `<Dial><Sip>`, which works on a **trial** account (Elastic SIP Trunking does not).
+
+| Direction | Status |
+|---|---|
+| Call **in** (your mobile → Twilio number → agent PIN + Q&A) | set up; live test pending (the Twilio number must use the TwiML Bin) |
+| Event **out** (relay → Twilio Calls API → your mobile → alert) | **not implemented yet** (next phase) |
+| SMS fallback when an alert call is unanswered | implemented (`--notifier twilio`) |
+
+Set-up and verification steps: [README § Phone calls](README.md#phone-calls-twilio--livekit-cloud).
+The short version: set the keys in [README § Phone calls → Configure](README.md#configure-env), then
+
+```bash
+uv run python -m cli.sip_setup --dry-run && uv run python -m cli.sip_setup   # trunk + rule in Cloud
+uv run python -m cli.sip_setup --twiml     # paste into Twilio → TwiML Bins → rmsai-inbound
+make phone-up                              # phone worker, registered on Cloud as rmsai-agent-phone
+```
+
+and in the Twilio console point the **number's own** Voice Configuration ("A call comes in") at the
+TwiML Bin. Saving the Bin alone attaches it to nothing.
 
 ### Inspect what was stored
 
@@ -330,6 +386,9 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | `inbox push failed … TwirpError … 503 no response from servers` | app not connected, so the inbox room doesn't exist | log in to the app, then publish again |
 | Neo4j `warn: null value eliminated in set function` | harmless driver notice: an `OPTIONAL MATCH` over a patient with no history rows | ignore |
 | Two consumers splitting events | a host-run `cli.consume` shares group `rmsai.relay` with the container | `docker compose -f infra/docker-compose.yml stop consumer` before running one by hand |
+| Calling the Twilio number plays Twilio's greeting ("Thanks for calling… this is an inbound call from your Twilio number") | the number isn't using the TwiML Bin | Phone Numbers → Active numbers → the number → Voice Configuration → TwiML Bin `rmsai-inbound` → **Save configuration** |
+| `voice-worker-phone` exits: `VOICE_WORKER_ROLE=phone needs LIVEKIT_SIP_URL` | telephony split not configured | set `LIVEKIT_SIP_URL/API_KEY/API_SECRET` in `.env`, then `make phone-up` |
+| `CONSUME_ARGS` in `.env` has no effect | Compose doesn't read the repo-root `.env` | pass it inline: `CONSUME_ARGS="…" make docker-up` |
 | Code edit not picked up | — | `make docker-restart` (source is bind-mounted); rebuild only for dependency / vendored changes |
 
 ---

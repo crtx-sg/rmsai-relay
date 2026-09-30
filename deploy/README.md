@@ -9,7 +9,7 @@ secrets live on the public box.
 ```
 remote browser ──HTTP(S)──> PUBLIC EDGE (nginx, deploy/edge)          [public host]
                               ├─ /                       = static app (app/)
-                              └─ /session /ack /artifact ─► on-prem GATEWAY :8080   [private]
+                              └─ /session /ack /artifact /artifact-link ─► on-prem GATEWAY :8080   [private]
                  ──WebRTC───► LiveKit (public ingress, wss + TURN)                  [private/on-prem]
 ```
 
@@ -37,7 +37,10 @@ docker compose up -d
 ```
 
 Browse **http://localhost:8081/** → PIN → the worklist, acknowledge, inline artifacts, and chat all
-work **through the edge** (static + proxy). Quick endpoint check:
+work **through the edge** (static + proxy).
+
+The proxy rule covers `/session`, `/ack`, `/artifact/<token>` and `/artifact-link` (the app's
+click-to-open call), in both the HTTP and the commented TLS block. Quick endpoint check:
 
 ```bash
 curl -s localhost:8081/session -X POST -H 'content-type: application/json' -d '{"pin":"1234"}'
@@ -86,6 +89,13 @@ Provided here (`deploy/livekit/`) as config templates; validate on the real host
    gateway, Redis, Neo4j, Qdrant, and artifact files private.
 
 ---
+
+## Phone calls are not part of the edge
+
+Phone calls don't go through the edge. In the telephony split they run on a LiveKit Cloud project,
+with Twilio as the carrier; those are third parties outside this private boundary (as is Twilio for
+SMS alerts). Configure them with `cli.sip_setup`; see `voice/gateway/README.md`. Synthetic or public
+data only until BAAs are in place.
 
 ## What stays private (never on the public edge)
 The gateway, Redis, Neo4j, Qdrant, Ollama, the voice worker, the consumer, and the artifact files

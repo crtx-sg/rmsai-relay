@@ -11,10 +11,15 @@
 #   --profile llm         model-server  containerized Ollama — SKIP THIS if you already run Ollama
 #                                       on the host; both bind 11434 and the container will fail
 #   --profile emr         hapi-fhir     real FHIR server (Phase 8); binds 8080, same as the gateway
-#   --profile tools       tools         one-shot CLI runner (see the bottom of this file)
+#   --profile tools       tools, real-samples   one-shot CLI runners (see the bottom of this file)
+#   --profile telephony   voice-worker-phone    phone-call worker on the telephony LiveKit (make phone-up)
 #
-# The legacy `later` profile still selects all four, so existing `--profile later up` commands keep
-# working.
+# The legacy `later` profile still selects the first three (telemetry, llm, emr), so existing
+# `--profile later up` commands keep working.
+#
+# NOTE: with `-f infra/docker-compose.yml` the project directory is infra/, so Compose does NOT read
+# the repo-root .env for the ${...} settings below (CONSUME_ARGS, GATEWAY_PORT, ECGPKG_HOST_DIR, ...).
+# Export them in the shell or pass them inline. The app itself reads /app/.env.
 #
 # ---------------------------------------------------------------------------------------------
 # Why the app services use `network_mode: host`

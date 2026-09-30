@@ -63,3 +63,8 @@ prediction the same way it always has.
 
 Research model trained on one package of public datasets. **Not a medical device** — not for
 diagnosis or unsupervised alarms.
+
+**Testing on held-out real ECG:** `cli.real_samples pick` curates labelled test-split events (it
+refuses a package that isn't the checkpoint's training package, unless `--allow-mismatch`);
+`cli.ingest --dir data/real` prints a scored accuracy summary and warns when scoring the stub. A
+handful of events is a demo, not an evaluation. See `DEMO.md`.

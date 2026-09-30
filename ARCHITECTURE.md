@@ -58,7 +58,15 @@ knowledge lives in Neo4j/Qdrant — so the pipelines are **partially** decoupled
 **Step 1 · Ingest** (`ingest/`). A physiological event arrives as an **HDF5 file** or an **MQTT**
 message and is normalized into a `SignalWindow` — raw ECG samples, vitals (HR, BP, SpO₂, RR, temp),
 patient history, and window geometry. There is deliberately **no diagnosis yet** (a frozen-contract
-rule: the reader never guesses `event_type`).
+rule: the reader never guesses `event_type`). The reader accepts both the simulator's layout and
+ecg_sigma real-ECG HDF5 (metadata as datasets or attributes). `cli.ingest --dir` ingests every
+`*.h5` in a folder and, when events carry a ground-truth label, prints a scored accuracy summary
+(`"model": "stub"` warns loudly if no checkpoint loaded).
+
+For real ECG, `cli.real_samples pick` (`ingest/real_samples.py`) curates small labelled sets from an
+ecg_sigma `ecgpkg` **test split** (subjects the model never trained on) into `data/real/`, re-keying
+each patient to a `PT9#####` pseudonym. It refuses a package that isn't the checkpoint's training
+package. Runbook: [`DEMO.md`](DEMO.md).
 
 **Step 2 · The ECG model runs** (`inference/ecg_model.py`). This is the one real neural network:
 - **Model:** `ECGTransCovNet` (the "ECG_TransConv" model, vendored from `ecgtranscnn`) — a PyTorch
@@ -118,7 +126,7 @@ flowchart TD
     A -- no --> D1["drop: outbound_disabled"]
     A -- yes --> B{"Confident NORMAL_SINUS?<br/><code>conf ≥ FP_SUPPRESS_MIN_CONFIDENCE</code>"}
     B -- "yes, vitals calm" --> D2["drop: false_positive"]
-    B -- "yes, vitals warrant it" --> V["Vitals-driven alert<br/>reason: fp_override"]
+    B -- "yes, vitals warrant it" --> V["Vitals-driven alert<br/>reason: fp_override / vitals_alert"]
     B -- no --> C{"Rhythm confident enough?<br/><code>conf ≥ OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE</code>"}
     C -- no, vitals calm --> D3["drop: low_confidence_arrhythmia"]
     C -- "no, vitals warrant it" --> V
@@ -139,16 +147,22 @@ Dropped events are still **persisted** — the drop withholds the alert, not the
 version of this flow, with the measured per-vital numbers behind the override, is in
 [`docs/alert-gate.html`](docs/alert-gate.html).
 
-If it decides to call, it dispatches a **LiveKit** outbound call (SIP phone or WebRTC room) or an SMS
-text, and pushes the event to the **companion app** worklist. The event is **always persisted**; the
-gate only governs the *call*.
+If the gate passes, the consumer dispatches per `DISPATCH_MODE`: it pushes the event to the
+**companion app** worklist (`app`), and/or places a **LiveKit** outbound call (SIP phone or WebRTC
+room) or sends an SMS (`call`). If a voice call goes unanswered after its retries and a notifier is
+configured (`--notifier simulated|twilio`), the alert is texted instead
+(`run_outbound(fallback_notifier=)`): delivered keeps the event `reported`, otherwise it is
+`notify_failed`. SIP dials go to the telephony LiveKit (`Config.telephony()`; see *Telephony split*
+below). The event is **always persisted**; the gate governs the *dispatch* (worklist push and call).
 
 ---
 
 ## Pipeline 2 — the voice / chat conversation
 
 Runs in the **LiveKit agent worker** (`voice/livekit_agent.py`). LiveKit carries the audio (WebRTC
-for browser, SIP for phone). One turn, in order:
+for browser, SIP for phone). In split mode (`LIVEKIT_SIP_URL` set) phone rooms live on a second
+LiveKit (LiveKit Cloud), where Twilio Programmable Voice bridges the phone call in with TwiML
+`<Dial><Sip>`; browser and inbox rooms stay on the local server. One turn, in order:
 
 1. **Caller speaks** → audio streams into the LiveKit room.
 2. **STT** (speech → text). Swappable via `STT_BACKEND`: self-hosted **faster-whisper** (`base.en`)
@@ -200,12 +214,13 @@ flowchart TD
    text signals fail in opposite directions (similarity survives rewording but needs
    `EMBEDDER=bge`; word overlap is the only signal the hashing embedder has), and when neither
    vouches the decline says which number fell short of which threshold.
-3. **De-identify** the retrieved context (Presidio or regex, `DEID_BACKEND`) so no name/PHI reaches
+4. **De-identify** the retrieved context (Presidio or regex, `DEID_BACKEND`) so no name/PHI reaches
    the model.
-4. **LLM generate**: the prompt goes to the `LLMProvider` — self-hosted **Ollama** (`llama3.2`) by
-   default, wrapped in `DeidentifyingLLM`. `EchoLLM` is used offline in tests; cloud
-   Anthropic/OpenAI are swappable but only on synthetic data.
-5. **Output guardrail** → the final answer text.
+5. **LLM generate**: the prompt goes to the `LLMProvider`, always wrapped in `DeidentifyingLLM`:
+   `EchoLLM` (the code default, `LLM_PROVIDER=echo`, deterministic and offline) or self-hosted
+   **Ollama** `llama3.2` (`LLM_PROVIDER=ollama`, the setting for real use). Anthropic/OpenAI fit the
+   interface but are **not implemented**; an unrecognised `LLM_PROVIDER` silently falls back to Echo.
+6. **Output guardrail** → the final answer text.
 
 **Back to voice:**
 7. Answer text → **TTS** → audio to the caller. Swappable via `TTS_BACKEND`: **Piper** (self-hosted)
@@ -226,6 +241,7 @@ Two shortcuts reuse the same machinery:
 from the LiveKit server. The split of responsibility is the key idea:
 - **LiveKit server** (`:7880`) = **transport only** — it moves audio/data packets between
   participants (WebRTC for browser, SIP for phone). It knows nothing about ECG, PINs, or the KB.
+  (In split mode the phone worker's server is the LiveKit Cloud project instead.)
 - **The worker** = the **intelligence** — it joins a room *as a participant* and runs the whole
   `STT → gates → Handler/orchestrator → TTS` loop for that call. It is what listens, thinks
   (grounded in the KB), and speaks.
@@ -234,7 +250,13 @@ from the LiveKit server. The split of responsibility is the key idea:
 arrives for a room → **join** it (`ctx.connect`) → run the `AgentSession` job for the whole call →
 cleanup → back to wait. One process serves **many rooms over its lifetime**; because it registers
 under a name it uses **explicit dispatch** — it only joins rooms it is told to (the gateway on
-`/session`, the consumer per outbound event, or `cli.dispatch`), never auto-joining.
+`/session`, the consumer per outbound event, `cli.call`, `cli.livekit_token`, or `cli.dispatch`),
+never auto-joining.
+
+A second instance with `VOICE_WORKER_ROLE=phone` (compose `voice-worker-phone`, `make phone-up`)
+registers on the **telephony** LiveKit as `rmsai-agent-phone` (`worker_config`). There, the SIP
+**callee dispatch rule** created by `cli.sip_setup` requests it into every inbound call room. It is
+refused in single-server mode, where the app worker already handles calls.
 
 **Process vs. job — what is "always on" and what is per-event.** Distinguish the two:
 - The **worker process** (`cli.voice_worker`) is the single, **always-on** host. It registers once and
@@ -250,6 +272,7 @@ A job's lifespan therefore equals its **room's** lifespan:
 |---|---|
 | **per-event outbound** (`rmsai-outbound-<event_id>`) — ephemeral, closes when the call ends | **created on dispatch, torn down when the call ends** |
 | **companion-app inbox** (`rmsai-inbox-<hospital>`) — persistent while the app is connected | **long-lived** — stays as long as the inbox room/app session exists |
+| **phone call** (`rmsai-call-<id>`: on-demand `cli.call`, or an inbound call-in `rmsai-call-<CallSid>`) — ephemeral | **created on dispatch, ends with the call** |
 
 So there is **no separate "shared worker" vs "per-event worker" as distinct processes** — it is one
 always-on process running many jobs (one per room), each in its own subprocess: an ephemeral room ⇒ a
@@ -261,7 +284,8 @@ On joining, `_entrypoint` reads the room name and picks the Handler:
 - `rmsai-inbox-*` → `InboxHandler` (companion app: push-to-talk, selection-scoped Q&A, speak-on-select);
 - an outbound event room with a staged `OutboundAlert` in **Redis** → `OutboundHandler` (speaks that
   event's alert after the PIN, then Q&A + acknowledge);
-- otherwise → inbound KB Q&A.
+- otherwise → inbound KB Q&A. This is what `rmsai-call-*` phone rooms get: no staged alert ⇒ the
+  PIN-gated Q&A handler.
 
 That third bullet is the seam where the **event pipeline hands off to the conversation pipeline**: the
 consumer placed the call and wrote *why* into Redis; the worker — a **separate process** — reads that
@@ -298,10 +322,14 @@ gets into the room* differs.
 The **two outbound transports** both use the same per-event room (`rmsai-outbound-<event_id>`) and then
 run the same worker loop — they differ only in **who initiates the audio connection**:
 
-- **SIP (phone) — relay-initiated.** The relay actively **dials the clinician's phone number** through
-  a SIP trunk (`LiveKitCaller.place_call` → `create_outbound_sip_call`); LiveKit bridges the PSTN call
-  into the room. The clinician's phone rings. Needs `LIVEKIT_SIP_TRUNK_ID` + a number +
-  `OUTBOUND_ENABLED`.
+- **SIP (phone) — relay-initiated.** Selected by `cli.consume --transport sip` (the compose consumer
+  defaults to `webrtc`). The dial and the agent dispatch both go to `config.telephony()`. Today the
+  dial is `LiveKitCaller.place_call` → `create_outbound_sip_call` through an outbound trunk
+  (`LIVEKIT_SIP_TRUNK_ID`), which only exists on the **paid** Twilio Elastic SIP path. On a Twilio
+  trial the planned route is the Twilio Calls API → TwiML
+  `<Dial><Sip>sip:rmsai-outbound-<event_id>@LIVEKIT_SIP_URI>` into the same per-event room via the
+  callee rule. That is **the next phase, not implemented**. Pass `--number` (it defaults to a
+  placeholder).
 - **WebRTC (browser) — clinician-initiated.** The relay only **stages the alert and prints a join
   link/token** (or pushes it to the app); the clinician clicks and joins from a browser. No dialing,
   no trunk, no phone (`caller_factory` is a no-op `SimulatedCaller`).
@@ -363,6 +391,35 @@ per event.
 
 ---
 
+### Telephony split — phone calls on a second LiveKit
+
+A LiveKit SIP bridge only places calls into rooms **on its own server**, and the local LiveKit has
+no SIP service. So phone calls run on a second LiveKit, a LiveKit Cloud project, while the app inbox,
+chat and WebRTC stay local:
+
+```
+local LiveKit ── app inbox (rmsai-inbox-*) · WebRTC outbound rooms ── worker rmsai-agent
+LiveKit Cloud ── phone rooms (rmsai-call-*, rmsai-outbound-* via SIP) ── worker rmsai-agent-phone
+                 ▲ Twilio Programmable Voice: TwiML <Dial><Sip>sip:<room>@<LIVEKIT_SIP_URI>
+shared ── Redis (staged outbound alerts) · Neo4j · Qdrant · audit log
+```
+
+- `Config.telephony()` is the config the call paths use (`cli.consume --transport sip`, `cli.call`,
+  `cli.outbound --caller livekit`, the phone worker). In split mode it swaps only the LiveKit
+  URL/key/secret, the agent name, the worker health port, and disables inbox auto-redispatch. With
+  `LIVEKIT_SIP_URL` unset it returns the app config unchanged (single server, as before).
+- `cli.sip_setup` provisions the Cloud side, idempotently by name: an inbound trunk (digest auth plus
+  a caller allow-list) and a **callee** dispatch rule (the room is named exactly by the dialled SIP
+  user part; the rule dispatches `rmsai-agent-phone`). An outbound trunk is created only on the paid
+  Elastic SIP path. `--twiml` prints the TwiML Bin for the Twilio number.
+- Twilio is the carrier because its trial blocks Elastic SIP Trunking: Twilio handles the phone leg
+  and forwards the answered call into LiveKit Cloud. Call-in uses a TwiML Bin
+  (`sip:rmsai-call-{{CallSid}}@…`, one room per call). Event-driven outbound via the Twilio Calls API
+  is the next phase; in that mode the relay must **not** also dispatch the agent explicitly, since
+  the rule already does (two agents would join).
+- **Status:** call-in set up, live test pending; outbound via the Calls API not implemented; SMS
+  fallback on an unanswered call works. Set-up steps: README § Phone calls.
+
 ## The models, at a glance
 
 | Role | Model / tech | Where | Swappable via |
@@ -370,14 +427,15 @@ per event.
 | **ECG classification** | `ECGTransCovNet` (CNN + Transformer, PyTorch) | `inference/ecg_model.py` | checkpoint; stub fallback |
 | **Vitals / severity** | MEWS (rule-based rubric) + Mann-Kendall trends (statistical test) — **no ML** | `inference/`, `common/criticality.py` | — |
 | **Embeddings** (vector search) | hashing (default) or **BGE** `bge-small-en-v1.5` | `kb/vector/` | `EMBEDDER` |
-| **LLM** (answers) | **Ollama `llama3.2`** (local); Echo offline | `common/providers.py` | `LLM_PROVIDER` (`LLMProvider` interface) |
+| **LLM** (answers) | Echo (code default, offline) or **Ollama `llama3.2`** (local) | `common/providers.py` | `LLM_PROVIDER` (`LLMProvider` interface) |
 | **STT** (speech→text) | faster-whisper `base.en` or ElevenLabs Scribe | `voice/adapters.py` | `STT_BACKEND` |
 | **TTS** (text→speech) | Piper or ElevenLabs | `voice/adapters.py` | `TTS_BACKEND` |
 | **VAD** (speech detection: endpointing + barge-in) | Silero | LiveKit worker | — |
 | **De-identification** | Presidio (NER) or regex | `common/deid.py` | `DEID_BACKEND` |
 | **Graph DB** | Neo4j | `kb/graph/` | — |
 | **Vector DB** | Qdrant | `kb/vector/` | — |
-| **Voice transport** | LiveKit (WebRTC + SIP) | `voice/` | — |
+| **Voice transport** | local LiveKit (app + WebRTC); a second LiveKit (Cloud) for SIP in split mode; Twilio Programmable Voice as the phone carrier | `voice/`, `voice/sip_setup.py` | `LIVEKIT_SIP_URL` |
+| **SMS** | Twilio Messages REST (stdlib HTTP) | `common/notify.py` | `--notifier` |
 
 ---
 
@@ -385,7 +443,9 @@ per event.
 
 - **Self-hosted for PHI, cloud only for synthetic.** Everything that touches real patient data runs
   locally (whisper, piper, ollama, neo4j, qdrant). Cloud models (ElevenLabs, Anthropic/OpenAI) are
-  permitted only on synthetic data (hard rules #4/#5).
+  permitted only on synthetic data (hard rules #4/#5). Transport vendors (LiveKit Cloud, Twilio
+  voice and SMS) carry live call audio and alert text: in development only synthetic or public data
+  may flow through them, and production needs BAAs or self-hosted SIP.
 - **One interface per model.** `ECGModel`, `LLMProvider`, `STTAdapter`/`TTSAdapter`, `EventStore`,
   etc. Any single model swaps by config without touching the flow.
 - **Redaction by construction.** Patients are referenced by pseudonym everywhere (including logs);

@@ -1,45 +1,80 @@
-# Voice gateway (SIP → LiveKit)
+# Voice gateway (phone ↔ LiveKit)
 
-The telephony edge that bridges a phone call (SIP) into a LiveKit room, where the agent
-(`voice/livekit_agent.py`) runs STT → handler → TTS. Two supported fronts:
+The telephony edge: how a phone call reaches a LiveKit room, where the agent
+(`voice/livekit_agent.py`) runs STT → handler → TTS. The full set-up guide is
+[README § Phone calls](../../README.md#phone-calls-twilio--livekit-cloud); this file is the
+engineering summary.
 
-- **LiveKit SIP** (simplest): LiveKit's built-in SIP service terminates the trunk and drops the
-  caller into a room. Configure an inbound trunk + dispatch rule (see `sip-inbound.example.yaml`).
-- **Jambonz / Asterisk**: a full SIP application server in front of LiveKit, for carrier trunks,
-  IVR, and call control. Point its application webhook at the LiveKit room join.
+## Architecture (telephony split)
 
-## POC bring-up (manual — needs real telephony)
+A LiveKit SIP bridge only places calls into rooms on its **own** server, and the compose LiveKit
+(`infra/livekit.yaml`) has no SIP service. So phone calls run on a second LiveKit, a **LiveKit Cloud**
+project (`LIVEKIT_SIP_URL`). The app inbox and WebRTC stay local. `Config.telephony()` is the config
+the call paths use; the phone worker registers there as `rmsai-agent-phone`
+(`VOICE_WORKER_ROLE=phone`, `make phone-up`).
+
+The carrier is **Twilio Programmable Voice**, because a Twilio trial blocks Elastic SIP Trunking.
+Twilio handles the phone leg and forwards the answered call into LiveKit Cloud with TwiML
+`<Dial><Sip>sip:<room>@<LIVEKIT_SIP_URI></Sip>`, using digest credentials. The SIP user part names
+the room.
+
+## Provisioning (`cli.sip_setup`)
 
 ```bash
-docker compose -f infra/docker-compose.yml --profile later up -d livekit
-# configure the SIP trunk (sip-inbound.example.yaml) with your provider creds
-# run the agent worker (needs livekit-agents installed):
-uv run python -c "from voice.livekit_agent import run_agent; run_agent()"
-# call the trunk number from a softphone -> you should hear your words echoed back.
+# .env: LIVEKIT_SIP_URL/_API_KEY/_API_SECRET, LIVEKIT_SIP_URI, LIVEKIT_SIP_INBOUND_USERNAME/_PASSWORD,
+#       OUTBOUND_FROM (Twilio number, E.164), OUTBOUND_CALL_NUMBER or SIP_INBOUND_ALLOWED_NUMBERS
+uv run python -m cli.sip_setup --dry-run && uv run python -m cli.sip_setup
+uv run python -m cli.sip_setup --twiml   # Twilio → TwiML Bins → rmsai-inbound; set it as the number's "A call comes in"
+make phone-up                            # or: VOICE_WORKER_ROLE=phone uv run python -m cli.voice_worker dev
 ```
 
-This end-to-end path (real audio, barge-in over RTP) is **verified manually** — the offline test
-suite proves the turn-taking/barge-in/latency logic with stub adapters (`tests/test_voice.py`).
+It creates, idempotently by name, on the telephony LiveKit (`voice/sip_setup.py`; `plan()` is pure
+and unit-tested, and `--dry-run` prints the exact objects with secrets masked):
+- inbound trunk `rmsai-inbound-twilio`: digest auth; `allowed_numbers` = the call-in numbers
+  (`SIP_INBOUND_ALLOWED_NUMBERS`, else `OUTBOUND_CALL_NUMBER`) plus `OUTBOUND_FROM` (the caller ID
+  on bridged outbound calls);
+- dispatch rule `rmsai-inbound-dispatch`: a **callee** rule (room = the SIP user part, exactly, no
+  randomization) that **names the agent** `rmsai-agent-phone` and hides the caller's number;
+- outbound trunk `rmsai-outbound-twilio` only when `TWILIO_SIP_*` is set (the paid Elastic SIP path).
 
-## Outbound (Phase 7)
+The rule naming the agent matters: workers use explicit dispatch, so a rule without it would put
+callers in a room with nobody in it.
 
-The same room is used for outbound: the orchestrator creates a SIP participant dialing
-`OUTBOUND_CALL_NUMBER`, then speaks the event report and takes follow-ups.
+## Inbound (call-in)
+
+The Twilio number's TwiML Bin dials `sip:rmsai-call-{{CallSid}}@<LIVEKIT_SIP_URI>`, giving one room per
+call. The trunk accepts only those credentials and allowed callers; the callee rule creates the room
+and dispatches the phone agent. The room has no staged alert, so the worker runs the PIN-gated Q&A
+handler. **Status:** set up; live test pending.
+
+## Outbound (event alert)
+
+`cli.consume --transport sip` stages the event's alert in the shared Redis for the per-event room
+`rmsai-outbound-<event_id>`, then dials and dispatches via `config.telephony()`
+(`cli/consume.py: livekit_voice_wiring`).
+- **Today** the dial is `create_sip_participant` through an outbound trunk (`LIVEKIT_SIP_TRUNK_ID`),
+  which exists only on the paid Elastic SIP path.
+- **Next phase (trial-compatible):** the Twilio Calls API rings the clinician; on answer, TwiML
+  `<Dial><Sip>sip:rmsai-outbound-<event_id>@…>` bridges into that same room via the callee rule. In
+  that mode the relay must **not** also dispatch the agent explicitly, since the rule already does
+  and two agents would join.
+- Unanswered after retries: with `--notifier twilio` the alert is texted instead (SMS fallback).
+- Pass `--number`: it defaults to a placeholder, not `OUTBOUND_CALL_NUMBER`.
 
 ## On-demand call (`cli.call`)
 
-`uv run python -m cli.call --caller livekit` rings `OUTBOUND_CALL_NUMBER` without waiting for an
-event. Each call gets its own room (`LIVEKIT_CALL_ROOM_PREFIX` + a random id); the agent is
-dispatched into it **before** the dial, and because no alert is staged there the worker runs the
-PIN-gated Q&A handler — the callee hears the PIN prompt, authenticates, then asks questions.
-Needs `LIVEKIT_SIP_TRUNK_ID` (outbound trunk) and `OUTBOUND_FROM` (caller ID). `--caller simulated`
-(the default) exercises the whole path with no telephony.
+`uv run python -m cli.call --caller livekit` rings `OUTBOUND_CALL_NUMBER` without an event, in its
+own `rmsai-call-<id>` room, dispatching the agent before the dial (no staged alert ⇒ PIN-gated Q&A).
+It needs `LIVEKIT_SIP_TRUNK_ID` (paid path) and `OUTBOUND_FROM`; on a trial account it fails fast
+as invalid (exit 2). `--caller simulated` (the default) exercises the path with no telephony.
 
-## ⚠ Inbound is not wired up
+## Security and data
 
-`sip-inbound.example.yaml` below predates the switch to **explicit** agent dispatch
-(`WorkerOptions(agent_name=...)`, see `voice/livekit_agent.py`). A worker registered under a name
-does **not** auto-join new rooms, so an inbound call matching `dispatchRuleIndividual` today creates
-a room with **no agent in it** — the caller hears silence. Wiring this up (naming the agent in the
-dispatch rule's room config, so LiveKit requests it per call) is deliberately out of scope for the
-current change; the outbound leg above dispatches explicitly and is unaffected.
+- **Inbound:** digest credentials plus the caller allow-list, with the worker's PIN gate on top.
+  `cli.sip_setup --twiml` prints the password unmasked, since it must go in the TwiML Bin; treat the
+  Bin as a secret.
+- **Data:** call audio passes through Twilio and LiveKit Cloud. Synthetic or public data only until
+  BAAs or a self-hosted SIP stack are in place.
+
+Other fronts (Jambonz, Asterisk or a self-hosted `livekit-sip` with a carrier trunk) would slot in at
+the same point, but none is implemented or tested here.
