@@ -71,7 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--notifier", choices=["simulated", "twilio"], default="simulated",
                         help="SMS backend: text-channel delivery, and the voice channel's fallback "
                              "when a call goes unanswered ('twilio' sends real SMS)")
-    parser.add_argument("--number", default="+15551234567")
+    parser.add_argument("--number", default=None,
+                        help="destination (E.164); default OUTBOUND_CALL_NUMBER. A placeholder is used "
+                             "only for simulated runs with neither set")
     parser.add_argument("--min-criticality", default="High")
     parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
                         help="Must match the embedder the KB collections were built with "
@@ -82,10 +84,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-events", type=int, default=None, help="Exit after N messages.")
     args = parser.parse_args(argv)
 
+    from voice.outbound import resolve_destination  # noqa: PLC0415
+
+    real = args.caller == "livekit" or args.notifier == "twilio"
+    try:
+        destination = resolve_destination(args.number, Config.from_env().outbound_call_number,
+                                          real=real)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     import redis  # noqa: PLC0415
 
     config = replace(
-        Config.from_env(), outbound_enabled=True, outbound_call_number=args.number,
+        Config.from_env(), outbound_enabled=True, outbound_call_number=destination,
         outbound_min_criticality=args.min_criticality,
     )
     utterances = [*args.follow_ups, args.ack, "yes"]
@@ -181,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                         result = process_bus_event(
                             payload, driver=driver, vector=vector, orchestrator=orch, beds=beds,
                             utterances=utterances, channel=args.channel, caller=caller,
-                            notifier=notifier, to=args.number, config=config,
+                            notifier=notifier, to=destination, config=config,
                             caller_factory=caller_factory, dispatch_fn=dispatch_fn,
                             alert_store=alert_store,
                             inbox_publisher=inbox_publisher, token_store=token_store,

@@ -22,8 +22,8 @@ if TYPE_CHECKING:  # import-light at runtime; the audit log is only needed when 
     from common.audit import AuditLog
 
 __all__ = ["CallOutcome", "Caller", "SimulatedCaller", "LiveKitCaller", "get_caller",
-           "is_valid_number", "place_with_retries", "parse_ack", "call_room_name",
-           "place_predefined_call", "mask_number"]
+           "is_valid_number", "place_with_retries", "resolve_destination", "PLACEHOLDER_NUMBER",
+           "parse_ack", "call_room_name", "place_predefined_call", "mask_number"]
 
 
 class CallOutcome(str, Enum):
@@ -134,6 +134,25 @@ def place_predefined_call(
     audit.write(actor="system", action="outbound_call", subject="on_demand",
                 outcome=outcome.value, room=room, to=mask_number(number), attempts=attempts)
     return room, outcome, attempts
+
+
+#: Stand-in destination for simulated runs only (never dialled or texted for real).
+PLACEHOLDER_NUMBER = "+15551234567"
+
+
+def resolve_destination(cli_number: str | None, config_number: str, *, real: bool) -> str:
+    """The number an alert call/SMS goes to: `--number`, else `OUTBOUND_CALL_NUMBER`.
+
+    With neither set, a simulated run (no real caller or notifier) falls back to a placeholder so the
+    offline demo still exercises the full path. A real run raises instead, so a real call or SMS
+    can never silently go to a made-up number.
+    """
+    number = cli_number or config_number
+    if number:
+        return number
+    if real:
+        raise ValueError("no destination: pass --number or set OUTBOUND_CALL_NUMBER in .env")
+    return PLACEHOLDER_NUMBER
 
 
 def mask_number(number: str) -> str:

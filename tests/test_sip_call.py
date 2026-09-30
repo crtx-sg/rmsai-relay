@@ -122,3 +122,20 @@ def test_call_without_a_destination_is_refused(tmp_path):
 def test_mask_keeps_enough_to_tell_destinations_apart():
     assert mask_number("+15559998888") == "+1555…8888"
     assert mask_number("") == "…"
+
+
+# --- destination resolution for cli.consume / cli.outbound (--number) ---
+
+def test_destination_prefers_cli_then_config():
+    from voice.outbound import resolve_destination
+
+    assert resolve_destination("+15550009999", "+15550001111", real=True) == "+15550009999"
+    assert resolve_destination(None, "+15550001111", real=True) == "+15550001111"
+
+
+def test_placeholder_only_for_simulated_runs():
+    from voice.outbound import PLACEHOLDER_NUMBER, resolve_destination
+
+    assert resolve_destination(None, "", real=False) == PLACEHOLDER_NUMBER
+    with pytest.raises(ValueError, match="OUTBOUND_CALL_NUMBER"):
+        resolve_destination(None, "", real=True)  # a real call/SMS never goes to a made-up number

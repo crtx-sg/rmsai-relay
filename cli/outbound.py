@@ -50,7 +50,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--notifier", choices=["simulated", "twilio"], default="simulated",
                         help="SMS backend for the text channel and the unanswered-call fallback: "
                              "'simulated' records it; 'twilio' sends real SMS")
-    parser.add_argument("--number", default="+15551234567")
+    parser.add_argument("--number", default=None,
+                        help="destination (E.164); default OUTBOUND_CALL_NUMBER. A placeholder is used "
+                             "only for simulated runs with neither set")
     parser.add_argument("--min-criticality", default="High")
     parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
                         help="Must match the embedder the KB collections were built with "
@@ -62,8 +64,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    from voice.outbound import resolve_destination  # noqa: PLC0415
+
+    real = args.caller == "livekit" or args.notifier == "twilio"
+    try:
+        destination = resolve_destination(args.number, Config.from_env().outbound_call_number,
+                                          real=real)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     config = replace(
-        Config.from_env(), outbound_enabled=True, outbound_call_number=args.number,
+        Config.from_env(), outbound_enabled=True, outbound_call_number=destination,
         outbound_min_criticality=args.min_criticality,
     )
     utterances = [*args.follow_ups, args.ack, "yes"]  # follow-ups, then ack + confirm-back
@@ -119,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
                       f"a call [{reason}] — calling anyway (vitals/MEWS-driven escalation).")
             if args.channel == "text":
                 result = run_text_notify(
-                    de, driver=driver, orchestrator=orch, notifier=notifier, to=args.number,
+                    de, driver=driver, orchestrator=orch, notifier=notifier, to=destination,
                     utterances=utterances, config=config, bed=bed,
                 )
                 label, verb = "TEXT", "sms"
