@@ -716,6 +716,30 @@ def _prewarm(proc) -> None:  # pragma: no cover - needs the silero plugin + a wo
         threading.Thread(target=_warm, daemon=True).start()
 
 
+WORKER_ROLES = ("app", "phone")
+
+
+def worker_config(role: str, config: Config = DEFAULT) -> Config:
+    """The config a worker of `role` registers with (`VOICE_WORKER_ROLE`, default `app`).
+
+    `app` serves the app's LiveKit (inbox chat, WebRTC calls) as `livekit_agent_name`.
+    `phone` serves phone calls on the telephony LiveKit (`config.telephony()`): the Cloud project,
+    agent `sip_agent_name`, its own health port, and no inbox auto-redispatch.
+
+    `phone` is refused in single-server mode. There, `telephony()` is the app config itself, so a
+    second worker would register under the same name on the same server and LiveKit would split
+    dispatches between the two; the app worker already answers calls.
+    """
+    if role not in WORKER_ROLES:
+        raise ValueError(f"VOICE_WORKER_ROLE must be one of {WORKER_ROLES}, got {role!r}")
+    if role == "app":
+        return config
+    if not config.telephony_split:
+        raise ValueError("VOICE_WORKER_ROLE=phone needs LIVEKIT_SIP_URL (split mode). In "
+                         "single-server mode the app worker already handles phone calls")
+    return config.telephony()
+
+
 def build_worker_options(config: Config | None = None):
     """Build `WorkerOptions` for the agent worker (LiveKit connection comes from config)."""
     from livekit.agents import WorkerOptions  # noqa: PLC0415
@@ -781,13 +805,20 @@ def run_agent(config: Config | None = None) -> None:  # pragma: no cover - needs
         uv run python -m cli.voice_worker start     # production worker
 
     Set `VOICE_MODE=echo` to use the parrot handler (loopback test); default is `orchestrator`.
+    Set `VOICE_WORKER_ROLE=phone` to serve phone calls on the telephony LiveKit (`worker_config`).
     """
-    config = config or DEFAULT
+    role = os.environ.get("VOICE_WORKER_ROLE", "app").strip().lower() or "app"
+    try:
+        config = worker_config(role, config or DEFAULT)
+    except ValueError as exc:
+        raise SystemExit(f"[worker] {exc}") from None
     if not is_configured(config):
         raise SystemExit(
             "LiveKit is not configured. Set LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET "
             "(LiveKit Cloud: wss://<project>.livekit.cloud) in your .env."
         )
+    print(f"[worker] role={role} server={config.livekit_url} agent={config.livekit_agent_name} "
+          f"health_port={config.livekit_worker_http_port}", flush=True)
     try:
         from livekit.agents import cli  # noqa: PLC0415
     except ImportError as exc:

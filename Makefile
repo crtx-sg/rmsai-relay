@@ -11,7 +11,7 @@
 .DEFAULT_GOAL := setup
 .PHONY: setup setup-all external weights test lint \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps docker-shell \
-        stores-up stores-down stores-check
+        stores-up stores-down stores-check phone-up phone-down phone-logs
 
 COMPOSE := docker compose -f infra/docker-compose.yml
 # The backing services. These run in Docker even when the app runs on the host.
@@ -86,8 +86,20 @@ docker-build:
 docker-up:
 	$(DOCKER_USER) $(COMPOSE) up -d
 
+# --profile telephony: `down` skips services whose profile isn't active, which would leave the
+# phone worker running.
 docker-down:
-	$(COMPOSE) down
+	$(COMPOSE) --profile telephony down
+
+# Phone-call worker on the telephony LiveKit (LIVEKIT_SIP_URL). See infra/docker-compose.yml.
+phone-up:
+	$(DOCKER_USER) $(COMPOSE) --profile telephony up -d voice-worker-phone
+
+phone-down:
+	$(COMPOSE) --profile telephony stop voice-worker-phone
+
+phone-logs:
+	$(COMPOSE) --profile telephony logs -f --tail=50 voice-worker-phone
 
 # Pick up source edits (no rebuild needed — the repo is bind-mounted).
 docker-restart:
