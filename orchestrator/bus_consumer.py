@@ -181,12 +181,16 @@ def process_bus_event(
         result = run_outbound(
             event, driver=driver, orchestrator=orchestrator, caller=caller_factory(room),
             utterances=utterances, config=config, bed=bed_label, live_audio=True,
+            fallback_notifier=notifier,
         )
     else:
         result = run_outbound(
             event, driver=driver, orchestrator=orchestrator, caller=caller,
-            utterances=utterances, config=config, bed=bed_label,
+            utterances=utterances, config=config, bed=bed_label, fallback_notifier=notifier,
         )
+    if result.fallback:
+        print(f"[consume] call {result.outcome} after {result.attempts} attempt(s); SMS fallback: "
+              f"{result.fallback} -> status {result.status}", flush=True)
     return ConsumeResult(
         event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
         bed=bed_label, persisted=True, called=result.called, decision_reason=reason,

@@ -16,13 +16,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 
 from common.audit import AuditLog
 from common.bed_assignment import BedAssignmentStub
 from common.config import DEFAULT, Config
 from common.deid import get_deidentifier
-from common.notify import SimulatedSmsNotifier
 from common.preflight import service_unreachable
 from common.providers import DeidentifyingLLM, get_llm_provider
 from dataclasses import replace
@@ -70,7 +68,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--transport", choices=["sip", "webrtc"], default="sip",
                         help="livekit voice: 'sip' dials a phone; 'webrtc' stages the alert + prints "
                              "a join token (test the audio loop from a browser, no phone).")
-    parser.add_argument("--notifier", choices=["simulated", "twilio"], default="simulated")
+    parser.add_argument("--notifier", choices=["simulated", "twilio"], default="simulated",
+                        help="SMS backend: text-channel delivery, and the voice channel's fallback "
+                             "when a call goes unanswered ('twilio' sends real SMS)")
     parser.add_argument("--number", default="+15551234567")
     parser.add_argument("--min-criticality", default="High")
     parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
@@ -121,16 +121,13 @@ def main(argv: list[str] | None = None) -> int:
         caller = None
     else:
         caller = SimulatedCaller([CallOutcome.ANSWERED] * max(args.count, 1))
-    if args.channel == "text" and args.notifier == "twilio":
-        from common.notify import get_notifier  # noqa: PLC0415
+    # SMS: the text channel's delivery, and the voice channel's fallback when a call goes unanswered.
+    from common.notify import notifier_from_env  # noqa: PLC0415
 
-        notifier = get_notifier(
-            "twilio", account_sid=os.environ["TWILIO_ACCOUNT_SID"],
-            auth_token=os.environ["TWILIO_AUTH_TOKEN"],
-            from_number=os.environ.get("OUTBOUND_FROM", DEFAULT.outbound_from),
-        )
-    else:
-        notifier = SimulatedSmsNotifier()
+    try:
+        notifier = notifier_from_env(args.notifier)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # Phase 9 app surface: when DISPATCH_MODE includes `app`, push a worklist notification (with
     # scoped artifact links) into the hospital inbox room per critical event. The token store is

@@ -12,7 +12,6 @@ is a deployment step; this uses a SimulatedCaller so the loop is demonstrable en
 from __future__ import annotations
 
 import argparse
-import os
 from dataclasses import replace
 
 from common.bed_assignment import BedAssignmentStub
@@ -30,7 +29,6 @@ from kb.vector.retriever import VectorRetriever
 from kb.vector.store import QdrantStore
 from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
-from common.notify import SimulatedSmsNotifier
 from orchestrator.event_flow import process_device_event
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.outbound_flow import run_outbound, run_text_notify, should_call
@@ -50,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-answer", action="store_true", help="simulate the call not answering")
     parser.add_argument("--fail-delivery", action="store_true", help="simulate text delivery failure")
     parser.add_argument("--notifier", choices=["simulated", "twilio"], default="simulated",
-                        help="text channel: 'simulated' prints the message; 'twilio' sends real SMS")
+                        help="SMS backend for the text channel and the unanswered-call fallback: "
+                             "'simulated' records it; 'twilio' sends real SMS")
     parser.add_argument("--number", default="+15551234567")
     parser.add_argument("--min-criticality", default="High")
     parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
@@ -97,17 +96,13 @@ def main(argv: list[str] | None = None) -> int:
         caller = SimulatedCaller(
             [CallOutcome.NO_ANSWER] * 5 if args.no_answer else [CallOutcome.ANSWERED]
         )
-    if args.channel == "text" and args.notifier == "twilio":
-        from common.notify import get_notifier  # noqa: PLC0415
+    # SMS: the text channel's delivery, and the voice channel's fallback when a call goes unanswered.
+    from common.notify import notifier_from_env  # noqa: PLC0415
 
-        notifier = get_notifier(
-            "twilio",
-            account_sid=os.environ["TWILIO_ACCOUNT_SID"],
-            auth_token=os.environ["TWILIO_AUTH_TOKEN"],
-            from_number=os.environ.get("OUTBOUND_FROM", DEFAULT.outbound_from),
-        )
-    else:
-        notifier = SimulatedSmsNotifier(deliver=not args.fail_delivery)
+    try:
+        notifier = notifier_from_env(args.notifier, deliver=not args.fail_delivery)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     try:
         for event in read_hdf5_file(args.file):
@@ -131,12 +126,14 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 result = run_outbound(
                     de, driver=driver, orchestrator=orch, caller=caller, utterances=utterances,
-                    config=config, bed=bed,
+                    config=config, bed=bed, fallback_notifier=notifier,
                 )
                 label, verb = "CALL", "agent"
             print(f"[{label}] {tag} @ {bed} -> {result.outcome} (attempts {result.attempts})")
             for line in result.transcript:
                 print(f"    {verb}: {line}")
+            if result.fallback:
+                print(f"    sms fallback: {result.fallback}")
             print(f"    => status: {result.status}")
     finally:
         driver.close()

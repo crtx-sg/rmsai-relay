@@ -38,6 +38,7 @@ class OutboundResult:
     dropped: bool = False  # call dropped mid-alert
     status: str = "reported"
     transcript: list[str] = field(default_factory=list)  # what the agent said/sent
+    fallback: str | None = None  # unanswered call: "sms_delivered" | "sms_failed" | None (not tried)
 
 
 def should_call(event: DeviceEvent, config: Config = DEFAULT) -> tuple[bool, str]:
@@ -96,6 +97,7 @@ def run_outbound(
     sleep_fn=time.sleep,
     drop_after: int | None = None,
     live_audio: bool = False,
+    fallback_notifier=None,
 ) -> OutboundResult:
     """Run the outbound loop. `utterances` is the clinician's scripted side of the call.
 
@@ -106,6 +108,11 @@ def run_outbound(
     that joins the room drives the actual PIN -> alert -> Q&A -> ack audio loop (and writes the ack
     status from its side). So once the call is answered there is no scripted `_converse` here — the
     event is left `reported` and the worker promotes it to `acknowledged`.
+
+    `fallback_notifier`: when the call goes unanswered after all retries, text the alert to the
+    same number. If it's delivered, the clinician *was* alerted, so the event stays `reported`
+    (awaiting an ack, e.g. from the app). If it fails, or there is no notifier, it's
+    `notify_failed`. An INVALID number is never texted (it isn't a number).
     """
     audit = audit or AuditLog()
     session_id = session_id or f"outbound-{event.window.event_id}"
@@ -122,9 +129,19 @@ def run_outbound(
                 outcome=outcome.value, attempts=attempts)
 
     if outcome != CallOutcome.ANSWERED:
-        set_event_status(driver, uuid, "notify_failed")
+        fallback = None
+        status = "notify_failed"
+        if fallback_notifier is not None and outcome != CallOutcome.INVALID:
+            text = "Missed call from RMS relay. " + spoken_report(event, bed=bed, config=config)
+            delivered = fallback_notifier.send(config.outbound_call_number, text)
+            fallback = "sms_delivered" if delivered else "sms_failed"
+            audit.write(actor="system", action="sms_fallback", subject=event.window.patient_ref,
+                        outcome=fallback)
+            if delivered:
+                status = "reported"
+        set_event_status(driver, uuid, status)
         return OutboundResult(called=True, decision_reason=reason, outcome=outcome.value,
-                              attempts=attempts, status="notify_failed")
+                              attempts=attempts, status=status, fallback=fallback)
 
     if live_audio:
         # Worker owns the conversation from here (real STT/TTS over LiveKit). Don't script it.
