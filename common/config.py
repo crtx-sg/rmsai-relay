@@ -13,8 +13,9 @@ from pathlib import Path
 def _load_dotenv() -> None:
     """Load `.env` from the repo root into the process env (does NOT override existing vars).
 
-    Minimal, dependency-free. Lets `.env` configure the Python app the same way it configures
-    docker-compose. Exported shell vars take precedence over `.env`.
+    Minimal, dependency-free. Exported shell vars (and a compose service's `environment:`) take
+    precedence over `.env`. Note that docker-compose does NOT read this file for its own `${...}`
+    settings (its project directory is `infra/`); only the app does.
     """
     if os.environ.get("RMSAI_NO_DOTENV"):  # tests/CI set this for a hermetic env
         return
@@ -170,9 +171,9 @@ class Config:
     livekit_public_url: str = ""
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
-    livekit_sip_trunk_id: str = ""  # outbound SIP trunk id (LiveKit Cloud Telephony)
-    # Room each on-demand phone call gets (one per call, `<prefix><call-id>`). Shares the prefix the
-    # inbound dispatch rule routes to (voice/gateway/sip-inbound.example.yaml), so both legs of the
+    livekit_sip_trunk_id: str = ""  # outbound SIP trunk id: paid Elastic SIP path only (cli.sip_setup)
+    # Room each on-demand phone call gets (one per call, `<prefix><call-id>`). Inbound call-ins use the
+    # same prefix (`voice/sip_setup.inbound_twiml_bin`: `<prefix>{{CallSid}}`), so both legs of the
     # phone pipeline land in the same shape of room and the worker treats them identically.
     call_room_prefix: str = "rmsai-call-"
     # Call safety rails, both passed to CreateSIPParticipantRequest. Ringing timeout bounds how long
@@ -207,7 +208,15 @@ class Config:
     sip_agent_name: str = "rmsai-agent-phone"
     # Its own health-check port: app services use host networking, so it must not reuse 8081.
     sip_worker_http_port: int = 8082
-    # Carrier leg (Twilio Elastic SIP Trunking) the telephony server's outbound trunk dials through.
+    # The telephony server's SIP host (LiveKit Cloud → Settings → SIP URI, e.g. `abc123.sip.livekit.cloud`).
+    # Twilio Programmable Voice bridges calls here with TwiML `<Dial><Sip>` (works on a trial account).
+    livekit_sip_uri: str = ""
+    # Digest credentials the TwiML `<Sip>` presents to the LiveKit inbound trunk. You choose them; they
+    # are what keep anyone who learns the SIP URI from opening rooms on the project.
+    sip_inbound_username: str = ""
+    sip_inbound_password: str = field(default="", repr=False)
+    # OPTIONAL paid path: Twilio Elastic SIP Trunking (not available on a trial account). When set,
+    # `cli.sip_setup` also creates a LiveKit outbound trunk dialling through it.
     twilio_sip_termination_uri: str = ""  # e.g. rmsai.pstn.twilio.com
     twilio_sip_username: str = ""
     twilio_sip_password: str = field(default="", repr=False)
@@ -314,6 +323,9 @@ class Config:
             livekit_sip_api_secret=os.environ.get("LIVEKIT_SIP_API_SECRET", ""),
             sip_agent_name=os.environ.get("LIVEKIT_SIP_AGENT_NAME", "rmsai-agent-phone"),
             sip_worker_http_port=_i("LIVEKIT_SIP_WORKER_HTTP_PORT", 8082),
+            livekit_sip_uri=os.environ.get("LIVEKIT_SIP_URI", ""),
+            sip_inbound_username=os.environ.get("LIVEKIT_SIP_INBOUND_USERNAME", ""),
+            sip_inbound_password=os.environ.get("LIVEKIT_SIP_INBOUND_PASSWORD", ""),
             twilio_sip_termination_uri=os.environ.get("TWILIO_SIP_TERMINATION_URI", ""),
             twilio_sip_username=os.environ.get("TWILIO_SIP_USERNAME", ""),
             twilio_sip_password=os.environ.get("TWILIO_SIP_PASSWORD", ""),
