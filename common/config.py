@@ -6,7 +6,7 @@ Every value here is a deliberate POC simplification to revisit for production (s
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -51,6 +51,12 @@ def _i(name: str, default: int) -> int:
 
 def _b(name: str, default: bool) -> bool:
     return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _list(name: str) -> tuple[str, ...]:
+    """Comma- or whitespace-separated value list from the environment; empty when unset."""
+    raw = os.environ.get(name, "").replace(",", " ")
+    return tuple(part for part in raw.split() if part)
 
 
 def _paths(name: str) -> tuple[str, ...]:
@@ -189,6 +195,25 @@ class Config:
     # is exactly what happens when the containerized worker uses host networking while one is also
     # running on the host. Give the container a different port instead of stopping one of them.
     livekit_worker_http_port: int = 8081
+    # --- Telephony split (phone calls on a second LiveKit, e.g. LiveKit Cloud; see `telephony()`) ---
+    # A LiveKit SIP bridge only connects calls into rooms on its OWN server, so when phone calls go
+    # through LiveKit Cloud the call rooms live there, while the app inbox/WebRTC stay on `livekit_url`.
+    # Empty `livekit_sip_url` = single-server mode: calls use `livekit_*` exactly as before.
+    livekit_sip_url: str = ""
+    livekit_sip_api_key: str = ""
+    livekit_sip_api_secret: str = field(default="", repr=False)
+    # The phone worker registers under its own name on the telephony server, so dispatches and logs
+    # can never be confused with the app worker's (`livekit_agent_name`).
+    sip_agent_name: str = "rmsai-agent-phone"
+    # Its own health-check port: app services use host networking, so it must not reuse 8081.
+    sip_worker_http_port: int = 8082
+    # Carrier leg (Twilio Elastic SIP Trunking) the telephony server's outbound trunk dials through.
+    twilio_sip_termination_uri: str = ""  # e.g. rmsai.pstn.twilio.com
+    twilio_sip_username: str = ""
+    twilio_sip_password: str = field(default="", repr=False)
+    # Inbound calls are restricted to these caller numbers (E.164). Empty falls back to
+    # `outbound_call_number`; see `inbound_allowed_numbers`.
+    sip_inbound_allowed_numbers: tuple[str, ...] = ()
     # Wake word: after the alert, follow-up *audio* Q&A must start with this phrase (so room noise
     # and Whisper hallucinations don't trigger replies). The agent stays "awake" for the window
     # after each wake word so follow-ups don't repeat it. Text-chat turns are never gated.
@@ -284,6 +309,15 @@ class Config:
             livekit_agent_name=os.environ.get("LIVEKIT_AGENT_NAME", "rmsai-agent"),
             livekit_redispatch_on_start=_b("LIVEKIT_REDISPATCH_ON_START", True),
             livekit_worker_http_port=_i("LIVEKIT_WORKER_HTTP_PORT", 8081),
+            livekit_sip_url=os.environ.get("LIVEKIT_SIP_URL", ""),
+            livekit_sip_api_key=os.environ.get("LIVEKIT_SIP_API_KEY", ""),
+            livekit_sip_api_secret=os.environ.get("LIVEKIT_SIP_API_SECRET", ""),
+            sip_agent_name=os.environ.get("LIVEKIT_SIP_AGENT_NAME", "rmsai-agent-phone"),
+            sip_worker_http_port=_i("LIVEKIT_SIP_WORKER_HTTP_PORT", 8082),
+            twilio_sip_termination_uri=os.environ.get("TWILIO_SIP_TERMINATION_URI", ""),
+            twilio_sip_username=os.environ.get("TWILIO_SIP_USERNAME", ""),
+            twilio_sip_password=os.environ.get("TWILIO_SIP_PASSWORD", ""),
+            sip_inbound_allowed_numbers=_list("SIP_INBOUND_ALLOWED_NUMBERS"),
             audio_wake_word=os.environ.get("AUDIO_WAKE_WORD", "hey vios"),
             audio_wake_window_s=_f("AUDIO_WAKE_WINDOW_S", 30.0),
             audio_wake_required=_b("AUDIO_WAKE_REQUIRED", True),
@@ -294,6 +328,49 @@ class Config:
             ecg_checkpoints=_paths("ECG_CHECKPOINTS"),
             ecg_plot_enabled=_b("ECG_PLOT_ENABLED", True),
             plot_dir=os.environ.get("PLOT_DIR", "data/plots"),
+        )
+
+    @property
+    def telephony_split(self) -> bool:
+        """True when phone calls go to a separate LiveKit (`LIVEKIT_SIP_URL` set)."""
+        return bool(self.livekit_sip_url)
+
+    @property
+    def inbound_allowed_numbers(self) -> tuple[str, ...]:
+        """Caller numbers allowed to dial in: the explicit list, else the on-call number, else none.
+
+        Empty means "no one": the inbound trunk setup refuses to open an unrestricted number.
+        """
+        if self.sip_inbound_allowed_numbers:
+            return self.sip_inbound_allowed_numbers
+        return (self.outbound_call_number,) if self.outbound_call_number else ()
+
+    def telephony(self) -> "Config":
+        """The config the **phone-call paths** use (SIP dial, call-room agent dispatch, phone worker).
+
+        Single-server mode (no `LIVEKIT_SIP_URL`) returns `self` unchanged, i.e. today's behaviour.
+        Split mode returns a copy pointed at the telephony server with the phone worker's identity:
+        its agent name and health port, no public URL (the app never joins call rooms), and no
+        auto-redispatch (that re-wires `rmsai-inbox-*` rooms, which exist only on the app server).
+        Everything else, including the inbox, Redis (staged alerts), stores and trunk id, is shared.
+        """
+        if not self.telephony_split:
+            return self
+        missing = [name for name, val in (("LIVEKIT_SIP_API_KEY", self.livekit_sip_api_key),
+                                          ("LIVEKIT_SIP_API_SECRET", self.livekit_sip_api_secret))
+                   if not val]
+        if missing:
+            raise ValueError(f"LIVEKIT_SIP_URL is set but {', '.join(missing)} is empty; set both "
+                             "or unset LIVEKIT_SIP_URL for single-server mode")
+        return replace(
+            self,
+            livekit_url=self.livekit_sip_url,
+            livekit_public_url="",
+            livekit_api_key=self.livekit_sip_api_key,
+            livekit_api_secret=self.livekit_sip_api_secret,
+            livekit_agent_name=self.sip_agent_name,
+            livekit_worker_http_port=self.sip_worker_http_port,
+            livekit_redispatch_on_start=False,
         )
 
 
