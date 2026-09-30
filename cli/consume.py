@@ -111,20 +111,13 @@ def main(argv: list[str] | None = None) -> int:
     dispatch_fn = None
     alert_store = None
     if args.channel == "voice" and args.caller == "livekit":
-        from voice.livekit_cloud import create_agent_dispatch  # noqa: PLC0415
-        from voice.outbound import LiveKitCaller  # noqa: PLC0415
         from voice.outbound_alert import OutboundAlertStore  # noqa: PLC0415
 
         # Per-event room + alert hand-off; the worker (cli.voice_worker) drives the real audio loop.
+        # The alert is staged in the shared Redis, so it reaches the worker whichever LiveKit hosts
+        # the room.
         alert_store = OutboundAlertStore.from_config(config)
-        if args.transport == "webrtc":
-            # No phone: "answer" immediately so the alert is staged; the clinician joins over WebRTC.
-            caller_factory = lambda room: SimulatedCaller([CallOutcome.ANSWERED])  # noqa: E731
-        else:
-            caller_factory = lambda room: LiveKitCaller(config, room=room)  # noqa: E731
-        # Explicit dispatch: the worker registers under a name and won't auto-join, so request it
-        # into the per-event room (before the call is placed / the clinician joins over WebRTC).
-        dispatch_fn = lambda room: create_agent_dispatch(room, config=config)  # noqa: E731
+        caller_factory, dispatch_fn = livekit_voice_wiring(config, args.transport)
         caller = None
     else:
         caller = SimulatedCaller([CallOutcome.ANSWERED] * max(args.count, 1))
@@ -220,6 +213,27 @@ def main(argv: list[str] | None = None) -> int:
         driver.close()
     print(f"[consume] processed {processed} message(s)")
     return 0
+
+
+def livekit_voice_wiring(config, transport: str):
+    """`(caller_factory, dispatch_fn)` for the LiveKit voice channel, on the right LiveKit.
+
+    `sip` rings a phone, so both the dial and the agent dispatch go to `config.telephony()`: the
+    LiveKit Cloud project in split mode, where the SIP bridge and `rmsai-agent-phone` live. `webrtc`
+    has no phone leg (the clinician joins from a browser), so it stays on the app's own LiveKit and
+    agent, exactly as before. Dispatch is explicit: the worker registers under a name and won't
+    auto-join, so it is requested into the per-event room before the call is placed or joined.
+    """
+    from voice.livekit_cloud import create_agent_dispatch  # noqa: PLC0415
+    from voice.outbound import LiveKitCaller  # noqa: PLC0415
+
+    if transport == "webrtc":
+        # No phone: "answer" immediately so the alert is staged; the clinician joins over WebRTC.
+        return (lambda room: SimulatedCaller([CallOutcome.ANSWERED]),
+                lambda room: create_agent_dispatch(room, config=config))
+    tel = config.telephony()
+    return (lambda room: LiveKitCaller(tel, room=room),
+            lambda room: create_agent_dispatch(room, config=tel))
 
 
 def _print_webrtc_join(config, event_uuid: str) -> None:

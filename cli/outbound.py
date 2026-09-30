@@ -91,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         episodic_recall=config.episodic_recall,
     )
     if args.channel == "voice" and args.caller == "livekit":
-        caller = get_caller("livekit", config)  # real SIP via LiveKit Cloud
+        # A phone call: dial via the telephony LiveKit (Cloud in split mode, else LIVEKIT_URL).
+        caller = get_caller("livekit", config.telephony())
     else:
         caller = SimulatedCaller(
             [CallOutcome.NO_ANSWER] * 5 if args.no_answer else [CallOutcome.ANSWERED]
