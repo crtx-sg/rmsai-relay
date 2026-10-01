@@ -26,6 +26,19 @@ bridged outbound calls). The worker's PIN gate applies on top.
 OPTIONAL paid path: when `TWILIO_SIP_*` is set (Elastic SIP Trunking), an outbound trunk
 (`rmsai-outbound-twilio`) is also created, so upgrading later needs no code change.
 
+**SignalWire** (`TELEPHONY_CARRIER=signalwire`) is a native SIP trunk both ways, per LiveKit's and
+SignalWire's documented integration:
+
+    outbound  LiveKit outbound trunk (TLS, digest creds) → SignalWire Domain App
+              (`SIGNALWIRE_SIP_DOMAIN`) → SWML `connect` → PSTN       (swml_outbound)
+    inbound   your SignalWire number → SWML `connect` to sip:<number>@<LIVEKIT_SIP_URI>
+              (swml_inbound) → inbound trunk (matched on the number, caller allow-list)
+              → individual dispatch rule → `rmsai-call-…` room → `sip_agent_name`
+
+Outbound needs no bridge: the existing `LiveKitCaller` dial path uses the outbound trunk. Its id is
+`LIVEKIT_SIP_TRUNK_ID`. The SignalWire objects have their own names, so both carriers' objects can
+coexist in one project.
+
 Idempotent by fixed name: an existing object is replaced in place, a missing one is created.
 `plan()` is pure (plain dicts); `apply()` takes any object shaped like the SDK's `SipService`.
 """
@@ -38,9 +51,13 @@ from xml.sax.saxutils import quoteattr
 from common.config import DEFAULT, Config
 from voice.outbound import is_valid_number, mask_number
 
+CARRIERS = ("twilio", "signalwire")
 OUTBOUND_TRUNK_NAME = "rmsai-outbound-twilio"
 INBOUND_TRUNK_NAME = "rmsai-inbound-twilio"
 DISPATCH_RULE_NAME = "rmsai-inbound-dispatch"
+SW_OUTBOUND_TRUNK_NAME = "rmsai-outbound-signalwire"
+SW_INBOUND_TRUNK_NAME = "rmsai-inbound-signalwire"
+SW_DISPATCH_RULE_NAME = "rmsai-inbound-dispatch-signalwire"
 
 
 @dataclass
@@ -96,8 +113,94 @@ def inbound_twiml_bin(config: Config = DEFAULT) -> str:
     return dial_sip_twiml(f"{config.call_room_prefix}{{{{CallSid}}}}", config)
 
 
+def swml_outbound(config: Config = DEFAULT) -> str:
+    """SWML for the SignalWire Domain App: dial the PSTN number LiveKit asked for, from our number.
+
+    Verbatim shape of SignalWire's LiveKit guide; `answer_on_bridge` keeps LiveKit's call ringing
+    until the callee actually answers, so `wait_until_answered` means answered.
+    """
+    return (
+        "version: 1.0.0\n"
+        "sections:\n"
+        "  main:\n"
+        "    - connect:\n"
+        "        answer_on_bridge: true\n"
+        f'        from: "{config.outbound_from}"\n'
+        "        to: \"%{call.to.replace(/^sip:/i, '').replace(/@.*/, '')}\"\n"
+    )
+
+
+def swml_inbound(config: Config = DEFAULT) -> str:
+    """SWML for the SignalWire number: hand every inbound call to the telephony LiveKit."""
+    return (
+        "version: 1.0.0\n"
+        "sections:\n"
+        "  main:\n"
+        "    - connect:\n"
+        f'        to: "sip:%{{call.to}}@{_host(config.livekit_sip_uri)};transport=tcp"\n'
+    )
+
+
 def plan(config: Config = DEFAULT) -> SipPlan:
     """What should exist on the telephony server, derived from config alone (no network)."""
+    if config.telephony_carrier not in CARRIERS:
+        return SipPlan(problems=[f"TELEPHONY_CARRIER={config.telephony_carrier!r}: expected one of "
+                                 f"{', '.join(CARRIERS)}"])
+    if config.telephony_carrier == "signalwire":
+        return _plan_signalwire(config)
+    return _plan_twilio(config)
+
+
+def _plan_signalwire(config: Config) -> SipPlan:
+    p = SipPlan()
+    tel = config.telephony()
+    if not config.outbound_from:
+        p.problems.append("OUTBOUND_FROM is empty: set it to your SignalWire number (E.164). It is "
+                          "the trunk's number and the caller ID on every call")
+    elif not _e164(config.outbound_from):
+        p.problems.append(f"OUTBOUND_FROM {mask_number(config.outbound_from)} is not E.164 (+<digits>)")
+    for key, val in (("SIGNALWIRE_SIP_DOMAIN", config.signalwire_sip_domain),
+                     ("SIGNALWIRE_SIP_USERNAME", config.signalwire_sip_username),
+                     ("SIGNALWIRE_SIP_PASSWORD", config.signalwire_sip_password)):
+        if not val:
+            p.problems.append(f"{key} is empty (SignalWire → the outbound SWML script's SIP address "
+                              "on a Domain App, and its SIP credentials)")
+    bad = [n for n in config.inbound_allowed_numbers if not _e164(n)]
+    if bad:
+        p.problems.append(f"SIP_INBOUND_ALLOWED_NUMBERS / OUTBOUND_CALL_NUMBER not E.164: "
+                          f"{', '.join(mask_number(n) for n in bad)}")
+
+    numbers = [config.outbound_from] if config.outbound_from else []
+    p.outbound = {
+        "name": SW_OUTBOUND_TRUNK_NAME,
+        "address": _host(config.signalwire_sip_domain),
+        "numbers": numbers,
+        "auth_username": config.signalwire_sip_username,
+        "auth_password": config.signalwire_sip_password,
+        "transport": "tls",
+    }
+    allowed = list(config.inbound_allowed_numbers)
+    if not allowed:
+        p.notes.append("inbound skipped: no SIP_INBOUND_ALLOWED_NUMBERS and no OUTBOUND_CALL_NUMBER, "
+                       "and an unrestricted inbound number is never created")
+        return p
+    p.inbound = {
+        "name": SW_INBOUND_TRUNK_NAME,
+        "numbers": numbers,          # the called number SignalWire's SWML forwards (call.to)
+        "allowed_numbers": allowed,  # who may call in
+        "max_call_duration_s": config.sip_max_call_duration_s,
+    }
+    p.dispatch = {
+        "name": SW_DISPATCH_RULE_NAME,
+        "kind": "individual",  # one room per call, <prefix>…
+        "room_prefix": config.call_room_prefix,
+        "agent_name": tel.livekit_agent_name,
+        "hide_phone_number": True,
+    }
+    return p
+
+
+def _plan_twilio(config: Config) -> SipPlan:
     p = SipPlan()
     tel = config.telephony()
 
@@ -178,10 +281,16 @@ def redacted(p: SipPlan) -> dict:
 def _outbound_info(spec: dict):
     from livekit.protocol.sip import SIPOutboundTrunkInfo  # noqa: PLC0415
 
-    return SIPOutboundTrunkInfo(
+    from livekit.protocol.sip import SIPTransport  # noqa: PLC0415
+
+    info = SIPOutboundTrunkInfo(
         name=spec["name"], address=spec["address"], numbers=spec["numbers"],
         auth_username=spec["auth_username"], auth_password=spec["auth_password"],
     )
+    if spec.get("transport"):
+        info.transport = {"udp": SIPTransport.SIP_TRANSPORT_UDP, "tcp": SIPTransport.SIP_TRANSPORT_TCP,
+                          "tls": SIPTransport.SIP_TRANSPORT_TLS}[spec["transport"]]
+    return info
 
 
 def _inbound_info(spec: dict):
@@ -189,8 +298,8 @@ def _inbound_info(spec: dict):
     from livekit.protocol.sip import SIPInboundTrunkInfo  # noqa: PLC0415
 
     info = SIPInboundTrunkInfo(
-        name=spec["name"], allowed_numbers=spec["allowed_numbers"],
-        auth_username=spec["auth_username"], auth_password=spec["auth_password"],
+        name=spec["name"], numbers=spec.get("numbers", []), allowed_numbers=spec["allowed_numbers"],
+        auth_username=spec.get("auth_username", ""), auth_password=spec.get("auth_password", ""),
     )
     if spec.get("max_call_duration_s"):
         info.max_call_duration.CopyFrom(Duration(seconds=int(spec["max_call_duration_s"])))
@@ -203,15 +312,21 @@ def _dispatch_info(spec: dict, inbound_trunk_id: str):
     from livekit.protocol.sip import (  # noqa: PLC0415
         SIPDispatchRule,
         SIPDispatchRuleCallee,
+        SIPDispatchRuleIndividual,
         SIPDispatchRuleInfo,
     )
 
+    if spec["kind"] == "callee":
+        rule = SIPDispatchRule(dispatch_rule_callee=SIPDispatchRuleCallee(
+            room_prefix=spec["room_prefix"], randomize=spec["randomize"]))
+    else:
+        rule = SIPDispatchRule(dispatch_rule_individual=SIPDispatchRuleIndividual(
+            room_prefix=spec["room_prefix"]))
     return SIPDispatchRuleInfo(
         name=spec["name"],
         trunk_ids=[inbound_trunk_id],
         hide_phone_number=spec["hide_phone_number"],
-        rule=SIPDispatchRule(dispatch_rule_callee=SIPDispatchRuleCallee(
-            room_prefix=spec["room_prefix"], randomize=spec["randomize"])),
+        rule=rule,
         room_config=RoomConfiguration(agents=[RoomAgentDispatch(agent_name=spec["agent_name"])]),
     )
 
@@ -255,6 +370,8 @@ async def apply(p: SipPlan, sip) -> SipResult:
             lambda i: sip.create_outbound_trunk(CreateSIPOutboundTrunkRequest(trunk=i)),
             sip.update_outbound_trunk, "sip_trunk_id", res)
 
+    if p.inbound is None:
+        return res
     existing = {t.name: t.sip_trunk_id
                 for t in (await sip.list_inbound_trunk(ListSIPInboundTrunkRequest())).items}
     res.inbound_trunk_id = await _upsert(

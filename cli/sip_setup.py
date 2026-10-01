@@ -2,12 +2,14 @@
 
   python -m cli.sip_setup --dry-run     # print the plan (secrets and numbers masked), touch nothing
   python -m cli.sip_setup               # create or update in place
-  python -m cli.sip_setup --twiml       # print the TwiML Bin to paste into Twilio (contains the password)
+  python -m cli.sip_setup --twiml       # Twilio: the TwiML Bin to paste (contains the password)
+  python -m cli.sip_setup --swml        # SignalWire: the outbound + inbound SWML scripts to paste
 
 Targets `config.telephony()`: the LiveKit Cloud project when `LIVEKIT_SIP_URL` is set, else
 `LIVEKIT_URL`. Idempotent: re-running updates the same objects by name. Calls are bridged in by
-Twilio Programmable Voice (`<Dial><Sip>`), which works on a trial account; see voice/sip_setup.py.
-The Twilio-side steps are printed as a checklist; this CLI cannot set them.
+Twilio Programmable Voice (`<Dial><Sip>`, works on a trial account), or over a native SignalWire SIP
+trunk (`TELEPHONY_CARRIER=signalwire`); see voice/sip_setup.py. The carrier-side steps are printed
+as a checklist; this CLI cannot set them.
 """
 
 from __future__ import annotations
@@ -18,7 +20,37 @@ import json
 import sys
 
 from common.config import DEFAULT, Config
-from voice.sip_setup import SipPlan, apply, inbound_twiml_bin, plan, redacted
+from voice.sip_setup import (
+    SipPlan,
+    apply,
+    inbound_twiml_bin,
+    plan,
+    redacted,
+    swml_inbound,
+    swml_outbound,
+)
+
+
+def _signalwire_checklist(config: Config) -> str:
+    return (
+        "SignalWire side (dashboard):\n"
+        "  1. Phone Numbers: buy a number = OUTBOUND_FROM\n"
+        "  2. Resources → Add New → SWML Script 'rmsai-outbound' = `python -m cli.sip_setup --swml` "
+        "(outbound)\n"
+        "     → Addresses & Phone Numbers → Add → SIP Address for it = SIGNALWIRE_SIP_DOMAIN "
+        "(+ SIP credentials)\n"
+        "  3. Resources → Add New → SWML Script 'rmsai-inbound' = the inbound script\n"
+        "     → Phone Numbers → your number → Edit Settings → Assign Resource → rmsai-inbound\n"
+        "  Test: `python -m cli.call --caller livekit` rings OUTBOUND_CALL_NUMBER; calling your "
+        "SignalWire number reaches the agent's PIN prompt\n"
+        "  (the phone worker must be running: `make phone-up`)"
+    )
+
+
+def _checklist(config: Config) -> str:
+    if config.telephony_carrier == "signalwire":
+        return _signalwire_checklist(config)
+    return _twilio_checklist(config)
 
 
 def _twilio_checklist(config: Config) -> str:
@@ -51,8 +83,22 @@ def main(argv: list[str] | None = None, *, config: Config = DEFAULT) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dry-run", action="store_true", help="print the plan; change nothing")
     parser.add_argument("--twiml", action="store_true",
-                        help="print the inbound TwiML Bin (unmasked: it carries the SIP password)")
+                        help="Twilio: print the inbound TwiML Bin (unmasked: it carries the SIP password)")
+    parser.add_argument("--swml", action="store_true",
+                        help="SignalWire: print the outbound and inbound SWML scripts to paste")
     args = parser.parse_args(argv)
+
+    if args.swml:
+        missing = [k for k, v in (("OUTBOUND_FROM", config.outbound_from),
+                                  ("LIVEKIT_SIP_URI", config.livekit_sip_uri)) if not v]
+        if missing:
+            print(f"[sip_setup] set {', '.join(missing)} first", file=sys.stderr)
+            return 2
+        print("# --- outbound: SWML script on the SignalWire Domain App (SIGNALWIRE_SIP_DOMAIN) ---")
+        print(swml_outbound(config))
+        print("# --- inbound: SWML script assigned to your SignalWire number ---")
+        print(swml_inbound(config))
+        return 0
 
     if args.twiml:
         missing = [k for k, v in (("LIVEKIT_SIP_URI", config.livekit_sip_uri),
@@ -71,7 +117,8 @@ def main(argv: list[str] | None = None, *, config: Config = DEFAULT) -> int:
         print(f"[sip_setup] {exc}", file=sys.stderr)
         return 2
     mode = "split (calls on a separate LiveKit)" if config.telephony_split else "single-server"
-    print(f"[sip_setup] target {tel.livekit_url}  mode={mode}  agent={tel.livekit_agent_name}")
+    print(f"[sip_setup] target {tel.livekit_url}  mode={mode}  carrier={config.telephony_carrier}  "
+          f"agent={tel.livekit_agent_name}")
 
     p = plan(config)
     print(json.dumps(redacted(p), indent=2))
@@ -83,7 +130,10 @@ def main(argv: list[str] | None = None, *, config: Config = DEFAULT) -> int:
         return 2
     if args.dry_run:
         print("[sip_setup] dry run: nothing changed")
-        print(_twilio_checklist(config))
+        if p.outbound is not None:
+            print("[sip_setup] next: run again WITHOUT --dry-run to create these; it then prints the "
+                  "LIVEKIT_SIP_TRUNK_ID=ST_… line for .env (no id exists until the trunk is created)")
+        print(_checklist(config))
         return 0
 
     if not (tel.livekit_url and tel.livekit_api_key and tel.livekit_api_secret):
@@ -97,9 +147,9 @@ def main(argv: list[str] | None = None, *, config: Config = DEFAULT) -> int:
         return 1
     for action in res.actions:
         print(f"[sip_setup] {action}")
-    if res.outbound_trunk_id:  # paid Elastic-SIP path only
+    if res.outbound_trunk_id:  # SignalWire, or Twilio's paid Elastic SIP path
         print(f"\nSet in .env:\n  LIVEKIT_SIP_TRUNK_ID={res.outbound_trunk_id}")
-    print(_twilio_checklist(config))
+    print(_checklist(config))
     return 0
 
 

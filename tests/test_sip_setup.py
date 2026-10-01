@@ -247,3 +247,116 @@ def test_cli_refuses_problems(capsys):
 def test_cli_partial_telephony_config(capsys):
     assert main(["--dry-run"], config=replace(_CFG, livekit_sip_api_secret="")) == 2
     assert "LIVEKIT_SIP_API_SECRET" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------------------ SignalWire ---
+
+_SW = replace(
+    _CFG, telephony_carrier="signalwire",
+    signalwire_sip_domain="sip:rmsai.dapp.signalwire.com",
+    signalwire_sip_username="lk-out", signalwire_sip_password="sw-pw",
+    sip_inbound_username="", sip_inbound_password="",  # the Twilio bridge creds are not used here
+)
+
+
+def test_sw_outbound_trunk_dials_the_domain_app_over_tls():
+    from voice.sip_setup import SW_OUTBOUND_TRUNK_NAME
+
+    p = plan(_SW)
+    assert not p.problems
+    assert p.outbound == {"name": SW_OUTBOUND_TRUNK_NAME, "address": "rmsai.dapp.signalwire.com",
+                          "numbers": ["+15550001000"], "auth_username": "lk-out",
+                          "auth_password": "sw-pw", "transport": "tls"}
+
+
+def test_sw_inbound_matches_our_number_and_restricts_callers():
+    p = plan(_SW)
+    assert p.inbound["numbers"] == ["+15550001000"]          # the number SWML forwards (call.to)
+    assert p.inbound["allowed_numbers"] == ["+15550002000"]  # callers: the mobile only
+    assert "auth_username" not in p.inbound                  # SWML connect presents no digest creds
+    d = p.dispatch
+    assert (d["kind"], d["room_prefix"], d["agent_name"]) == (
+        "individual", "rmsai-call-", "rmsai-agent-phone")
+
+
+@pytest.mark.parametrize("field,expect", [
+    ("signalwire_sip_domain", "SIGNALWIRE_SIP_DOMAIN"),
+    ("signalwire_sip_username", "SIGNALWIRE_SIP_USERNAME"),
+    ("signalwire_sip_password", "SIGNALWIRE_SIP_PASSWORD"),
+    ("outbound_from", "OUTBOUND_FROM"),
+])
+def test_sw_problems_block(field, expect):
+    p = plan(replace(_SW, **{field: ""}))
+    assert any(expect in prob for prob in p.problems)
+
+
+def test_unknown_carrier_is_refused():
+    p = plan(replace(_CFG, telephony_carrier="vonage"))
+    assert p.problems and "TELEPHONY_CARRIER" in p.problems[0]
+
+
+def test_sw_no_call_in_number_keeps_outbound_only():
+    p = plan(replace(_SW, outbound_call_number=""))
+    assert not p.problems and p.outbound and p.inbound is None and p.dispatch is None
+    sip = FakeSip()
+    res = asyncio.run(apply(p, sip))
+    assert sip.calls == ["create_outbound"] and res.outbound_trunk_id
+
+
+def test_sw_apply_creates_trunks_and_individual_rule_idempotently():
+    from livekit.protocol.sip import SIPTransport
+
+    sip = FakeSip()
+    first = asyncio.run(apply(plan(_SW), sip))
+    assert sip.calls == ["create_outbound", "create_inbound", "create_rule"]
+    out = sip.outbound[first.outbound_trunk_id]
+    assert out.transport == SIPTransport.SIP_TRANSPORT_TLS and out.auth_password == "sw-pw"
+    inbound = sip.inbound[first.inbound_trunk_id]
+    assert list(inbound.numbers) == ["+15550001000"] and inbound.auth_username == ""
+    rule = sip.rules[first.dispatch_rule_id]
+    assert rule.rule.WhichOneof("rule") == "dispatch_rule_individual"
+    assert rule.rule.dispatch_rule_individual.room_prefix == "rmsai-call-"
+    assert rule.room_config.agents[0].agent_name == "rmsai-agent-phone"
+    sip.calls.clear()
+    second = asyncio.run(apply(plan(_SW), sip))
+    assert sip.calls == ["update_outbound", "update_inbound", "update_rule"]
+    assert second.outbound_trunk_id == first.outbound_trunk_id
+
+
+def test_sw_and_twilio_objects_coexist_by_name():
+    sip = FakeSip()
+    asyncio.run(apply(plan(_CFG), sip))   # twilio bridge objects
+    asyncio.run(apply(plan(_SW), sip))    # signalwire objects: created, not overwriting twilio's
+    assert {t.name for t in sip.inbound.values()} == {"rmsai-inbound-twilio", "rmsai-inbound-signalwire"}
+    assert len(sip.rules) == 2
+
+
+def test_swml_scripts_are_valid_and_point_at_the_right_places():
+    import yaml
+
+    from voice.sip_setup import swml_inbound, swml_outbound
+
+    out = yaml.safe_load(swml_outbound(_SW))["sections"]["main"][0]["connect"]
+    assert out["from"] == "+15550001000" and out["answer_on_bridge"] is True
+    assert out["to"] == "%{call.to.replace(/^sip:/i, '').replace(/@.*/, '')}"
+    inb = yaml.safe_load(swml_inbound(_SW))["sections"]["main"][0]["connect"]
+    assert inb["to"] == "sip:%{call.to}@abc123.sip.livekit.cloud;transport=tcp"
+
+
+def test_cli_swml_prints_both_scripts(capsys):
+    assert main(["--swml"], config=_SW) == 0
+    out = capsys.readouterr().out
+    assert "outbound" in out and "inbound" in out
+    assert "answer_on_bridge: true" in out and "abc123.sip.livekit.cloud" in out
+
+
+def test_cli_swml_needs_number_and_sip_uri(capsys):
+    assert main(["--swml"], config=replace(_SW, livekit_sip_uri="")) == 2
+    assert "LIVEKIT_SIP_URI" in capsys.readouterr().err
+
+
+def test_cli_dry_run_signalwire(capsys):
+    assert main(["--dry-run"], config=_SW) == 0
+    out = capsys.readouterr().out
+    assert "carrier=signalwire" in out and "SignalWire side" in out
+    assert "sw-pw" not in out and "+15550002000" not in out

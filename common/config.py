@@ -208,6 +208,20 @@ class Config:
     sip_agent_name: str = "rmsai-agent-phone"
     # Its own health-check port: app services use host networking, so it must not reuse 8081.
     sip_worker_http_port: int = 8082
+    # Phone carrier in front of the telephony LiveKit (`cli.sip_setup` plans per carrier):
+    #   twilio      Programmable Voice bridges calls in with TwiML <Dial><Sip> (works on a trial);
+    #   signalwire  a native SIP trunk both ways: LiveKit's outbound trunk → a SignalWire Domain App
+    #               (SWML `connect` to the PSTN); the number's SWML `connect`s inbound calls to LiveKit.
+    telephony_carrier: str = "twilio"
+    # SignalWire API (REST / Twilio-compatible): space host, Project ID, API token (dashboard → API).
+    signalwire_space: str = ""  # e.g. example.signalwire.com
+    signalwire_project_id: str = ""
+    signalwire_api_token: str = field(default="", repr=False)
+    # The SIP domain of the SignalWire Domain App that runs the outbound SWML
+    # (e.g. `rmsai.dapp.signalwire.com`), and the SIP credentials LiveKit's outbound trunk uses there.
+    signalwire_sip_domain: str = ""
+    signalwire_sip_username: str = ""
+    signalwire_sip_password: str = field(default="", repr=False)
     # The telephony server's SIP host (LiveKit Cloud → Settings → SIP URI, e.g. `abc123.sip.livekit.cloud`).
     # Twilio Programmable Voice bridges calls here with TwiML `<Dial><Sip>` (works on a trial account).
     livekit_sip_uri: str = ""
@@ -323,6 +337,13 @@ class Config:
             livekit_sip_api_secret=os.environ.get("LIVEKIT_SIP_API_SECRET", ""),
             sip_agent_name=os.environ.get("LIVEKIT_SIP_AGENT_NAME", "rmsai-agent-phone"),
             sip_worker_http_port=_i("LIVEKIT_SIP_WORKER_HTTP_PORT", 8082),
+            telephony_carrier=os.environ.get("TELEPHONY_CARRIER", "twilio").strip().lower(),
+            signalwire_space=os.environ.get("SIGNALWIRE_SPACE", ""),
+            signalwire_project_id=os.environ.get("SIGNALWIRE_PROJECT_ID", ""),
+            signalwire_api_token=os.environ.get("SIGNALWIRE_API_TOKEN", ""),
+            signalwire_sip_domain=os.environ.get("SIGNALWIRE_SIP_DOMAIN", ""),
+            signalwire_sip_username=os.environ.get("SIGNALWIRE_SIP_USERNAME", ""),
+            signalwire_sip_password=os.environ.get("SIGNALWIRE_SIP_PASSWORD", ""),
             livekit_sip_uri=os.environ.get("LIVEKIT_SIP_URI", ""),
             sip_inbound_username=os.environ.get("LIVEKIT_SIP_INBOUND_USERNAME", ""),
             sip_inbound_password=os.environ.get("LIVEKIT_SIP_INBOUND_PASSWORD", ""),
