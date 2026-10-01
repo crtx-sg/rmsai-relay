@@ -13,8 +13,8 @@ Runnable harnesses, one per subsystem: `uv run python -m cli.<x>` on the host, o
 - **Chat and voice:** `text_chat`, `voice` (offline demo), `speech_check`, `voice_worker` (`dev`/`start`; `VOICE_WORKER_ROLE=phone` for the phone worker), `livekit_token`, `dispatch` (`--room`, `--all-inbox`).
 - **Companion app:** `gateway`, `inbox_publish`, `inbox_probe`.
 - **Telephony:**
-  - `sip_setup`: provision the telephony LiveKit's inbound trunk + callee dispatch rule (+ outbound trunk on the paid path); `--dry-run`, `--twiml`.
-  - `call`: ring `OUTBOUND_CALL_NUMBER` on demand; `--caller livekit` needs `LIVEKIT_SIP_TRUNK_ID`, i.e. the paid path.
+  - `sip_setup`: provision the telephony LiveKit's trunks + dispatch rule for `TELEPHONY_CARRIER` (signalwire: outbound + inbound trunk, individual rule; twilio: inbound trunk + callee rule, outbound only on the paid path); `--dry-run`, `--swml`, `--twiml`.
+  - `call`: ring `OUTBOUND_CALL_NUMBER` on demand; `--caller livekit` needs `LIVEKIT_SIP_TRUNK_ID` (SignalWire, or Twilio paid).
 
-Note: `consume` and `outbound` take the destination from `--number` (placeholder default), not
-`OUTBOUND_CALL_NUMBER`.
+Note: `consume` and `outbound` take the destination from `--number`, else `OUTBOUND_CALL_NUMBER`; a
+real call/SMS with neither refuses to start.

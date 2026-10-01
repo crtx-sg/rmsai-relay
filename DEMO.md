@@ -14,10 +14,10 @@ This is the demo path. The README has the background: [Setup](README.md#setup),
 > export RMSAI="docker compose -f infra/docker-compose.yml run --rm tools python -m"
 > ```
 
-## Local-only mode (no LiveKit Cloud, no Twilio)
+## Local-only mode (no LiveKit Cloud, no phone carrier)
 
 The default. Everything below (§0–§5B) runs on your machine: the local LiveKit, the app, WebRTC calls,
-a simulated caller and simulated SMS. The telephony settings in `.env` (`LIVEKIT_SIP_*`, `TWILIO_*`)
+a simulated caller and simulated SMS. The telephony settings in `.env` (`LIVEKIT_SIP_*`, `SIGNALWIRE_*`, `TWILIO_*`)
 can stay there. They are only used by four explicit options, none of them a default:
 `--transport sip`, `--caller livekit`, `--notifier twilio`, and `cli.sip_setup` / `make phone-up`.
 
@@ -40,7 +40,7 @@ uv run python -m cli.call                                             # simulate
 - Optional hard switch: comment out `LIVEKIT_SIP_URL` in `.env` to force single-server mode. The
   phone worker then refuses to start, and any SIP path fails against the local LiveKit (which has no
   SIP service), so nothing can reach Cloud.
-- Not possible locally: ringing a real phone. That needs [§5C](#c-real-phone-calls-twilio--livekit-cloud--in-progress).
+- Not possible locally: ringing a real phone. That needs [§5C](#c-real-phone-calls-livekit-cloud--signalwire--in-progress).
 
 ---
 
@@ -310,30 +310,31 @@ again. For each critical event, the consumer log prints an `rmsai-outbound-<even
 
 Full detail: [README §5](README.md#5-real-webrtc-audio-loop-browser-no-phone).
 
-### C. Real phone calls (Twilio → LiveKit Cloud) — in progress
+### C. Real phone calls (LiveKit Cloud + SignalWire) — in progress
 
 Phone calls run on a **second LiveKit** (a LiveKit Cloud project, `LIVEKIT_SIP_URL`), because a
 LiveKit SIP bridge only connects calls into rooms on its own server. The app, inbox and WebRTC stay
-on the local LiveKit. Twilio carries the phone leg and bridges the answered call into Cloud with
-TwiML `<Dial><Sip>`, which works on a **trial** account (Elastic SIP Trunking does not).
+on the local LiveKit. The recommended carrier for demos is **SignalWire**
+(`TELEPHONY_CARRIER=signalwire`): a native SIP trunk both ways. It needs an account out of trial
+mode. The Twilio trial path (inbound only) is in the README.
 
 | Direction | Status |
 |---|---|
-| Call **in** (your mobile → Twilio number → agent PIN + Q&A) | set up; live test pending (the Twilio number must use the TwiML Bin) |
-| Event **out** (relay → Twilio Calls API → your mobile → alert) | **not implemented yet** (next phase) |
-| SMS fallback when an alert call is unanswered | implemented (`--notifier twilio`) |
+| Event **out** (relay → your phone → PIN → alert → Q&A → acknowledge) | configured; first test returned `603 Decline` (trial mode suspected) |
+| Call **in** (your phone → SignalWire number → PIN → Q&A) | configured; not tested yet |
+| SMS fallback when an alert call is unanswered | works with Twilio SMS (`--notifier twilio`); use `--notifier simulated` with SignalWire |
 
-Set-up and verification steps: [README § Phone calls](README.md#phone-calls-twilio--livekit-cloud).
-The short version: set the keys in [README § Phone calls → Configure](README.md#configure-env), then
+Full step-by-step setup: **[`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)**. Once set up:
 
 ```bash
-uv run python -m cli.sip_setup --dry-run && uv run python -m cli.sip_setup   # trunk + rule in Cloud
-uv run python -m cli.sip_setup --twiml     # paste into Twilio → TwiML Bins → rmsai-inbound
-make phone-up                              # phone worker, registered on Cloud as rmsai-agent-phone
+make phone-up && make phone-logs           # "registered worker" url must be the Cloud URL
+uv run python -m cli.call --caller livekit # on-demand: rings OUTBOUND_CALL_NUMBER → PIN → Q&A
+# event-driven: DISPATCH_MODE=app+call in .env, then (Compose reads this from the shell):
+CONSUME_ARGS="--channel voice --caller livekit --transport sip" make docker-up
+# publish an event (§5): the phone rings → PIN → this event's alert → Q&A → "acknowledge"
 ```
 
-and in the Twilio console point the **number's own** Voice Configuration ("A call comes in") at the
-TwiML Bin. Saving the Bin alone attaches it to nothing.
+How the call flows on the wire: [README § Phone calls → Call flow](README.md#call-flow-technical).
 
 ### Inspect what was stored
 
@@ -386,7 +387,9 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | `inbox push failed … TwirpError … 503 no response from servers` | app not connected, so the inbox room doesn't exist | log in to the app, then publish again |
 | Neo4j `warn: null value eliminated in set function` | harmless driver notice: an `OPTIONAL MATCH` over a patient with no history rows | ignore |
 | Two consumers splitting events | a host-run `cli.consume` shares group `rmsai.relay` with the container | `docker compose -f infra/docker-compose.yml stop consumer` before running one by hand |
-| Calling the Twilio number plays Twilio's greeting ("Thanks for calling… this is an inbound call from your Twilio number") | the number isn't using the TwiML Bin | Phone Numbers → Active numbers → the number → Voice Configuration → TwiML Bin `rmsai-inbound` → **Save configuration** |
+| `SIP dial failed … 603: Decline` (SignalWire) | SignalWire refused the call: trial mode, Domain App credentials, or destination country | [`TELEPHONY_SETUP.md` § Troubleshooting](TELEPHONY_SETUP.md#troubleshooting) |
+| `make phone-logs`: `registered worker … "url": "ws://localhost:7880"` | phone worker on the wrong LiveKit (fixed in `fe89028`) | update, then `make phone-down phone-up` |
+| Calling a Twilio number plays Twilio's greeting ("Thanks for calling…") | (Twilio path) the number isn't using the TwiML Bin | the number's Voice Configuration → TwiML Bin `rmsai-inbound` → **Save configuration** |
 | `voice-worker-phone` exits: `VOICE_WORKER_ROLE=phone needs LIVEKIT_SIP_URL` | telephony split not configured | set `LIVEKIT_SIP_URL/API_KEY/API_SECRET` in `.env`, then `make phone-up` |
 | `CONSUME_ARGS` in `.env` has no effect | Compose doesn't read the repo-root `.env` | pass it inline: `CONSUME_ARGS="…" make docker-up` |
 | Code edit not picked up | — | `make docker-restart` (source is bind-mounted); rebuild only for dependency / vendored changes |

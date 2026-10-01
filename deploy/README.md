@@ -93,8 +93,8 @@ Provided here (`deploy/livekit/`) as config templates; validate on the real host
 ## Phone calls are not part of the edge
 
 Phone calls don't go through the edge. In the telephony split they run on a LiveKit Cloud project,
-with Twilio as the carrier; those are third parties outside this private boundary (as is Twilio for
-SMS alerts). Configure them with `cli.sip_setup`; see `voice/gateway/README.md`. Synthetic or public
+with SignalWire or Twilio as the carrier; those are third parties outside this private boundary (as
+is Twilio for SMS alerts). Configure them with `cli.sip_setup`; see `voice/gateway/README.md`. Synthetic or public
 data only until BAAs are in place.
 
 ## What stays private (never on the public edge)
