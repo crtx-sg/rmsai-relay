@@ -235,7 +235,7 @@ def set_event_delivery(driver: GraphDriver, uuid: str, **delivery) -> None:
 
 #: Properties returned by `eval_events`: one row per event, everything the performance view needs.
 EVAL_FIELDS = (
-    "id", "timestamp", "event_type", "confidence", "ground_truth_condition", "criticality", "status",
+    "id", "timestamp", "processed_at", "event_type", "confidence", "ground_truth_condition", "criticality", "status",
     "model_id", "model_classes", "eval_outcome", "eval_unscorable_reason", "alert_gate",
     "alert_reason_code", "alert_basis", "why", "delivered_app", "delivered_call", "delivered_sms",
     "source_kind", "source_dataset", "source_record", "source_subject", "source_sample",
@@ -245,20 +245,22 @@ EVAL_FIELDS = (
 
 def eval_events(driver: GraphDriver, *, since: float | None = None, model_id: str | None = None,
                 dataset: str | None = None, labelled_only: bool = True) -> list[dict]:
-    """Events for the performance view/summary, newest first, with the patient pseudonym.
+    """Events for the performance view/summary, most recently processed first, with the pseudonym.
 
-    Filters are optional; `labelled_only` keeps events that have a ground truth.
+    Filters are optional; `since` applies to when the relay *processed* the event (`processed_at`;
+    falls back to the recording `timestamp` for events stored before it existed). `labelled_only`
+    keeps events that have a ground truth.
     """
     fields = ", ".join(f"e.{f} AS {f}" for f in EVAL_FIELDS)
     rows = driver.run_read(
         f"""
         MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
-        WHERE ($since IS NULL OR e.timestamp >= $since)
+        WHERE ($since IS NULL OR coalesce(e.processed_at, e.timestamp) >= $since)
           AND ($model IS NULL OR e.model_id = $model)
           AND ($dataset IS NULL OR e.source_dataset = $dataset)
           AND (NOT $labelled OR e.ground_truth_condition IS NOT NULL)
         RETURN p.id AS patient, {fields}
-        ORDER BY e.timestamp DESC
+        ORDER BY coalesce(e.processed_at, e.timestamp) DESC
         """,
         since=since, model=model_id, dataset=dataset, labelled=labelled_only,
     )

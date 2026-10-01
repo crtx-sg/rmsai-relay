@@ -75,6 +75,7 @@ def traceability_props(event: DeviceEvent, config: Config = DEFAULT) -> dict:
     so, why is it shown, and was it right?" without re-running anything.
     """
     import json  # noqa: PLC0415
+    import time  # noqa: PLC0415
 
     from inference.metrics import classify_outcome  # noqa: PLC0415
     from orchestrator.explain import explain_event  # noqa: PLC0415
@@ -97,6 +98,9 @@ def traceability_props(event: DeviceEvent, config: Config = DEFAULT) -> dict:
         "alert_gate": x["decision"]["dispatch"], "alert_reason_code": x["decision"]["reason_code"],
         "alert_reason": x["decision"]["reason"], "alert_basis": x["basis"],
         "why": x["headline"], "why_json": json.dumps(x, ensure_ascii=False),
+        # When the relay processed it. `timestamp` is the *recording* time, which for dataset
+        # recordings can be years old, so "the last 24 h" filters on this instead.
+        "processed_at": time.time(),
         "eval_outcome": outcome.code,
         "eval_unscorable_reason": outcome.reason or None,
     }

@@ -81,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--count", type=int, default=10, help="Max messages per read batch.")
     parser.add_argument("--block-ms", type=int, default=5000, help="Block this long awaiting messages.")
     parser.add_argument("--once", action="store_true", help="Process one batch (incl. backlog) then exit.")
+    parser.add_argument("--perf-every", type=int, default=10,
+                        help="Print a model-performance summary every N labelled events (0 = only "
+                             "on exit). See also `cli.model_perf` for the summary from the graph.")
     parser.add_argument("--max-events", type=int, default=None, help="Exit after N messages.")
     args = parser.parse_args(argv)
 
@@ -164,6 +167,9 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_group(client, args.stream, args.group, args.redis_url)
     print(f"[consume] group={args.group} consumer={args.consumer} stream={args.stream}")
 
+    from orchestrator.event_log import PerfTracker  # noqa: PLC0415
+
+    tracker = PerfTracker(every=args.perf_every, emit=lambda text: print(text, flush=True))
     processed = 0
     try:
         while True:
@@ -198,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
                             inbox_publisher=inbox_publisher, token_store=token_store,
                         )
                         _report(result)
+                        if result.trace is not None:
+                            tracker.add(result.trace)
                         if args.transport == "webrtc" and result.called:
                             _print_webrtc_join(config, result.event_uuid)
                         audit.write(actor="cli.consume", action="consume_event",
@@ -218,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        tracker.flush(header="on exit")
         driver.close()
     print(f"[consume] processed {processed} message(s)")
     return 0
@@ -260,6 +269,14 @@ def _print_webrtc_join(config, event_uuid: str) -> None:
 
 
 def _report(result) -> None:
+    if result.trace is not None:
+        from orchestrator.event_log import event_log_line  # noqa: PLC0415
+
+        ob = result.outbound
+        print(event_log_line(
+            result.trace, app=result.app_dispatched if result.trace["gate"] else None,
+            call=ob.outcome if ob is not None and ob.called else None,
+            sms=ob.fallback if ob is not None else None), flush=True)
     tag = f"{result.patient_ref}/{result.event_type}"
     if not result.called:
         extra = " [app worklist pushed]" if result.app_dispatched else ""

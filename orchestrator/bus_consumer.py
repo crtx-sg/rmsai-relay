@@ -29,6 +29,17 @@ from orchestrator.report import spoken_report
 from voice.outbound_alert import OutboundAlert
 
 
+def _trace(event, config):
+    """Per-event facts for logging/metrics (best-effort: never fails the event)."""
+    try:
+        from orchestrator.event_log import event_trace  # noqa: PLC0415
+
+        return event_trace(event, config)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[consume] could not build the event trace: {type(exc).__name__}: {exc}", flush=True)
+        return None
+
+
 def _record_delivery(driver, event_id: str, **delivery) -> None:
     """Best-effort: delivery bookkeeping must never fail an already persisted, dispatched event."""
     try:
@@ -56,6 +67,9 @@ class ConsumeResult:
     decision_reason: str
     outbound: OutboundResult | None = None
     app_dispatched: bool = False  # a worklist notification was pushed to the hospital inbox
+    # Per-event facts for the `[event]` log line and the performance tracker (orchestrator.event_log):
+    # source, prediction vs truth + outcome, criticality, gate decision, why. None if not computed.
+    trace: dict | None = None
 
 
 def process_bus_event(
@@ -104,12 +118,13 @@ def process_bus_event(
     print(f"[consume] persisted MonitoredEvent {w.event_id} -> Neo4j graph", flush=True)
     print(f"[consume] archived report narrative -> Qdrant vector store", flush=True)
 
+    trace = _trace(event, config)
     call, reason = should_call(event, config)
     if not call:
         print(f"[consume] no call: {reason} (event still persisted)", flush=True)
         return ConsumeResult(
             event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
-            bed=bed_label, persisted=True, called=False, decision_reason=reason,
+            bed=bed_label, persisted=True, called=False, decision_reason=reason, trace=trace,
         )
     # What the alert actually rests on — the rhythm, or the vitals with the rhythm unconfirmed. Both
     # the worklist row and the spoken call alert lead with this, so neither asserts a rhythm the
@@ -161,7 +176,7 @@ def process_bus_event(
         return ConsumeResult(
             event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
             bed=bed_label, persisted=True, called=False, decision_reason=reason,
-            app_dispatched=app_dispatched,
+            app_dispatched=app_dispatched, trace=trace,
         )
 
     to = to or config.outbound_call_number
@@ -208,5 +223,5 @@ def process_bus_event(
     return ConsumeResult(
         event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
         bed=bed_label, persisted=True, called=result.called, decision_reason=reason,
-        outbound=result, app_dispatched=app_dispatched,
+        outbound=result, app_dispatched=app_dispatched, trace=trace,
     )
