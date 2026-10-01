@@ -6,7 +6,9 @@
 
 `--emit stdout` prints a per-event summary + the markdown report. `--emit bus` publishes each
 enriched `DeviceEvent` (raw signals excluded) to a Redis Stream for the consumer pool (§3.2).
-When events carry a ground-truth class, a scored summary goes to stderr at the end.
+When events carry a ground-truth class, each line gains an `outcome` (TP / TP_WRONG_CLASS / FP / FN /
+TN / UNSCORABLE) and a scored summary goes to stderr at the end; `--metrics` prints the
+full breakdown (sensitivity/specificity/PPV/NPV with 95% CIs, per class, alert level).
 """
 
 from __future__ import annotations
@@ -14,14 +16,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from common.audit import AuditLog
 from common.config import DEFAULT
 from common.ecg_model_stub import StubECGModel
-from common.event_types import CLASS_NAMES
 from common.preflight import service_unreachable
 from inference.ecg_model import get_ecg_model
+from inference.metrics import EvalRecord, classify_outcome, format_summary, summarize
 from inference.pipeline import process_window
 from inference.serialize import event_summary_line, event_to_dict
 from inference.vitals_analysis import MewsVitalsAnalysis
@@ -62,6 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--strict-units", action="store_true", help="Fail if waveform_units absent.")
     parser.add_argument("--show-report", action="store_true", help="Print markdown report (stdout).")
+    parser.add_argument("--metrics", action="store_true",
+                        help="Print the full model-performance breakdown (stderr) when events are "
+                             "labelled.")
     args = parser.parse_args(argv)
 
     # `--checkpoint` with no values means "stub, ignore the env"; omitting it falls back to config.
@@ -71,7 +77,15 @@ def main(argv: list[str] | None = None) -> int:
     audit = AuditLog(DEFAULT.audit_log_path)
 
     files = sorted(Path(args.dir).glob("*.h5")) if args.dir else [Path(args.file)]
-    n = scored = correct = 0
+    # The head the outcome is scored against: a real checkpoint's classes; the stub's are all of them.
+    model_classes = getattr(model, "labels", None)
+    # The alert gate exactly as cli.consume applies it (it forces outbound on), so the alert-level
+    # metrics here predict what the consumer will dispatch.
+    from orchestrator.outbound_flow import should_call  # noqa: PLC0415
+
+    gate_config = replace(DEFAULT, outbound_enabled=True)
+    n = 0
+    records: list[EvalRecord] = []
     for window in (w for f in files for w in read_hdf5_file(f, strict_units=args.strict_units)):
         event = process_window(window, model, vitals)
         # Render the ECG strip here, while the raw samples are in hand (the bus drops them); the path
@@ -82,27 +96,38 @@ def main(argv: list[str] | None = None) -> int:
             event.window.ecg_plot_ref = render_ecg_strip(event.window, config=DEFAULT)
         n += 1
         truth = window.ground_truth.condition if window.ground_truth else None
-        if truth in CLASS_NAMES:
-            scored += 1
-            correct += truth == event.event_type
+        would_alert, _ = should_call(event, gate_config)
+        records.append(EvalRecord(event.event_type, truth, event.confidence, dispatched=would_alert))
+        outcome = classify_outcome(event.event_type, truth, model_classes).code
         if args.emit == "bus":
             msg_id = publish_to_bus(args.redis_url, args.stream, event_to_dict(event))
             audit.write(actor="cli.ingest", action="emit_event", subject=window.patient_ref,
                         outcome="published", stream=args.stream, msg_id=msg_id)
-            print(json.dumps({"published": msg_id, **event_summary_line(event)}))
+            print(json.dumps({"published": msg_id, **event_summary_line(event), "outcome": outcome}))
         else:
-            print(json.dumps(event_summary_line(event)))
+            print(json.dumps({**event_summary_line(event), "outcome": outcome}))
             if args.show_report:
                 print(event.report_md)
 
     if n == 0:
         print("no readable events", file=sys.stderr)
         return 1
-    if scored:
+    summary = summarize(records, model_classes)
+    if summary["scored"]:
         stub = isinstance(model, StubECGModel)
-        print(json.dumps({"summary": {"events": n, "scored": scored, "correct": correct,
-                                      "accuracy": round(correct / scored, 3),
-                                      "model": "stub" if stub else "checkpoint"}}), file=sys.stderr)
+        val = lambda m: m["value"] if m else None  # noqa: E731
+        c = summary["counts"]
+        print(json.dumps({"summary": {
+            "events": n, "scored": summary["scored"], "unscorable": summary["unscorable"],
+            "correct": summary["accuracy_exact"]["k"], "accuracy": val(summary["accuracy_exact"]),
+            "tp": c["TP"], "fp": c["FP"], "fn": c["FN"], "tn": c["TN"],
+            "sensitivity": val(summary["sensitivity"]), "specificity": val(summary["specificity"]),
+            "alert_sensitivity": val(summary.get("alert", {}).get("sensitivity")),
+            "false_alert_rate": val(summary.get("alert", {}).get("false_alert_rate")),
+            "model": "stub" if stub else "checkpoint",
+        }}), file=sys.stderr)
+        if args.metrics:
+            print(format_summary(summary), file=sys.stderr)
         if stub:
             print("[ingest] WARNING scored against the deterministic STUB — set ECG_CHECKPOINTS "
                   "(or --checkpoint) for real predictions", file=sys.stderr)

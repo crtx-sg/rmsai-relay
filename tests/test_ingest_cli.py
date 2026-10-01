@@ -50,3 +50,16 @@ def test_bus_emit_publishes_to_redis_stream(capsys):
     assert "report_md" in payload and "signals" not in payload  # raw signals excluded from bus
     assert payload["sample_rates"]["resp"] == "100/3"
     client.delete(stream)
+
+
+def test_each_line_carries_an_outcome_and_metrics_prints_the_breakdown(capsys):
+    rc = main(["--file", str(_FIXTURE), "--emit", "stdout", "--checkpoint", "--metrics"])
+    assert rc == 0
+    out = capsys.readouterr()
+    lines = [json.loads(line) for line in out.out.splitlines() if line.strip()]
+    assert all(ln["outcome"] in {"TP", "TP_WRONG_CLASS", "FP", "FN", "TN", "UNSCORABLE"}
+               for ln in lines)
+    summary = next(json.loads(ln) for ln in out.err.splitlines()
+                   if ln.startswith('{"summary"'))["summary"]
+    assert summary["tp"] + summary["fp"] + summary["fn"] + summary["tn"] == summary["scored"]
+    assert "Model performance" in out.err and "sensitivity" in out.err
