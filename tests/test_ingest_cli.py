@@ -63,3 +63,9 @@ def test_each_line_carries_an_outcome_and_metrics_prints_the_breakdown(capsys):
                    if ln.startswith('{"summary"'))["summary"]
     assert summary["tp"] + summary["fp"] + summary["fn"] + summary["tn"] == summary["scored"]
     assert "Model performance" in out.err and "sensitivity" in out.err
+
+
+def test_explain_adds_a_why_headline(capsys):
+    main(["--file", str(_FIXTURE), "--emit", "stdout", "--checkpoint", "--explain"])
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert lines and all(ln["why"].startswith(("Shown because", "Not alerted")) for ln in lines)

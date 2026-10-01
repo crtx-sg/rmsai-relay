@@ -87,14 +87,28 @@ TrendDirection = Literal["improving", "deteriorating", "stable", "insufficient_d
 MEWSRisk = Literal["Low", "Medium", "High", "Critical"]
 
 
+class MEWSComponentScore(BaseModel):
+    """One vital's contribution to the MEWS total (from the vendored `calculate_mews`)."""
+
+    name: str  # e.g. "Heart Rate", "SpO2"
+    value: Optional[float] = None
+    score: int
+
+
 class MEWS(BaseModel):
     score: int
     risk: MEWSRisk
+    # Per-vital sub-scores, so an explanation can say *which* vitals drive the total. Optional:
+    # empty when MEWS was degraded (a vital missing) or the payload predates the field.
+    components: list[MEWSComponentScore] = Field(default_factory=list)
 
 
 class VitalTrend(BaseModel):
     direction: TrendDirection
     p: Optional[float] = None  # Mann-Kendall p-value when available
+    # Mann-Kendall (Sen) slope: its sign says rising vs falling, which `direction` (deteriorating /
+    # improving, a clinical judgement per vital) doesn't. None when unknown.
+    slope: Optional[float] = None
 
 
 class ClinicalAnalysis(BaseModel):

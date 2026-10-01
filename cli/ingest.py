@@ -65,6 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--strict-units", action="store_true", help="Fail if waveform_units absent.")
     parser.add_argument("--show-report", action="store_true", help="Print markdown report (stdout).")
+    parser.add_argument("--explain", action="store_true",
+                        help="Add `why` to each line: the headline of why the event is (or isn't) "
+                             "alerted (orchestrator.explain).")
     parser.add_argument("--metrics", action="store_true",
                         help="Print the full model-performance breakdown (stderr) when events are "
                              "labelled.")
@@ -99,13 +102,19 @@ def main(argv: list[str] | None = None) -> int:
         would_alert, _ = should_call(event, gate_config)
         records.append(EvalRecord(event.event_type, truth, event.confidence, dispatched=would_alert))
         outcome = classify_outcome(event.event_type, truth, model_classes).code
+        extra = {"outcome": outcome}
+        if args.explain:
+            from orchestrator.explain import explain_event  # noqa: PLC0415
+
+            extra["why"] = explain_event(event, gate_config)["headline"]
         if args.emit == "bus":
             msg_id = publish_to_bus(args.redis_url, args.stream, event_to_dict(event))
             audit.write(actor="cli.ingest", action="emit_event", subject=window.patient_ref,
                         outcome="published", stream=args.stream, msg_id=msg_id)
-            print(json.dumps({"published": msg_id, **event_summary_line(event), "outcome": outcome}))
+            print(json.dumps({"published": msg_id, **event_summary_line(event), **extra},
+                             ensure_ascii=False))
         else:
-            print(json.dumps({**event_summary_line(event), "outcome": outcome}))
+            print(json.dumps({**event_summary_line(event), **extra}, ensure_ascii=False))
             if args.show_report:
                 print(event.report_md)
 

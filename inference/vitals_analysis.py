@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from common.interfaces import VitalsAnalysis
 from common.redacting_logger import get_redacting_logger
-from common.schemas import ClinicalAnalysis, MEWS, SignalWindow, VitalTrend
+from common.schemas import ClinicalAnalysis, MEWS, MEWSComponentScore, SignalWindow, VitalTrend
 
 _log = get_redacting_logger("rmsai.inference.vitals")
 
@@ -54,7 +54,11 @@ class MewsVitalsAnalysis(VitalsAnalysis):
                 temp_f=vitals["Temp"],
                 spo2=vitals["SpO2"],
             )
-            mews = MEWS(score=mews_res.total_score, risk=mews_res.risk_level)
+            mews = MEWS(
+                score=mews_res.total_score, risk=mews_res.risk_level,
+                components=[MEWSComponentScore(name=c.name, value=c.value, score=c.score)
+                            for c in mews_res.components],
+            )
         else:
             missing = [k for k in _MEWS_REQUIRED if k not in vitals]
             _log.error("MEWS degraded — missing vitals %s", missing)
@@ -65,7 +69,7 @@ class MewsVitalsAnalysis(VitalsAnalysis):
         # --- Per-vital trends ---
         trends: dict[str, VitalTrend] = {}
         for t in assess_event_trends(history):
-            trends[t.vital_name] = VitalTrend(direction=t.direction, p=t.p_value)
+            trends[t.vital_name] = VitalTrend(direction=t.direction, p=t.p_value, slope=t.slope)
         # Vitals with history present but too short to assess -> insufficient_data.
         for name in _TREND_VITALS:
             if name not in trends and 0 < len(history.get(name, [])) < 2:
