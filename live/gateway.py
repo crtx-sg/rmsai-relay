@@ -24,7 +24,13 @@ from pydantic import BaseModel
 
 from common.audit import AuditLog
 from common.config import DEFAULT, Config
-from kb.graph.events import get_event_artifacts, get_event_patient, set_event_status
+from kb.graph.events import (
+    eval_events,
+    get_event_artifacts,
+    get_event_info,
+    get_event_patient,
+    set_event_status,
+)
 from live.artifact_tokens import ARTIFACT_KINDS
 from live.inbox import inbox_room
 from voice.auth import PinAuthGate
@@ -67,6 +73,22 @@ class ArtifactLinkRequest(BaseModel):
     session: str
 
 
+class MetricsRequest(BaseModel):
+    """`POST /metrics` body: the inbox session (proof of PIN) + optional filters."""
+
+    session: str
+    since: str | None = None  # 30m / 24h / 7d / ISO date / epoch (on processing time)
+    model: str | None = None
+    dataset: str | None = None
+
+
+class EventInfoRequest(BaseModel):
+    """`POST /event-info` body: one event's why + source + outcome, for the detail panel."""
+
+    session: str
+    event_id: str
+
+
 def create_app(
     config: Config = DEFAULT,
     *,
@@ -93,6 +115,11 @@ def create_app(
     app_dir = _APP_DIR if app_dir is None else app_dir
 
     api = FastAPI(title="rmsai companion-app gateway")
+
+    def _session_ok(token: str) -> bool:
+        """A valid inbox token: signed by us, unexpired, scoped to this hospital's room."""
+        payload = verify_access_token(token, config)
+        return bool(payload) and (payload.get("video") or {}).get("room") == inbox_room(config)
 
     @api.post("/session")
     def session(req: SessionRequest) -> dict:
@@ -245,6 +272,72 @@ def create_app(
             return FileResponse(str(target), media_type="text/markdown")
 
         raise HTTPException(status_code=404, detail="unknown artifact kind")
+
+    @api.post("/metrics")
+    def metrics(req: MetricsRequest) -> dict:
+        """Model performance over the labelled events in the graph, one summary per model, plus
+        every labelled event (alerted or not, so TNs and FNs are visible too).
+
+        Same fail-closed session gate as `/ack`. Pseudonyms only; read-only.
+        """
+        if not _session_ok(req.session):
+            audit.write(actor="app", action="view_metrics", subject="-", outcome="unauthorized")
+            raise HTTPException(status_code=401, detail="invalid session")
+        if driver is None:
+            raise HTTPException(status_code=503, detail="event store not configured")
+        from orchestrator.perf_view import build_perf_view, parse_since  # noqa: PLC0415
+
+        try:
+            since = parse_since(req.since)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        rows = eval_events(driver, since=since, model_id=req.model, dataset=req.dataset)
+        audit.write(actor="app", action="view_metrics", subject="-", outcome="served",
+                    events=len(rows))
+        return {**build_perf_view(rows),
+                "filters": {"since": req.since, "model": req.model, "dataset": req.dataset}}
+
+    @api.post("/event-info")
+    def event_info(req: EventInfoRequest) -> dict:
+        """Why one event is shown, where its data came from, which model, and whether it was right."""
+        if not _session_ok(req.session):
+            audit.write(actor="app", action="view_event_info", subject="-",
+                        outcome="unauthorized", event_id=req.event_id)
+            raise HTTPException(status_code=401, detail="invalid session")
+        if driver is None:
+            raise HTTPException(status_code=503, detail="event store not configured")
+        info = get_event_info(driver, req.event_id)
+        if info is None:
+            audit.write(actor="app", action="view_event_info", subject="-",
+                        outcome="unknown_event", event_id=req.event_id)
+            raise HTTPException(status_code=404, detail="unknown event")
+        import json as _json  # noqa: PLC0415
+
+        from orchestrator.perf_view import row_source  # noqa: PLC0415
+
+        try:
+            explanation = _json.loads(info.get("why_json") or "null")
+        except ValueError:
+            explanation = None
+        audit.write(actor="app", action="view_event_info", subject=info.get("patient") or "-",
+                    outcome="served", event_id=req.event_id)
+        source_keys = ("source_kind", "source_dataset", "source_record", "source_subject",
+                       "source_sample", "source_label", "source_label_method",
+                       "source_label_purity", "source_package", "source_split", "source_device")
+        return {
+            "event_id": req.event_id, "patient": info.get("patient"),
+            "predicted": info.get("event_type"), "confidence": info.get("confidence"),
+            "truth": info.get("ground_truth_condition"), "outcome": info.get("eval_outcome"),
+            "unscorable_reason": info.get("eval_unscorable_reason"),
+            "model_id": info.get("model_id"), "criticality": info.get("criticality"),
+            "why": info.get("why"), "explanation": explanation,
+            "source": row_source(info),
+            "provenance": {k.removeprefix("source_"): info.get(k) for k in source_keys
+                           if info.get(k) is not None},
+            "delivery": {k: info.get(f"delivered_{k}") for k in ("app", "call", "sms")
+                         if info.get(f"delivered_{k}") is not None},
+            "processed_at": info.get("processed_at"), "timestamp": info.get("timestamp"),
+        }
 
     class _NoStoreStatic(StaticFiles):
         """`StaticFiles` that forbids caching of the worklist app.

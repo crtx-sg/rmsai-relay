@@ -62,6 +62,7 @@ def event_trace(event, config: Config = DEFAULT) -> dict:
     return {
         "patient": w.patient_ref, "event_id": w.event_id,
         "source": source_label(w.provenance),
+        "source_kind": w.provenance.kind if w.provenance else None,
         "dataset": w.provenance.dataset if w.provenance else None,
         "predicted": event.event_type, "confidence": event.confidence, "truth": truth,
         "outcome": outcome.code, "model_id": event.model_id, "model_classes": event.model_classes,

@@ -237,6 +237,8 @@ public phone network is in progress (see [Phone calls](#phone-calls-livekit-clou
 | T3b | Outbound phone alerts via the Twilio Calls API (Twilio trial only) | 🔜 deferred: SignalWire covers outbound |
 | C1–C2 | SignalWire carrier: `TELEPHONY_CARRIER`, native SIP trunk via `cli.sip_setup` (`--swml`) | ✅ code · 🔄 first live call (`603`, trial mode suspected) |
 | — | Phone worker registered on the wrong LiveKit (agents CLI env override) | ✅ fixed (`fe89028`) |
+| E1–E5 | Model performance & traceability: outcome + metrics, "why shown", provenance + model id, `[event]`/`[perf]` logs, `cli.model_perf`, app tab + detail panel | ✅ |
+| E6 | Ask "why am I seeing this?" / "how is the model doing?" by chat or voice | 🔜 optional |
 | — | File-drop auto-publish watcher (inotify → `cli.ingest --emit bus`) | 🔜 planned |
 
 ---
@@ -1166,6 +1168,69 @@ After `down -v` you are back to step 3 — re-initialize the KB, then re-ingest.
 
 ---
 
+## Model performance & traceability
+
+For every event the relay records, and shows in the logs, the CLI and the companion app:
+- **where the data came from:** e.g. `MIT-BIH 207 @221697 (test split)`, `simulator`, or a device id;
+- **which model said what:** e.g. `ecg_transconv:v2:096bdfbafa04x5` at 63 %;
+- **whether that was right**, when a ground truth exists;
+- **why the clinician is (or isn't) seeing it.**
+
+**Outcome per event** (`inference/metrics.py`; positive = any arrhythmia, i.e. not `NORMAL_SINUS`):
+
+| Outcome | Meaning |
+|---|---|
+| **TP** | arrhythmia called arrhythmia; ✓ if the class is exact |
+| **TP_WRONG_CLASS** | arrhythmia called a *different* arrhythmia: the alarm was right, the class wasn't |
+| **FP** / **FN** / **TN** | false alarm / missed arrhythmia / normal called normal |
+| **UNSCORABLE** | no ground truth, or a label the model can't output (e.g. `OTHER`, or `ST_ELEVATION` for the 13-class `real_v2`) |
+
+The **alert level** scores what was *dispatched* after the criticality gate (correct, missed, false,
+silent-correct). It's the clinically meaningful one, because vitals can raise an alert the rhythm
+doesn't support. Rates (sensitivity, specificity, PPV, NPV, exact-class accuracy, per-class
+precision/recall, confusion matrix) come with **Wilson 95 % intervals** and their raw *k/n*: a demo
+set of a few events gives wide intervals, and the view says so.
+
+**Why an event is shown** (`orchestrator/explain.py`) restates the relay's own decision functions,
+so it can't drift from the behaviour:
+- the rhythm's confidence against the threshold (asserted / unconfirmed / normal);
+- MEWS against its threshold, with the contributing vitals;
+- **every** deteriorating vital, with direction and p-value;
+- what raised the criticality;
+- the gate decision.
+
+It ends in one headline, e.g. *"Shown because the vitals warrant it, not the rhythm: systolic BP
+falling (p<0.001), HR rising (p<0.001), SpO₂ falling (p=0.0091). Rhythm reads normal (58%). High."*
+
+**Where it shows:**
+
+| Surface | What |
+|---|---|
+| `cli.ingest --explain --metrics` | `outcome` + `why` per event; the full breakdown on stderr |
+| consumer log (`make docker-logs`) | one `[event]` line per event (source · prediction vs truth → outcome · criticality · alert + delivery · why); a `[perf]` summary every `--perf-every` labelled events (default 10) and on exit |
+| `cli.model_perf` | the summary on request, from the graph: `--since 30m\|24h\|7d`, `--model`, `--dataset`, `--events`, `--json` |
+| companion app | worklist rows show the why line, a source badge (demo data only) and the outcome; selecting a row shows the full explanation + data source; the **Model performance** tab shows tiles, confusion matrix, per-class table and *every* labelled event, alerted or not, live-refreshing as events arrive |
+| graph | each `MonitoredEvent` stores `source_*`, `model_id`, `alert_gate` / `alert_reason_code`, `why` (+ `why_json`), `eval_outcome`, `delivered_app/call/sms`, `processed_at` |
+
+```bash
+$RMSAI cli.model_perf --events            # all labelled events, one block per model
+$RMSAI cli.model_perf --since 1h --dataset mitbih
+```
+
+**Notes:**
+- **Ground truth is evaluation-only.** It's stored and shown, but the event's clinical condition link
+  is always the *prediction*, so graph answers never use the answer key.
+- **Data source:** comes from the file. ecg_sigma recordings carry dataset, record, subject, the
+  sample offset in the original recording, the labelling method/purity, and the package/split.
+  Simulator and device files carry only their device id.
+- **Time filter:** `--since` and the dashboard's time filter use **when the relay processed** an event
+  (`processed_at`), not the recording time, which for public datasets can be decades old.
+- **Model mixing:** metrics are grouped **per model**; a summary mixing two models describes neither.
+- **Production data has no ground truth.** The performance view is for curated, labelled sets
+  (`cli.real_samples`); on unlabelled data it says so.
+- **Synthetic vitals:** for ecg_sigma data the vitals are synthetic (SpO₂/BP condition-keyed), so the
+  vitals-driven parts of the alert-level metrics partly echo the label.
+
 ## Local-only mode (no LiveKit Cloud, no phone carrier)
 
 The default, and the quickest demo: the local LiveKit, the companion app, WebRTC calls, a simulated
@@ -1649,4 +1714,5 @@ uv run python -m cli.voice_worker dev      # agent worker; VOICE_WORKER_ROLE=pho
 uv run python -m cli.livekit_token --room <r>  # join token for a room (playground testing)
 uv run python -m cli.dispatch --all-inbox  # re-dispatch the agent into agent-less inbox rooms
 uv run python -m cli.sip_setup --dry-run   # telephony trunks + dispatch rule (--swml / --twiml print the carrier scripts)
+uv run python -m cli.model_perf --events   # model performance from the graph (TP/FP/FN/TN, CIs, per class, why)
 ```

@@ -265,3 +265,18 @@ def eval_events(driver: GraphDriver, *, since: float | None = None, model_id: st
         since=since, model=model_id, dataset=dataset, labelled=labelled_only,
     )
     return [dict(r) for r in rows]
+
+
+def get_event_info(driver: GraphDriver, uuid: str) -> dict | None:
+    """One event's traceability record for the detail panel (None if unknown).
+
+    `EVAL_FIELDS` plus the full explanation (`why_json`), the source device, and the patient pseudonym.
+    """
+    fields = ", ".join(f"e.{f} AS {f}" for f in (*EVAL_FIELDS, "why_json", "source_device",
+                                                    "alert_reason", "mews_risk"))
+    rows = driver.run_read(
+        f"MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent {{id:$uuid}}) "
+        f"RETURN p.id AS patient, {fields}",
+        uuid=uuid,
+    )
+    return dict(rows[0]) if rows else None

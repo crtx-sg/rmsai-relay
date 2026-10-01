@@ -16,57 +16,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
-import time
 from datetime import datetime
 
 from common.config import DEFAULT
-from inference.metrics import EvalRecord, format_summary, summarize
-from orchestrator.event_log import source_label
+from inference.metrics import format_summary, summarize
+from orchestrator.perf_view import group_by_model, parse_since, records, row_source
 
-_DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*([mhd])$")
-
-
-def parse_since(text: str | None, *, now: float | None = None) -> float | None:
-    """`30m` / `24h` / `7d` → that long ago; an ISO date/time; or an epoch number. None passes."""
-    if not text:
-        return None
-    now = time.time() if now is None else now
-    m = _DURATION.match(text.strip().lower())
-    if m:
-        return now - float(m.group(1)) * {"m": 60, "h": 3600, "d": 86400}[m.group(2)]
-    try:
-        return float(text)
-    except ValueError:
-        pass
-    try:
-        return datetime.fromisoformat(text).timestamp()
-    except ValueError:
-        raise ValueError(f"--since {text!r}: use 30m / 24h / 7d, an ISO date, or epoch seconds")
-
-
-def group_by_model(rows: list[dict]) -> dict[str, dict]:
-    """`{model_id: {"rows": [...], "classes": [...]}}`, models in first-seen order."""
-    out: dict[str, dict] = {}
-    for r in rows:
-        m = out.setdefault(r.get("model_id") or "unknown model",
-                           {"rows": [], "classes": r.get("model_classes")})
-        m["rows"].append(r)
-    return out
-
-
-def _records(rows: list[dict]) -> list[EvalRecord]:
-    return [EvalRecord(r["event_type"], r.get("ground_truth_condition"), r.get("confidence"),
-                       dispatched=r.get("alert_gate")) for r in rows]
-
-
-def _source(r: dict) -> str:
-    if not r.get("source_kind"):
-        return "source unknown"
-    return source_label({"kind": r["source_kind"], "dataset": r.get("source_dataset"),
-                         "record": r.get("source_record"), "source_sample": r.get("source_sample"),
-                         "split": r.get("source_split"), "device": r.get("source_device")})
+# Re-exported for callers/tests that import them from here.
+__all__ = ["group_by_model", "parse_since", "report", "main"]
 
 
 def event_lines(rows: list[dict]) -> list[str]:
@@ -76,7 +34,7 @@ def event_lines(rows: list[dict]) -> list[str]:
         when = datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M") if stamp else "?"
         lines.append(f"  {when} {r['patient']:<9} {r.get('eval_outcome') or '?':<15} "
                      f"pred {r['event_type']} ({(r.get('confidence') or 0):.0%}) · truth "
-                     f"{r.get('ground_truth_condition') or '—'} · {_source(r)}")
+                     f"{r.get('ground_truth_condition') or '—'} · {row_source(r)}")
         if r.get("why"):
             lines.append(f"      why: {r['why']}")
     return lines
@@ -86,7 +44,7 @@ def report(rows: list[dict], *, events: bool = False) -> tuple[str, dict]:
     """Text report and the JSON structure, one block per model."""
     blocks, data = [], {}
     for model, m in group_by_model(rows).items():
-        s = summarize(_records(m["rows"]), m["classes"])
+        s = summarize(records(m["rows"]), m["classes"])
         data[model] = s
         block = [f"== model {model}", format_summary(s)]
         datasets = sorted({r.get("source_dataset") or r.get("source_kind") or "unknown"

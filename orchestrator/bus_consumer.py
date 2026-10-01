@@ -29,6 +29,22 @@ from orchestrator.report import spoken_report
 from voice.outbound_alert import OutboundAlert
 
 
+_DEMO_SOURCES = {"simulator", "ecg_sigma"}
+
+
+def _row_extras(trace: dict | None) -> dict:
+    """Worklist-row extras from the trace: why always; the source badge for demo data only (a real
+    device's id isn't a useful badge); truth/outcome only when the event has a ground truth."""
+    if not trace:
+        return {}
+    out = {"why": trace.get("why")}
+    if trace.get("source_kind") in _DEMO_SOURCES:
+        out["source"] = trace.get("source")
+    if trace.get("truth"):
+        out["truth"], out["outcome"] = trace["truth"], trace.get("outcome")
+    return out
+
+
 def _trace(event, config):
     """Per-event facts for logging/metrics (best-effort: never fails the event)."""
     try:
@@ -153,6 +169,7 @@ def process_bus_event(
             criticality=event_criticality(event, config), status="reported", links=links,
             confidence=event.confidence, low_confidence=event.low_confidence,
             alert_basis=basis, alert_reason=basis_why or None,
+            **_row_extras(trace),
         )
         # Best-effort: the event is already persisted, and the worklist is live-push-only, so a
         # transient LiveKit hiccup (or no app connected yet) must not poison a persisted event.

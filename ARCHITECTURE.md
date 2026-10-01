@@ -155,6 +155,13 @@ configured (`--notifier simulated|twilio`), the alert is texted instead
 `notify_failed`. SIP dials go to the telephony LiveKit (`Config.telephony()`; see *Telephony split*
 below). The event is **always persisted**; the gate governs the *dispatch* (worklist push and call).
 
+Each persisted event also records **why** it was or wasn't dispatched (`orchestrator/explain.py`:
+every rhythm/vitals/criticality trigger, one headline), its **data source** (`SignalWindow.provenance`),
+the **model** (`DeviceEvent.model_id`), what was **delivered**, and, for labelled data, the
+**outcome** against the ground truth (`inference/metrics.py`). These feed the consumer's `[event]` log
+line, `cli.model_perf` and the app's Model-performance tab. Ground truth stays evaluation-only; the
+clinical condition link is always the prediction.
+
 ---
 
 ## Pipeline 2 — the voice / chat conversation

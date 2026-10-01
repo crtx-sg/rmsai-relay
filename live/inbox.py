@@ -84,6 +84,10 @@ def build_event_message(
     low_confidence: bool = False,
     alert_basis: str = "rhythm",
     alert_reason: str | None = None,
+    why: str | None = None,
+    source: str | None = None,
+    truth: str | None = None,
+    outcome: str | None = None,
 ) -> dict:
     """Assemble a `type:"event"` worklist notification. Fails closed if `patient` isn't a pseudonym.
 
@@ -96,6 +100,10 @@ def build_event_message(
     naming the vital when it is the latter. A vitals-driven row must lead with the vital and mark the
     rhythm unconfirmed — the app keys its rendering off this, so the claim on screen matches the claim
     the relay can actually support.
+
+    `why` is the one-line reason the row is shown (`orchestrator.explain`). `source` is a data-source
+    badge, set only for demo sources (simulator / public-dataset recordings), never for a real device.
+    `truth`/`outcome` appear only when the event has a ground truth (evaluation data).
     """
     if not _PSEUDONYM_RE.match(patient or ""):
         raise ValueError(f"refusing to publish non-pseudonym patient ref: {patient!r}")
@@ -112,6 +120,10 @@ def build_event_message(
         "low_confidence": low_confidence,
         "alert_basis": alert_basis,
         "alert_reason": alert_reason,
+        "why": why,
+        "source": source,
+        "truth": truth,
+        "outcome": outcome,
         "status": status,
         "artifact_kinds": list(links.keys()),
         "links": links,

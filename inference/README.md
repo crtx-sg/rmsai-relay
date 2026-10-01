@@ -68,3 +68,10 @@ diagnosis or unsupervised alarms.
 refuses a package that isn't the checkpoint's training package, unless `--allow-mismatch`);
 `cli.ingest --dir data/real` prints a scored accuracy summary and warns when scoring the stub. A
 handful of events is a demo, not an evaluation. See `DEMO.md`.
+
+**Scoring (`metrics.py`):** `classify_outcome` (TP / TP_WRONG_CLASS / FP / FN / TN / UNSCORABLE,
+positive = any arrhythmia), `classify_alert` (alert level), `summarize` (rates with Wilson 95 %
+intervals, per class, confusion matrix) and `format_summary`. Pure Python; used by `cli.ingest`, the
+consumer's `[perf]` summary, `cli.model_perf` and the app's performance tab. Each `DeviceEvent`
+carries `model_id` + `model_classes`, so metrics never mix models and an out-of-head label is
+unscorable rather than wrong.

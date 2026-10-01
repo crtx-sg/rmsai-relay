@@ -58,11 +58,59 @@
     #chat-input { flex: 1; padding: .45rem .6rem; font-size: .9rem; }
     #ptt { padding: .45rem .8rem; user-select: none; }
     #ptt.talking { background: #c0392b; color: #fff; }
+    /* --- why / source / outcome on worklist rows --- */
+    .why { display: block; font-size: .74rem; color: #555a; max-width: 46rem; overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+    @media (prefers-color-scheme: dark) { .why { color: #bbb; } }
+    .src { font-size: .68rem; padding: .05rem .4rem; border-radius: 4px; background: #2980b922;
+           border: 1px solid #2980b966; margin-right: .3rem; white-space: nowrap; }
+    .oc { font-size: .68rem; padding: .05rem .4rem; border-radius: 4px; border: 1px solid #8886;
+          white-space: nowrap; font-weight: 600; }
+    .oc-TP { background: #27ae6022; border-color: #27ae60; }
+    .oc-TN { background: #27ae6014; border-color: #27ae6099; }
+    .oc-TP_WRONG_CLASS { background: #f1c40f22; border-color: #d4ac0d; }
+    .oc-FP, .oc-FN { background: #c0392b22; border-color: #c0392b; }
+    .oc-UNSCORABLE { opacity: .6; }
+    /* --- tabs --- */
+    #tabs button { background: transparent; color: #fff; border: 0; border-bottom: 2px solid transparent;
+                   padding: .3rem .6rem; font-size: .85rem; cursor: pointer; opacity: .75; }
+    #tabs button.active { border-bottom-color: #fff; opacity: 1; }
+    /* --- explanation panel --- */
+    .info h3 { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; opacity: .7;
+               margin: .9rem 0 .3rem; }
+    .info .headline { font-weight: 600; }
+    .info dl { display: grid; grid-template-columns: max-content 1fr; gap: .15rem .9rem; margin: 0;
+               font-size: .82rem; }
+    .info dt { opacity: .65; }
+    .info ul { margin: .2rem 0; padding-left: 1.2rem; font-size: .82rem; }
+    /* --- performance view --- */
+    #perf-view { padding: 1rem; }
+    #perf-filters { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    #perf-filters select, #perf-filters button { font-size: .85rem; padding: .25rem .5rem; }
+    .model-block { border: 1px solid #8884; border-radius: 6px; padding: .8rem 1rem; margin-bottom: 1rem; }
+    .model-block h2 { font-size: .9rem; margin: 0 0 .2rem; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); gap: .5rem;
+             margin: .6rem 0; }
+    .tile { border: 1px solid #8884; border-radius: 6px; padding: .45rem .6rem; }
+    .tile .k { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; opacity: .65; }
+    .tile .v { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .tile .ci { font-size: .7rem; opacity: .65; }
+    .small-n { font-size: .78rem; color: #b9770e; margin: .3rem 0; }
+    table.cm, table.pc { width: auto; margin: .4rem 0 .8rem; font-size: .78rem; }
+    table.cm td, table.cm th, table.pc td, table.pc th { padding: .2rem .5rem; text-align: center; }
+    table.cm td.diag { background: #27ae6026; font-weight: 600; }
+    table.cm td.off { background: #c0392b1a; }
+    #perf-events tbody tr { cursor: pointer; }
+    #perf-detail { padding: 1rem; border-top: 3px solid #14213d; margin-top: 1rem; }
   </style>
 </head>
 <body>
   <header>
     <h1>rmsai worklist</h1>
+    <nav id="tabs" class="hidden">
+      <button data-tab="worklist" class="active">Worklist</button>
+      <button data-tab="perf">Model performance</button>
+    </nav>
     <span id="room-label"></span>
     <span id="status-pill">not connected</span>
   </header>
@@ -76,6 +124,7 @@
   </section>
 
   <main id="worklist" class="hidden">
+   <div id="wl-view">
     <div id="empty">Waiting for critical events…</div>
     <table id="table" class="hidden">
       <thead>
@@ -93,6 +142,27 @@
         <button id="ptt" title="Hold to talk">🎤 Hold to talk</button>
       </div>
     </section>
+   </div>
+   <div id="perf-view" class="hidden">
+     <div id="perf-filters">
+       <label>Processed <select id="f-since">
+         <option value="">all time</option><option value="1h">last hour</option>
+         <option value="24h">last 24 h</option><option value="7d">last 7 days</option>
+       </select></label>
+       <label>Dataset <select id="f-dataset"><option value="">all</option></select></label>
+       <label>Model <select id="f-model"><option value="">all</option></select></label>
+       <button id="f-refresh">Refresh</button>
+       <span id="perf-status" class="meta"></span>
+     </div>
+     <div id="perf-models"></div>
+     <h2 style="font-size:.85rem;margin:.5rem 0">Labelled events (alerted or not)</h2>
+     <table id="perf-events">
+       <thead><tr><th>Processed</th><th>Patient</th><th>Outcome</th><th>Predicted</th><th>Truth</th>
+         <th>Alert</th><th>Source</th><th>Why</th></tr></thead>
+       <tbody></tbody>
+     </table>
+     <section id="perf-detail" class="hidden"></section>
+   </div>
   </main>
 
   <script src="./app.js"></script>

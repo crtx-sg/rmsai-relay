@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-08-19 vitals-alert-2";
+const APP_BUILD = "2026-10-01 model-perf-1";
 
 const LK = window.LivekitClient;
 
@@ -69,6 +69,21 @@ function fmtEvent(r) {
     `<span class="sub">${note}</span>`;
 }
 
+// Data-source badge (demo data only: the relay never sends one for a real device) and, when the
+// event has a ground truth, the outcome against it.
+function fmtBadges(r) {
+  const src = r.source ? `<span class="src" title="data source">${esc(r.source)}</span>` : "";
+  const oc = r.outcome
+    ? `<span class="oc oc-${esc(r.outcome)}" title="truth: ${esc(r.truth)}">${esc(fmtOutcome(r.outcome))}</span>`
+    : "";
+  return src || oc ? `<span class="sub">${src}${oc}</span>` : "";
+}
+
+function fmtOutcome(code) {
+  return ({ TP: "TP ✓", TP_WRONG_CLASS: "TP · wrong class", FP: "FP", FN: "FN", TN: "TN",
+            UNSCORABLE: "unscorable" })[code] || code || "";
+}
+
 function render() {
   const rows = [...state.rows.values()].sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const tbody = document.getElementById("rows");
@@ -99,7 +114,7 @@ function render() {
     tr.innerHTML = `
       <td>${esc(r.patient)}</td>
       <td>${esc(bed)}</td>
-      <td>${fmtEvent(r)}</td>
+      <td>${fmtEvent(r)}${fmtBadges(r)}${r.why ? `<span class="why" title="${esc(r.why)}">${esc(r.why)}</span>` : ""}</td>
       <td>${fmtConfidence(r)}</td>
       <td class="crit crit-${esc(r.criticality)}">${esc(r.criticality)}</td>
       <td>${esc(fmtTime(r.ts))}</td>
@@ -235,6 +250,7 @@ async function connect(sess) {
   // Build tag on screen, not just in the console: a stale cached page is the single most expensive
   // thing to misdiagnose here — it looks exactly like a broken worker.
   document.getElementById("room-label").textContent = `${session.room} · app ${APP_BUILD}`;
+  document.getElementById("tabs").classList.remove("hidden");
   setStatus("connecting…");
 
   room = new LK.Room();
@@ -247,6 +263,7 @@ async function connect(sess) {
       if (msg.type === "show") { viewArtifact(msg.kind, msg.url); return; }  // chat asked to see it
       applyMessage(state, msg);
       render();
+      if (msg.type === "event") schedulePerfRefresh(); // live: the perf tab follows new events
     } catch (e) {
       console.warn("worklist: ignoring bad data message", e);
     }
@@ -297,6 +314,167 @@ function selectEvent(eventId) {
   document.getElementById("chat-log").innerHTML = "";
   render(); // reflect row highlight
   sendSelect(eventId);
+  showEventInfo(eventId, "detail");
+}
+
+// --- why this event / where it came from (POST /event-info, session-gated) ------------------------
+async function showEventInfo(eventId, targetId) {
+  if (!session || !eventId) return;
+  const el = document.getElementById(targetId);
+  el.classList.remove("hidden");
+  el.innerHTML = `<div class="meta">Loading…</div>`;
+  try {
+    const res = await fetch("/event-info", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event_id: eventId, session: session.token }),
+    });
+    if (!res.ok) { el.innerHTML = `<div class="meta">No details (${res.status}).</div>`; return; }
+    el.innerHTML = renderInfo(await res.json());
+  } catch (e) {
+    el.innerHTML = `<div class="meta">Could not load details.</div>`;
+  }
+}
+
+function pct(x) { return typeof x === "number" ? `${Math.round(x * 100)}%` : "–"; }
+
+function renderInfo(i) {
+  const x = i.explanation || {};
+  const rh = x.rhythm || {}, vit = x.vitals || {}, crit = x.criticality || {}, dec = x.decision || {};
+  const mews = vit.mews || {};
+  const comps = (mews.components || []).map((c) => `${esc(c.name)} ${esc(c.value)} → ${esc(c.score)}`);
+  const trends = (vit.deteriorating || []).map((d) =>
+    `${esc(d.vital)} ${esc(d.direction)}${d.p != null ? ` (p=${d.p < 0.001 ? "<0.001" : Number(d.p).toPrecision(2)})` : ""}`);
+  const prov = i.provenance || {};
+  const provRows = Object.entries(prov).map(([k, v]) => `<dt>${esc(k.replace(/_/g, " "))}</dt><dd>${esc(v)}</dd>`).join("");
+  const delivery = Object.entries(i.delivery || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(" · ") || "–";
+  const truth = i.truth
+    ? `<dt>truth</dt><dd>${esc(i.truth)} <span class="oc oc-${esc(i.outcome)}">${esc(fmtOutcome(i.outcome))}</span></dd>`
+    : `<dt>truth</dt><dd>— (no ground truth${i.unscorable_reason ? `: ${esc(i.unscorable_reason)}` : ""})</dd>`;
+  return `<div class="info">
+    <h2>${esc(i.patient)} · ${esc(i.predicted)}</h2>
+    <div class="headline">${esc(i.why || "")}</div>
+    <h3>Rhythm</h3><dl>
+      <dt>model says</dt><dd>${esc(rh.event_type || i.predicted)} at ${pct(rh.confidence ?? i.confidence)}
+        (${esc(rh.status || "")}; threshold ${pct(rh.threshold)})</dd>${truth}
+      <dt>model</dt><dd>${esc(i.model_id || "–")}</dd></dl>
+    <h3>Vitals</h3><dl>
+      <dt>MEWS</dt><dd>${esc(mews.score)} (${esc(mews.risk)}; threshold ${esc(mews.threshold)})${comps.length ? ` — ${comps.join(", ")}` : ""}</dd>
+      <dt>deteriorating</dt><dd>${trends.length ? trends.join(", ") : "none"}</dd></dl>
+    <h3>Criticality &amp; decision</h3><dl>
+      <dt>criticality</dt><dd>${esc(crit.level || i.criticality)}${crit.escalated_by && crit.escalated_by.length
+        ? ` (from ${esc(crit.base)}, raised by ${crit.escalated_by.map(esc).join(", ")})` : ""}</dd>
+      <dt>alert</dt><dd>${dec.dispatch ? "yes" : "no"} — ${esc(dec.summary || dec.reason_code || "")}</dd>
+      <dt>delivered</dt><dd>${delivery}</dd></dl>
+    <h3>Data source</h3><dl><dt>source</dt><dd>${esc(i.source)}</dd>${provRows}</dl>
+  </div>`;
+}
+
+// --- model performance tab (POST /metrics) ---------------------------------------------------------
+let perfTimer = null;
+
+function showTab(tab) {
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  document.getElementById("wl-view").classList.toggle("hidden", tab !== "worklist");
+  document.getElementById("perf-view").classList.toggle("hidden", tab !== "perf");
+  if (tab === "perf") loadPerf();
+}
+
+function perfVisible() { return !document.getElementById("perf-view").classList.contains("hidden"); }
+
+function schedulePerfRefresh() {
+  if (!perfVisible()) return;
+  clearTimeout(perfTimer);
+  perfTimer = setTimeout(loadPerf, 1500); // a burst of events → one refresh
+}
+
+async function loadPerf() {
+  if (!session) return;
+  const status = document.getElementById("perf-status");
+  status.textContent = "loading…";
+  const body = {
+    session: session.token,
+    since: document.getElementById("f-since").value || null,
+    dataset: document.getElementById("f-dataset").value || null,
+    model: document.getElementById("f-model").value || null,
+  };
+  try {
+    const res = await fetch("/metrics", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!res.ok) { status.textContent = `could not load (${res.status})`; return; }
+    renderPerf(await res.json());
+    status.textContent = `updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    status.textContent = "could not reach the gateway";
+  }
+}
+
+function fillSelect(id, values) {
+  const sel = document.getElementById(id);
+  const current = sel.value;
+  const known = new Set([...sel.options].map((o) => o.value));
+  for (const v of values) if (v && !known.has(v)) sel.add(new Option(v, v));
+  sel.value = current;
+}
+
+function tile(label, m) {
+  if (!m) return `<div class="tile"><div class="k">${esc(label)}</div><div class="v">–</div><div class="ci">no data</div></div>`;
+  return `<div class="tile"><div class="k">${esc(label)}</div><div class="v">${pct(m.value)}</div>` +
+    `<div class="ci">${m.k}/${m.n} · 95% CI ${pct(m.low)}–${pct(m.high)}</div></div>`;
+}
+
+function renderConfusion(cm) {
+  const truths = Object.keys(cm);
+  const preds = [...new Set(truths.flatMap((t) => Object.keys(cm[t])))].sort();
+  if (!truths.length) return "";
+  const short = (c) => esc(c.replace("VENTRICULAR_", "V-").replace("ATRIAL_", "A-").replace(/_/g, " "));
+  let h = `<table class="cm"><tr><th>truth ↓ / pred →</th>${preds.map((p) => `<th>${short(p)}</th>`).join("")}</tr>`;
+  for (const t of truths) {
+    h += `<tr><th>${short(t)}</th>` + preds.map((p) => {
+      const n = cm[t][p] || 0;
+      const cls = n ? (p === t ? "diag" : "off") : "";
+      return `<td class="${cls}">${n || ""}</td>`;
+    }).join("") + `</tr>`;
+  }
+  return h + `</table>`;
+}
+
+function renderPerClass(pc) {
+  const rows = Object.entries(pc);
+  if (!rows.length) return "";
+  return `<table class="pc"><tr><th>class</th><th>support</th><th>precision</th><th>recall</th><th>F1</th></tr>` +
+    rows.map(([c, v]) => `<tr><td style="text-align:left">${esc(c)}</td><td>${v.support}</td>` +
+      `<td>${v.precision ? pct(v.precision.value) : "–"}</td><td>${v.recall ? pct(v.recall.value) : "–"}</td>` +
+      `<td>${v.f1 ?? "–"}</td></tr>`).join("") + `</table>`;
+}
+
+function renderPerf(data) {
+  fillSelect("f-dataset", [...new Set(data.events.map((e) => e.dataset).filter(Boolean))]);
+  fillSelect("f-model", data.models.map((m) => m.model_id));
+  const blocks = data.models.map((m) => {
+    const s = m.summary, c = s.counts, a = s.alert;
+    const small = s.scored < 30
+      ? `<div class="small-n">Small sample (${s.scored} scored): intervals are wide — a demo, not an evaluation.</div>` : "";
+    return `<div class="model-block"><h2>${esc(m.model_id)}</h2>
+      <div class="meta">${s.scored} scored of ${s.events} labelled events · sources: ${m.sources.map(esc).join(", ")}${s.unscorable ? ` · ${s.unscorable} unscorable` : ""}</div>
+      ${small}
+      <div class="meta">TP ${c.TP} (wrong class ${c.TP_wrong_class}) · FP ${c.FP} · FN ${c.FN} · TN ${c.TN}</div>
+      <div class="tiles">${tile("exact class", s.accuracy_exact)}${tile("sensitivity", s.sensitivity)}
+        ${tile("specificity", s.specificity)}${tile("PPV", s.ppv)}${tile("NPV", s.npv)}
+        ${a ? tile("alert sensitivity", a.sensitivity) + tile("false-alert rate", a.false_alert_rate) : ""}</div>
+      ${a ? `<div class="meta">alerts: correct ${a.counts.alert_correct} · missed ${a.counts.alert_missed} · false ${a.counts.alert_false} · silent-correct ${a.counts.silent_correct}</div>` : ""}
+      <div style="display:flex;gap:2rem;flex-wrap:wrap">${renderConfusion(s.confusion)}${renderPerClass(s.per_class)}</div>
+    </div>`;
+  });
+  document.getElementById("perf-models").innerHTML = blocks.join("") ||
+    `<div class="meta">No labelled events yet. Production data has no ground truth; curate a labelled set with cli.real_samples.</div>`;
+  const tbody = document.querySelector("#perf-events tbody");
+  tbody.innerHTML = data.events.map((e) => `<tr data-event-id="${esc(e.event_id)}">
+    <td>${esc(fmtTime(e.processed_at))}</td><td>${esc(e.patient)}</td>
+    <td><span class="oc oc-${esc(e.outcome)}">${esc(fmtOutcome(e.outcome))}</span></td>
+    <td>${esc(e.predicted)} (${pct(e.confidence)})</td><td>${esc(e.truth)}</td>
+    <td>${e.alert ? "✓" : "✗"} <span class="sub">${esc(e.reason_code)}</span></td>
+    <td>${esc(e.source)}</td><td><span class="why" title="${esc(e.why)}">${esc(e.why)}</span></td></tr>`).join("");
 }
 
 // Scope the worker's conversation to an event. Sent as a control message on the chat text channel —
@@ -404,6 +582,19 @@ document.getElementById("rows").addEventListener("click", (e) => {
   // A click anywhere else on the row selects that event for chat.
   const rowEl = t.closest("tr");
   if (rowEl && rowEl.dataset.eventId) selectEvent(rowEl.dataset.eventId);
+});
+
+// Tabs + performance view
+document.getElementById("tabs").addEventListener("click", (e) => {
+  const tab = e.target && e.target.dataset && e.target.dataset.tab;
+  if (tab) showTab(tab);
+});
+document.getElementById("f-refresh").addEventListener("click", loadPerf);
+["f-since", "f-dataset", "f-model"].forEach((id) =>
+  document.getElementById(id).addEventListener("change", loadPerf));
+document.querySelector("#perf-events tbody").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr");
+  if (tr && tr.dataset.eventId) showEventInfo(tr.dataset.eventId, "perf-detail");
 });
 
 // Chat controls

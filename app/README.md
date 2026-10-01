@@ -22,6 +22,13 @@ artifact links in inbox messages resolve here.
   that event's stored report summary aloud via TTS (in addition to scoping chat). No wake word / mic
   needed; disable to keep selection silent.
 
+- **Why + source + outcome** — each row shows why it's on the worklist (`why`), a data-source badge
+  for demo data (`source`), and, for labelled data, the outcome against the truth. Selecting a row
+  loads the full explanation and provenance from `POST /event-info`.
+- **Model performance tab** — `POST /metrics` (session-gated): per-model tiles with 95 % intervals,
+  confusion matrix, per-class table, and every labelled event (alerted or not), refreshing as events
+  arrive. Rendering is tested in Node against a stub DOM (`tests/test_app_render.py`).
+
 **Stale-cache check:** the build tag (`APP_BUILD` in `app.js`) shows on screen; if it's old, the
 browser is running a cached `app.js`.
 

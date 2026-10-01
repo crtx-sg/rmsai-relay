@@ -281,6 +281,8 @@ docker compose -f infra/docker-compose.yml logs -f consumer
 # [consume] persisted MonitoredEvent … -> Neo4j graph
 # [consume] archived report narrative -> Qdrant vector store
 # [consume] dispatch=app: pushed inbox event … -> rmsai-inbox-h1
+# [event] PT992591 · INCART I05 @263874 (test split) · pred VENTRICULAR_TACHYCARDIA 50% ·
+#         truth VENTRICULAR_TACHYCARDIA → TP · Critical · alert ✓ vitals_alert · app ✓ · why: …
 ```
 
 Critical/High events are dispatched. `NORMAL_SINUS`/Low events are persisted but skipped with a
@@ -296,6 +298,20 @@ reason (`below_threshold`, …).
    - *"what were the vitals at the time of the event?"*
    - *"what is the escalation checklist for a critical alarm?"* (cites the sample SOP from §2)
    - *"which conditions are co-morbid with atrial fibrillation?"* (hybrid: passages + graph)
+
+### Model performance: was the model right, and why is each event shown?
+
+- **Worklist:** every row carries a *why* line (e.g. *"Shown because the vitals warrant it: MEWS 6 ≥ 3
+  …; rhythm ventricular tachycardia unconfirmed (50% < 60%)"*), the data source (*INCART I05
+  @263874 (test split)*) and, for labelled data, the outcome against the truth (*TP ✓*,
+  *TP · wrong class*, *FP*, *FN*, *TN*). Selecting a row shows the full explanation and data source.
+- **Model performance tab:** sensitivity, specificity, PPV and NPV with 95 % intervals, the confusion
+  matrix, per-class precision/recall, and every labelled event *including those that weren't alerted*.
+  It refreshes as events arrive.
+- **Terminal:** `$RMSAI cli.model_perf --events`, or watch the `[event]` lines in
+  `docker compose -f infra/docker-compose.yml logs -f consumer`.
+
+With a handful of events the intervals are wide, and the tab says so. Say it out loud too.
 
 ### B. Outbound voice call over WebRTC (no phone)
 

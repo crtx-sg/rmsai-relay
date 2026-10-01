@@ -104,7 +104,7 @@ def test_parse_since(text, expect):
 
 
 def test_parse_since_rejects_nonsense():
-    with pytest.raises(ValueError, match="--since"):
+    with pytest.raises(ValueError, match="since .yesterday-ish."):
         parse_since("yesterday-ish", now=NOW)
 
 
