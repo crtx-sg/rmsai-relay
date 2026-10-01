@@ -68,6 +68,40 @@ def write_report(report_md: str, event_id: str, *, config: Config = DEFAULT) -> 
     return str(path)
 
 
+def traceability_props(event: DeviceEvent, config: Config = DEFAULT) -> dict:
+    """Flat MonitoredEvent properties: data source, model, the alert decision + why, eval outcome.
+
+    Everything the dashboard and logs need to answer "where did this come from, which model said
+    so, why is it shown, and was it right?" without re-running anything.
+    """
+    import json  # noqa: PLC0415
+
+    from inference.metrics import classify_outcome  # noqa: PLC0415
+    from orchestrator.explain import explain_event  # noqa: PLC0415
+
+    w = event.window
+    p = w.provenance
+    x = explain_event(event, config)
+    gt = w.ground_truth.condition if w.ground_truth else None
+    outcome = classify_outcome(event.event_type, gt, event.model_classes)
+    return {
+        "model_id": event.model_id, "model_classes": event.model_classes,
+        "source_kind": p.kind if p else None, "source_device": p.device if p else None,
+        "source_dataset": p.dataset if p else None, "source_record": p.record if p else None,
+        "source_subject": p.subject if p else None,
+        "source_sample": p.source_sample if p else None,
+        "source_label": p.source_label if p else None,
+        "source_label_method": p.label_method if p else None,
+        "source_label_purity": p.label_purity if p else None,
+        "source_package": p.package if p else None, "source_split": p.split if p else None,
+        "alert_gate": x["decision"]["dispatch"], "alert_reason_code": x["decision"]["reason_code"],
+        "alert_reason": x["decision"]["reason"], "alert_basis": x["basis"],
+        "why": x["headline"], "why_json": json.dumps(x, ensure_ascii=False),
+        "eval_outcome": outcome.code,
+        "eval_unscorable_reason": outcome.reason or None,
+    }
+
+
 def process_device_event(
     event: DeviceEvent,
     driver: GraphDriver,
@@ -100,9 +134,10 @@ def process_device_event(
         event_type=event.event_type, confidence=event.confidence,
         is_false_positive=event.is_false_positive, mews_risk=event.analysis.mews.risk,
         ground_truth_condition=gt, status="reported", vitals=_vitals_snapshot(event), bed=bed,
-        link_condition=gt or event.event_type, action_items=actions,
+        link_condition=event.event_type, action_items=actions,
         signal_ref=f"hdf5://{w.patient_ref}/{w.event_id}",
         ecg_plot_ref=ecg_plot_ref, hr_history=hr_history, hr_history_ts=hr_history_ts,
+        extra=traceability_props(event, config),
     )
 
     # 2. patient context + 3. assemble report

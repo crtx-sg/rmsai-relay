@@ -22,6 +22,7 @@ from common.schemas import (
     GroundTruth,
     MEWS,
     MEWSComponentScore,
+    Provenance,
     SignalWindow,
     Vital,
     VitalSample,
@@ -74,6 +75,9 @@ def event_to_dict(event: DeviceEvent, *, include_signals: bool = False) -> dict[
             else None
         ),
         "report_md": event.report_md,
+        "model_id": event.model_id,
+        "model_classes": event.model_classes,
+        "provenance": w.provenance.model_dump() if w.provenance else None,
     }
     if include_signals:
         payload["signals"] = w.signals
@@ -114,6 +118,7 @@ def dict_to_event(payload: dict[str, Any]) -> DeviceEvent:
         ground_truth=(
             GroundTruth(condition=gt["condition"], heart_rate=gt.get("heart_rate")) if gt else None
         ),
+        provenance=Provenance(**payload["provenance"]) if payload.get("provenance") else None,
     )
     mews = payload["mews"]
     analysis = ClinicalAnalysis(
@@ -134,6 +139,8 @@ def dict_to_event(payload: dict[str, Any]) -> DeviceEvent:
         uncertain=bool(payload.get("uncertain", False)),
         analysis=analysis,
         report_md=payload.get("report_md", ""),
+        model_id=payload.get("model_id"),
+        model_classes=payload.get("model_classes"),
     )
 
 

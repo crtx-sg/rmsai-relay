@@ -29,6 +29,9 @@ def _digest(window: SignalWindow) -> bytes:
 class StubECGModel(ECGModel):
     """Content-addressed deterministic classifier."""
 
+    model_id = "stub"
+    labels = list(CLASS_NAMES)
+
     def predict(self, window: SignalWindow) -> tuple[str, float]:
         d = _digest(window)
         idx = d[0] % len(CLASS_NAMES)

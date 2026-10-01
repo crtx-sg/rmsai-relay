@@ -19,6 +19,7 @@ from common.config import DEFAULT, Config
 from common.criticality import alert_basis, event_criticality
 from inference.serialize import dict_to_event
 from kb.graph.driver import GraphDriver
+from kb.graph.events import set_event_delivery
 from kb.vector.retriever import VectorRetriever
 from live.inbox import artifact_kinds_for, build_event_message, mint_artifact_links
 from orchestrator.event_flow import process_device_event
@@ -26,6 +27,15 @@ from orchestrator.outbound_flow import OutboundResult, run_outbound, run_text_no
 from orchestrator.patient_bootstrap import ensure_patient
 from orchestrator.report import spoken_report
 from voice.outbound_alert import OutboundAlert
+
+
+def _record_delivery(driver, event_id: str, **delivery) -> None:
+    """Best-effort: delivery bookkeeping must never fail an already persisted, dispatched event."""
+    try:
+        set_event_delivery(driver, event_id, **delivery)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[consume] could not record delivery for {event_id}: {type(exc).__name__}: {exc}",
+              flush=True)
 
 
 def _mode_includes(mode: str, surface: str) -> bool:
@@ -144,6 +154,7 @@ def process_bus_event(
                     if "no response from servers" in str(exc) else "")
             print(f"[consume] dispatch=app: inbox push failed for {w.event_id}: "
                   f"{type(exc).__name__}: {exc}{hint}", flush=True)
+        _record_delivery(driver, w.event_id, delivered_app=app_dispatched)
 
     # Call surface: unchanged per-event SIP/voice (or text) alert. Skipped for app-only mode.
     if not _mode_includes(mode, "call"):
@@ -191,6 +202,9 @@ def process_bus_event(
     if result.fallback:
         print(f"[consume] call {result.outcome} after {result.attempts} attempt(s); SMS fallback: "
               f"{result.fallback} -> status {result.status}", flush=True)
+    _record_delivery(driver, w.event_id,
+                     delivered_call=result.outcome if result.called else None,
+                     delivered_sms=result.fallback)
     return ConsumeResult(
         event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
         bed=bed_label, persisted=True, called=result.called, decision_reason=reason,

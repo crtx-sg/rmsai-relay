@@ -43,6 +43,9 @@ def process_window(
         uncertain=uncertain,
         low_confidence=low_confidence,
         analysis=analysis,
+        # Duck-typed so any ECGModel works: the real wrapper and the stub both expose these.
+        model_id=getattr(model, "model_id", type(model).__name__),
+        model_classes=list(getattr(model, "labels", []) or []) or None,
     )
     event.report_md = render_event_report(event)
     return event

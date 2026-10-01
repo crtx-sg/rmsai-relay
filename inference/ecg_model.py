@@ -104,6 +104,10 @@ class EcgTransConvModel(ECGModel):
         self._pipeline = PreprocessingPipeline(FILTER_PRESETS[loaded.filter_preset])
 
         ckpt = loaded.checkpoint
+        # e.g. "ecg_transconv:v2:096bdfbafa04x5": package, manifest, and how many checkpoints are
+        # ensembled. Stable for the same weights, different for different ones.
+        self._model_id = (f"ecg_transconv:{ckpt.get('package_version', '?')}:"
+                          f"{str(ckpt.get('package_manifest_sha256', '?'))[:12]}x{len(paths)}")
         _log.info(
             "ECG model loaded: %d checkpoint(s), %d classes, filter_preset=%s, "
             "package=%s manifest=%s",
@@ -113,6 +117,11 @@ class EcgTransConvModel(ECGModel):
             ckpt.get("package_version", "?"),
             str(ckpt.get("package_manifest_sha256", "?"))[:12],
         )
+
+    @property
+    def model_id(self) -> str:
+        """Identity of the loaded weights (package, manifest, ensemble size)."""
+        return self._model_id
 
     @property
     def labels(self) -> list[str]:

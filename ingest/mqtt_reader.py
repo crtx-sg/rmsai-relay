@@ -18,7 +18,14 @@ from collections.abc import Iterable, Iterator
 from fractions import Fraction
 from typing import Any
 
-from common.schemas import GroundTruth, SignalWindow, Vital, VitalSample, WindowGeometry
+from common.schemas import (
+    GroundTruth,
+    Provenance,
+    SignalWindow,
+    Vital,
+    VitalSample,
+    WindowGeometry,
+)
 
 
 def _rate_to_str(rate: Fraction) -> str:
@@ -52,6 +59,7 @@ def window_to_packet(window: SignalWindow) -> dict[str, Any]:
             name: [{"value": s.value, "timestamp": s.timestamp} for s in samples]
             for name, samples in window.vitals_history.items()
         },
+        "provenance": window.provenance.model_dump() if window.provenance else None,
         "ground_truth": (
             {
                 "condition": window.ground_truth.condition,
@@ -108,6 +116,7 @@ def packet_to_window(packet: dict[str, Any]) -> SignalWindow:
         signal_quality={g: float(q) for g, q in packet.get("signal_quality", {}).items()},
         pacer=packet.get("pacer"),
         ground_truth=ground_truth,
+        provenance=Provenance(**packet["provenance"]) if packet.get("provenance") else None,
     )
 
 

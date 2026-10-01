@@ -20,7 +20,14 @@ import h5py
 
 from common.event_types import condition_code_to_name
 from common.redacting_logger import get_redacting_logger
-from common.schemas import GroundTruth, SignalWindow, Vital, VitalSample, WindowGeometry
+from common.schemas import (
+    GroundTruth,
+    Provenance,
+    SignalWindow,
+    Vital,
+    VitalSample,
+    WindowGeometry,
+)
 
 from .rates import to_rational_rate
 
@@ -94,7 +101,48 @@ def _read_metadata(hf: h5py.File, *, strict_units: bool) -> dict:
         "before_s": float(_meta_field(md, "seconds_before_event")),
         "after_s": float(_meta_field(md, "seconds_after_event")),
         "alarm_offset_s": float(_meta_field(md, "alarm_offset_seconds")),
+        "provenance": _file_provenance(md),
     }
+
+
+def _opt(md: h5py.Group, key: str):
+    v = _meta_field(md, key, None)
+    return None if v in (None, "") else v
+
+
+def _file_provenance(md: h5py.Group) -> dict:
+    """File-level source facts (see `Provenance`). Missing fields stay None; never raises."""
+    device = _opt(md, "device_info")
+    dataset = _opt(md, "source_dataset")
+    if dataset:
+        kind = "ecg_sigma"  # ecg_sigma reuses the simulator's device_info, so the dataset decides
+    elif device and "sim" in str(device).lower():
+        kind = "simulator"
+    else:
+        kind = "device"
+    return {
+        "kind": kind, "device": str(device) if device else None,
+        "dataset": str(dataset) if dataset else None,
+        "record": str(_opt(md, "record_id")) if _opt(md, "record_id") else None,
+        "subject": str(_opt(md, "ecgpkg_subject_id") or _opt(md, "subject_id") or "") or None,
+        "package": str(_opt(md, "ecgpkg_version")) if _opt(md, "ecgpkg_version") else None,
+        "split": str(_opt(md, "ecgpkg_split")) if _opt(md, "ecgpkg_split") else None,
+    }
+
+
+def _event_provenance(grp: h5py.Group, file_prov: dict) -> Provenance:
+    """File-level facts plus the event's own (offset in the source recording, labelling)."""
+    a = grp.attrs
+    sample = a.get("source_sample")
+    purity = a.get("label_purity")
+    method = _decode(a["label_method"]) if "label_method" in a else None
+    label = _decode(a["source_condition"]) if "source_condition" in a else None
+    return Provenance(
+        **file_prov,
+        source_sample=int(sample) if sample is not None else None,
+        label_purity=float(purity) if purity is not None else None,
+        label_method=method or None, source_label=label or None,
+    )
 
 
 def _check_window_math(group: str, n_samples: int, rate, before_s: float, after_s: float) -> None:
@@ -219,6 +267,7 @@ def read_event(hf: h5py.File, event_key: str, md: dict) -> SignalWindow:
         signal_quality=signal_quality,
         pacer=pacer,
         ground_truth=ground_truth,
+        provenance=_event_provenance(grp, md["provenance"]),
     )
 
 

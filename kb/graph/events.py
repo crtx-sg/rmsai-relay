@@ -35,8 +35,14 @@ def persist_monitored_event(
     vitals_plot_ref: str | None = None,
     hr_history: list | None = None,
     hr_history_ts: list | None = None,
+    extra: dict | None = None,
 ) -> str:
-    """MERGE a MonitoredEvent (by uuid) + its links. Returns the event id (== uuid)."""
+    """MERGE a MonitoredEvent (by uuid) + its links. Returns the event id (== uuid).
+
+    `extra` is a flat map of additional scalar/list properties (provenance, model identity, the
+    alert decision and its explanation, the evaluation outcome) set with `SET e += $extra`, so new
+    traceability fields don't widen this signature. None values are dropped.
+    """
     vitals = vitals or {}
     crit = criticality(event_type, mews_risk)
     driver.run_write(
@@ -58,6 +64,11 @@ def persist_monitored_event(
         hr_history=hr_history, hr_history_ts=hr_history_ts,
         pid=patient_id,
     )
+    if extra:
+        props = {k: v for k, v in extra.items() if v is not None}
+        if props:
+            driver.run_write("MATCH (e:MonitoredEvent {id:$uuid}) SET e += $props",
+                             uuid=uuid, props=props)
 
     if bed is not None:
         _, bed_label = bed
@@ -66,7 +77,9 @@ def persist_monitored_event(
             uuid=uuid, bed=bed_label,
         )
 
-    cond = link_condition or (ground_truth_condition if ground_truth_condition else None)
+    # The clinical condition link is the *prediction*. Ground truth is evaluation-only: linking it
+    # would let the answer key leak into clinical graph answers on labelled data.
+    cond = link_condition
     if cond:
         driver.run_write(
             "MERGE (c:Condition {id:$cid}) SET c.name=coalesce(c.name,$name) "
@@ -206,3 +219,47 @@ def get_patient_context(driver: GraphDriver, patient_id: str) -> dict:
         "surgeries": [s for s in r["surgeries"] if s],
         "medications": [m for m in r["medications"] if m],
     }
+
+
+def set_event_delivery(driver: GraphDriver, uuid: str, **delivery) -> None:
+    """Record what actually reached the clinician, after dispatch (None values are skipped).
+
+    Keys used: `delivered_app` (worklist push succeeded), `delivered_call` (call outcome:
+    answered / no_answer / invalid), `delivered_sms` (SMS fallback: sms_delivered / sms_failed).
+    The gate decision (`alert_gate`) says whether an alert was *due*; these say whether it *landed*.
+    """
+    props = {k: v for k, v in delivery.items() if v is not None}
+    if props:
+        driver.run_write("MATCH (e:MonitoredEvent {id:$uuid}) SET e += $props", uuid=uuid, props=props)
+
+
+#: Properties returned by `eval_events`: one row per event, everything the performance view needs.
+EVAL_FIELDS = (
+    "id", "timestamp", "event_type", "confidence", "ground_truth_condition", "criticality", "status",
+    "model_id", "model_classes", "eval_outcome", "eval_unscorable_reason", "alert_gate",
+    "alert_reason_code", "alert_basis", "why", "delivered_app", "delivered_call", "delivered_sms",
+    "source_kind", "source_dataset", "source_record", "source_subject", "source_sample",
+    "source_label", "source_label_method", "source_label_purity", "source_package", "source_split",
+)
+
+
+def eval_events(driver: GraphDriver, *, since: float | None = None, model_id: str | None = None,
+                dataset: str | None = None, labelled_only: bool = True) -> list[dict]:
+    """Events for the performance view/summary, newest first, with the patient pseudonym.
+
+    Filters are optional; `labelled_only` keeps events that have a ground truth.
+    """
+    fields = ", ".join(f"e.{f} AS {f}" for f in EVAL_FIELDS)
+    rows = driver.run_read(
+        f"""
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        WHERE ($since IS NULL OR e.timestamp >= $since)
+          AND ($model IS NULL OR e.model_id = $model)
+          AND ($dataset IS NULL OR e.source_dataset = $dataset)
+          AND (NOT $labelled OR e.ground_truth_condition IS NOT NULL)
+        RETURN p.id AS patient, {fields}
+        ORDER BY e.timestamp DESC
+        """,
+        since=since, model=model_id, dataset=dataset, labelled=labelled_only,
+    )
+    return [dict(r) for r in rows]

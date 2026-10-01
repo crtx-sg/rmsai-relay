@@ -56,6 +56,7 @@ def graph():
         d, uuid="evt-vf", patient_id="PT8001", timestamp=NOW - 3600,
         event_type="VENTRICULAR_FIBRILLATION", confidence=0.97, is_false_positive=False,
         mews_risk="High", ground_truth_condition="ventricular fibrillation", status="reported",
+        link_condition="VENTRICULAR_FIBRILLATION",  # the prediction (event_flow passes it)
         vitals=vit, bed=("Unit1", "Unit1-Bed01"),
         action_items=[{"text": "Initiate ACLS protocol", "priority": "high"}],
         signal_ref="hdf5://PT8001/evt-vf", ecg_plot_ref="plots/evt-vf.png",
@@ -65,6 +66,7 @@ def graph():
         d, uuid="evt-afib", patient_id="PT8001", timestamp=NOW - 1800,
         event_type="ATRIAL_FIBRILLATION", confidence=0.88, is_false_positive=False,
         mews_risk="Medium", ground_truth_condition="atrial fibrillation", status="reported",
+        link_condition="ATRIAL_FIBRILLATION",
         vitals=vit, bed=("Unit1", "Unit1-Bed01"),
         signal_ref="hdf5://PT8001/evt-afib", ecg_plot_ref="plots/evt-afib.png",
         vitals_plot_ref="plots/evt-afib-vitals.png",
