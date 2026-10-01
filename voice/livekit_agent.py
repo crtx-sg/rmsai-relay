@@ -740,6 +740,20 @@ def worker_config(role: str, config: Config = DEFAULT) -> Config:
     return config.telephony()
 
 
+def pin_cli_connection_env(config: Config, environ=None) -> None:
+    """Make livekit-agents' CLI connect where `config` says, not where the environment says.
+
+    The agents CLI declares `--url/--api-key/--api-secret` with `envvar=LIVEKIT_URL/...` and lets
+    them override `WorkerOptions`. `.env` loads the *app* server's `LIVEKIT_URL` into the
+    environment, so without this a `phone` worker silently registers on the local LiveKit instead
+    of the telephony one (its banner says Cloud; its "registered worker" line says localhost).
+    """
+    environ = os.environ if environ is None else environ
+    environ["LIVEKIT_URL"] = config.livekit_url
+    environ["LIVEKIT_API_KEY"] = config.livekit_api_key
+    environ["LIVEKIT_API_SECRET"] = config.livekit_api_secret
+
+
 def build_worker_options(config: Config | None = None):
     """Build `WorkerOptions` for the agent worker (LiveKit connection comes from config)."""
     from livekit.agents import WorkerOptions  # noqa: PLC0415
@@ -845,4 +859,5 @@ def run_agent(config: Config | None = None) -> None:  # pragma: no cover - needs
     if config.livekit_redispatch_on_start:
         _start_auto_redispatch(config)
 
+    pin_cli_connection_env(config)
     cli.run_app(build_worker_options(config))

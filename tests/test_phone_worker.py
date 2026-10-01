@@ -62,3 +62,15 @@ def test_compose_phone_worker_is_profiled_and_role_pinned():
     # the two health ports never collide under host networking
     assert "8082" in phone["environment"]["LIVEKIT_SIP_WORKER_HTTP_PORT"]
     assert "8091" in app["environment"]["LIVEKIT_WORKER_HTTP_PORT"]
+
+
+def test_cli_connection_env_is_pinned_to_the_worker_server():
+    # livekit-agents' CLI reads LIVEKIT_URL/API_KEY/API_SECRET from the environment and overrides
+    # WorkerOptions; .env holds the app server there, so the phone worker must re-pin them.
+    from voice.livekit_agent import pin_cli_connection_env
+
+    env = {"LIVEKIT_URL": "ws://localhost:7880", "LIVEKIT_API_KEY": "devkey",
+           "LIVEKIT_API_SECRET": "local-secret"}
+    pin_cli_connection_env(worker_config("phone", _SPLIT), env)
+    assert env == {"LIVEKIT_URL": "wss://voiceapptest.livekit.cloud", "LIVEKIT_API_KEY": "APIcloud",
+                   "LIVEKIT_API_SECRET": "cloud-secret"}
