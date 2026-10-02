@@ -32,6 +32,9 @@
     #login input { font-size: 1rem; padding: .4rem .6rem; width: 8rem; letter-spacing: .3em; }
     #login button { font-size: 1rem; padding: .4rem 1rem; }
     #login .err { color: #c0392b; margin-top: .5rem; min-height: 1.2em; }
+    #reauth { border: 1px solid var(--sub); border-radius: 6px; background: var(--panel); color: var(--fg); }
+    #reauth input { font-size: 1rem; padding: .4rem .6rem; width: 8rem; letter-spacing: .3em; }
+    #reauth .err { color: #c0392b; margin-top: .5rem; min-height: 1.2em; }
     table { border-collapse: collapse; width: 100%; }
     th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid #8884; }
     th { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; opacity: .7; }
@@ -143,6 +146,18 @@
     <button id="login-btn">Connect</button>
     <div class="err" id="login-err"></div>
   </section>
+
+  <!-- Re-auth: the session token lives 1 h. When the gateway answers 401, ask for the PIN again and
+       retry; the LiveKit room (worklist, chat, audio) stays connected throughout. -->
+  <dialog id="reauth">
+    <form method="dialog" id="reauth-form">
+      <p>Session expired. Enter the PIN to continue.</p>
+      <input id="reauth-pin" type="password" inputmode="numeric" autocomplete="off" maxlength="8" />
+      <button value="ok" id="reauth-ok">Continue</button>
+      <button value="cancel" formnovalidate>Cancel</button>
+      <div class="err" id="reauth-err"></div>
+    </form>
+  </dialog>
 
   <main id="worklist" class="hidden">
    <div id="wl-view">

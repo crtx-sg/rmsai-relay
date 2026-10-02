@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-10-02 trend-policy-1";
+const APP_BUILD = "2026-10-02 reauth-1";
 
 const LK = window.LivekitClient;
 
@@ -124,6 +124,63 @@ function render() {
   }
 }
 
+// POST to a session-gated gateway endpoint. The session token is the LiveKit join token, valid 1 h;
+// the room connection outlives it, so after an idle hour the worklist, chat and audio still work but
+// these calls get 401. Then: ask for the PIN once (concurrent 401s share the prompt), swap in the
+// fresh token and retry once. The room is not touched. Cancel returns the original 401 response.
+async function sessionPost(path, payload) {
+  const send = () => fetch(path, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...payload, session: session.token }),
+  });
+  const res = await send();
+  if (res.status !== 401) return res;
+  return (await reauth()) ? send() : res;
+}
+
+let reauthPending = null;
+function reauth() {
+  if (!reauthPending) reauthPending = promptPin().finally(() => { reauthPending = null; });
+  return reauthPending;
+}
+
+// Resolves true once a fresh session token is in place, false if the clinician cancels.
+function promptPin() {
+  const dlg = document.getElementById("reauth");
+  const pin = document.getElementById("reauth-pin");
+  const err = document.getElementById("reauth-err");
+  pin.value = ""; err.textContent = "";
+  return new Promise((resolve) => {
+    const form = document.getElementById("reauth-form");
+    const onSubmit = async (e) => {
+      if (e.submitter && e.submitter.value === "cancel") return;  // let the dialog close
+      e.preventDefault();
+      try {
+        const res = await fetch("/session", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ pin: pin.value.trim() }),
+        });
+        if (!res.ok) {
+          err.textContent = res.status === 401 ? "Incorrect PIN." : `Sign-in failed (${res.status}).`;
+          return;
+        }
+        session.token = (await res.json()).token;
+        dlg.close("ok");
+      } catch (x) {
+        err.textContent = "Could not reach the gateway.";
+      }
+    };
+    form.addEventListener("submit", onSubmit);
+    dlg.addEventListener("close", () => {
+      form.removeEventListener("submit", onSubmit);
+      resolve(dlg.returnValue === "ok");
+    }, { once: true });
+    dlg.returnValue = "";
+    dlg.showModal();
+    pin.focus();
+  });
+}
+
 // Mint a FRESH scoped link at click time, then view it. Worklist links carried in the inbox message
 // expire ~5 min after publish, so we don't reuse them — we ask the gateway (POST /artifact-link, PIN
 // proven by the session token) for a token that's fresh now. The chat "show" path already gets a
@@ -131,11 +188,7 @@ function render() {
 async function openArtifact(kind, eventId) {
   if (!session || !eventId) return;
   try {
-    const res = await fetch("/artifact-link", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ event_id: eventId, kind, session: session.token }),
-    });
+    const res = await sessionPost("/artifact-link", { event_id: eventId, kind });
     if (!res.ok) return artifactError(kind, res.status);
     const { url } = await res.json();
     viewArtifact(kind, url);
@@ -185,7 +238,8 @@ function renderSpark(values) {
 function artifactError(kind, info) {
   const detail = document.getElementById("detail");
   detail.classList.remove("hidden");
-  const msg = info === 404 ? "link expired or unavailable" : "could not load";
+  const msg = info === 404 ? "link expired or unavailable"
+    : info === 401 ? "session expired, click again to enter the PIN" : "could not load";
   detail.innerHTML = `<div class="meta">${esc(kind)}: ${esc(msg)}</div>`;
 }
 window.__artifactError = (kind) => artifactError(kind, 404);
@@ -195,11 +249,7 @@ window.__artifactError = (kind) => artifactError(kind, 404);
 async function ackEvent(eventId) {
   if (!session) return;
   try {
-    const res = await fetch("/ack", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event_id: eventId, session: session.token }),
-    });
+    const res = await sessionPost("/ack", { event_id: eventId });
     if (res.ok) {
       applyMessage(state, { type: "status", event_id: eventId, status: "acknowledged" });
       render();
@@ -324,11 +374,12 @@ async function showEventInfo(eventId, targetId) {
   el.classList.remove("hidden");
   el.innerHTML = `<div class="meta">Loading…</div>`;
   try {
-    const res = await fetch("/event-info", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ event_id: eventId, session: session.token }),
-    });
-    if (!res.ok) { el.innerHTML = `<div class="meta">No details (${res.status}).</div>`; return; }
+    const res = await sessionPost("/event-info", { event_id: eventId });
+    if (!res.ok) {
+      el.innerHTML = `<div class="meta">${res.status === 401 ? "Session expired: select the event again to enter the PIN."
+        : `No details (${res.status}).`}</div>`;
+      return;
+    }
     el.innerHTML = renderInfo(await res.json());
   } catch (e) {
     el.innerHTML = `<div class="meta">Could not load details.</div>`;
@@ -458,16 +509,16 @@ async function loadPerf() {
   const status = document.getElementById("perf-status");
   status.textContent = "loading…";
   const body = {
-    session: session.token,
     since: document.getElementById("f-since").value || null,
     dataset: document.getElementById("f-dataset").value || null,
     model: document.getElementById("f-model").value || null,
   };
   try {
-    const res = await fetch("/metrics", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-    });
-    if (!res.ok) { status.textContent = `could not load (${res.status})`; return; }
+    const res = await sessionPost("/metrics", body);
+    if (!res.ok) {
+      status.textContent = res.status === 401 ? "session expired" : `could not load (${res.status})`;
+      return;
+    }
     renderPerf(await res.json());
     status.textContent = `updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
