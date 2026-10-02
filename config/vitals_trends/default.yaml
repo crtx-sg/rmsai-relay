@@ -1,0 +1,29 @@
+# Vital-trend policy: when does a vital's history count as clinically *deteriorating*?
+#
+# A vital is deteriorating only when ALL of these hold over the event window's history:
+#   1. the trend is consistent:  Mann-Kendall p < alpha
+#   2. it is big enough:         |change over the window| >= min_change (time-based Sen's slope x span)
+#   3. it is abnormal and worse: the latest reading is outside `normal` AND moving away from it
+# A latest reading inside `normal` is never deteriorating. Moving back toward `normal` by at least
+# min_change is "improving". Anything else is "stable" (the reason is recorded and shown in the app).
+#
+# This file is the default for every hospital. To tune a hospital, create `<HOSPITAL_ID>.yaml` next
+# to it with only the keys that differ, e.g. config/vitals_trends/h1.yaml:
+#
+#   vitals:
+#     RespRate: {min_change: 3}
+#     HR: {normal: [55, 100]}
+#
+# `normal` is inclusive [low, high]. Defaults are the MEWS 0-score bands (Diastolic is not scored by
+# MEWS; 60-90 mmHg is a conventional range). min_change defaults are POC starting values pending
+# clinical sign-off.
+
+alpha: 0.05
+
+vitals:
+  HR:        {min_change: 10,  normal: [51, 100],   unit: bpm}
+  RespRate:  {min_change: 4,   normal: [9, 14],     unit: /min}
+  SpO2:      {min_change: 3,   normal: [94, 100],   unit: "%"}
+  Systolic:  {min_change: 20,  normal: [101, 200],  unit: mmHg}
+  Diastolic: {min_change: 10,  normal: [60, 90],    unit: mmHg}
+  Temp:      {min_change: 1.0, normal: [95.0, 101.1], unit: °F}

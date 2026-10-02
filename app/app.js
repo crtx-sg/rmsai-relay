@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-10-02 theme-samples-1";
+const APP_BUILD = "2026-10-02 trend-policy-1";
 
 const LK = window.LivekitClient;
 
@@ -335,15 +335,42 @@ async function showEventInfo(eventId, targetId) {
   }
 }
 
-// One deteriorating vital: the verdict, expandable to the readings it was computed from (the same
-// history the Mann-Kendall trend test ran on, oldest first) with a mini chart.
+// One vital trend: how far it moved over how long, judged against the hospital's policy (minimum
+// change + normal range), expandable to the readings it was computed from with a mini chart. The
+// Mann-Kendall p-value is only a tooltip: it measures how *consistent* the drift is, not its size.
+const TREND_REASON = {
+  below_min_change: (d) => `below the ${d.min_change} ${d.unit} threshold`,
+  within_normal: (d) => `within normal ${d.normal[0]}–${d.normal[1]}`,
+  toward_normal: (d) => `returning toward normal ${d.normal[0]}–${d.normal[1]}`,
+  away_from_normal: (d) => `outside normal ${d.normal[0]}–${d.normal[1]}, ≥ ${d.min_change} ${d.unit}`,
+};
+
+function fmtSpan(s) {
+  const m = Math.round(s / 60);
+  return m < 120 ? `${m} min` : `${(m / 60).toFixed(1)} h`;
+}
+
 function renderTrend(d) {
-  const p = d.p != null ? ` (p=${esc(d.p < 0.001 ? "<0.001" : Number(d.p).toPrecision(2))})` : "";
   const vals = (d.samples || []).map((s) => s.v);
-  const head = `${esc(d.vital)} ${esc(d.direction)}${p}`;
-  if (!vals.length) return `<div>${head}</div>`;
-  const span = d.samples.length > 1 ? Math.round((d.samples[d.samples.length - 1].t - d.samples[0].t) / 60) : 0;
-  return `<details><summary>${head} · ${vals.length} samples${span ? ` over ${span} min` : ""}</summary>` +
+  let head, tip = "";
+  if (d.change != null) {
+    const sign = d.change > 0 ? "+" : "";
+    const why = TREND_REASON[d.reason] ? ` — ${TREND_REASON[d.reason](d)}` : "";
+    head = `${esc(d.vital)} ${esc(d.direction)} ${sign}${esc(d.change)} ${esc(d.unit)}` +
+      `${d.span_s ? ` over ${fmtSpan(d.span_s)}` : ""}${d.latest != null ? ` (now ${esc(d.latest)})` : ""}${esc(why)}`;
+    if (d.p != null) {
+      tip = ` title="Mann-Kendall p=${esc(Number(d.p).toPrecision(2))}: how unlikely a drift this consistent is by chance. It measures consistency, not size; the threshold and normal range decide whether it matters."`;
+    }
+  } else {  // stored before the clinical policy: statistical verdict only
+    const p = d.p != null ? ` (p=${esc(d.p < 0.001 ? "<0.001" : Number(d.p).toPrecision(2))})` : "";
+    head = `${esc(d.vital)} ${esc(d.direction)}${p}`;
+  }
+  if (!vals.length) return `<div${tip}>${head}</div>`;
+  // the span is already in the head when the policy fields are present
+  const span = d.change == null && d.samples.length > 1
+    ? Math.round((d.samples[d.samples.length - 1].t - d.samples[0].t) / 60) : 0;
+  const n = `${vals.length} samples${span ? ` over ${span} min` : ""}`;
+  return `<details><summary${tip}>${head} · ${n}</summary>` +
     `<div class="samples">${miniSpark(vals)} ${vals.map(esc).join(" → ")}</div></details>`;
 }
 
@@ -381,6 +408,7 @@ function renderInfo(i) {
   const mews = vit.mews || {};
   const comps = (mews.components || []).map((c) => `${esc(c.name)} ${esc(c.value)} → ${esc(c.score)}`);
   const trends = (vit.deteriorating || []).map(renderTrend);
+  const quiet = (vit.not_alerting || []).map(renderTrend);
   const prov = i.provenance || {};
   const provRows = Object.entries(prov).map(([k, v]) => `<dt>${esc(k.replace(/_/g, " "))}</dt><dd>${esc(v)}</dd>`).join("");
   const delivery = Object.entries(i.delivery || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(" · ") || "–";
@@ -396,7 +424,8 @@ function renderInfo(i) {
       <dt>model</dt><dd>${esc(i.model_id || "–")}</dd></dl>
     <h3>Vitals</h3><dl>
       <dt>MEWS</dt><dd>${esc(mews.score)} (${esc(mews.risk)}; threshold ${esc(mews.threshold)})${comps.length ? ` — ${comps.join(", ")}` : ""}</dd>
-      <dt>deteriorating</dt><dd>${trends.length ? trends.join("") : "none"}</dd></dl>
+      <dt>deteriorating</dt><dd>${trends.length ? trends.join("") : "none"}</dd>${quiet.length
+        ? `<dt>trends, not alerting</dt><dd>${quiet.join("")}</dd>` : ""}</dl>
     <h3>Criticality &amp; decision</h3><dl>
       <dt>criticality</dt><dd>${esc(crit.level || i.criticality)}${crit.escalated_by && crit.escalated_by.length
         ? ` (from ${esc(crit.base)}, raised by ${crit.escalated_by.map(esc).join(", ")})` : ""}</dd>

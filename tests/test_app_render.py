@@ -49,6 +49,12 @@ def rendered(tmp_path_factory):
     x["vitals"]["deteriorating"] = [{"vital": "HR", "direction": "rising", "p": 0.0004,
                                      "samples": [{"t": 0.0, "v": 88}, {"t": 300.0, "v": 91},
                                                  {"t": 600.0, "v": 95}]}]
+    # the user-reported case: a statistically clear but clinically trivial RR drift
+    x["vitals"]["not_alerting"] = [{"vital": "RespRate", "verdict": "stable",
+                                    "reason": "below_min_change", "direction": "rising", "p": 0.0002,
+                                    "change": 1.6, "unit": "/min", "span_s": 3000.0,
+                                    "min_change": 4.0, "normal": [9.0, 14.0], "latest": 25,
+                                    "samples": [{"t": 0.0, "v": 24}, {"t": 3000.0, "v": 25}]}]
     info = {"event_id": "e2", "patient": "PT935761", "predicted": NSR, "confidence": 0.58,
             "truth": NSR, "outcome": "TN", "unscorable_reason": None, "model_id": "stub",
             "criticality": x["criticality"]["level"], "why": x["headline"], "explanation": x,
@@ -102,6 +108,13 @@ def test_trend_readings_expandable_with_chart(rendered):
     i = rendered["info"]
     assert "<details><summary>HR rising (p=&lt;0.001) · 3 samples over 10 min</summary>" in i
     assert "88 → 91 → 95" in i and 'svg class="mini"' in i
+
+
+def test_trend_not_alerting_shows_size_threshold_and_p_only_as_tooltip(rendered):
+    i = rendered["info"]
+    assert "trends, not alerting" in i
+    assert "RespRate rising +1.6 /min over 50 min (now 25) — below the 4 /min threshold" in i
+    assert 'title="Mann-Kendall p=0.00020:' in i and "p=0.00020)" not in i
 
 
 def test_theme_toggle_flips_black_and_white_without_storage(rendered):

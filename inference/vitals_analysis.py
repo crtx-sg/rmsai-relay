@@ -1,18 +1,24 @@
 """`VitalsAnalysis` wrapper over `ecgtranscnn.mews`.
 
-Computes MEWS (`calculate_mews`), per-vital Mann-Kendall trends (`assess_event_trends`), and
-rule-based ECG-vital correlation notes (`correlate_ecg_vitals`) from a `SignalWindow`, returning
-our `ClinicalAnalysis` contract. Statistical/rule-based today; swappable for a learned model.
+Computes MEWS (`calculate_mews`), per-vital trends, and rule-based ECG-vital correlation notes
+(`correlate_ecg_vitals`) from a `SignalWindow`, returning our `ClinicalAnalysis` contract.
+Statistical/rule-based today; swappable for a learned model.
 
-Resilience (error matrix): too-few history samples → `insufficient_data` trend; missing vitals →
-MEWS degrades rather than throwing.
+Trends: the vendored Mann-Kendall test supplies the p-value (and per-sample Sen slope); the
+direction is decided by the hospital's clinical-significance policy (`common.vitals_trends`:
+minimum change + normal range), not by statistical significance alone.
+
+Resilience (error matrix): fewer than 3 history samples → `insufficient_data` trend; missing
+vitals → MEWS degrades rather than throwing.
 """
 
 from __future__ import annotations
 
+from common.config import DEFAULT
 from common.interfaces import VitalsAnalysis
 from common.redacting_logger import get_redacting_logger
 from common.schemas import ClinicalAnalysis, MEWS, MEWSComponentScore, SignalWindow, VitalTrend
+from common.vitals_trends import TrendPolicy, classify_trend, load_trend_policy
 
 _log = get_redacting_logger("rmsai.inference.vitals")
 
@@ -25,24 +31,35 @@ def _latest_vitals(window: SignalWindow) -> dict[str, float]:
     return {name: v.value for name, v in window.vitals.items()}
 
 
-def _history_dicts(window: SignalWindow) -> dict[str, list[dict]]:
-    return {
-        name: [{"value": s.value, "timestamp": s.timestamp} for s in samples]
-        for name, samples in window.vitals_history.items()
-    }
-
-
 class MewsVitalsAnalysis(VitalsAnalysis):
-    def analyze(self, window: SignalWindow, event_type: str | None = None) -> ClinicalAnalysis:
-        # Lazy import: ecgtranscnn.mews lives under a package whose __init__ pulls torch.
-        from ecg_transcovnet.mews import (  # noqa: PLC0415
-            assess_event_trends,
-            calculate_mews,
-            correlate_ecg_vitals,
+    def __init__(self, policy: TrendPolicy | None = None):
+        # Default: this deployment's hospital policy. Loaded eagerly so a broken policy file fails
+        # at startup rather than on the first event.
+        self.policy = policy or load_trend_policy(DEFAULT.hospital_id, DEFAULT.vitals_trends_dir)
+
+    def _trend(self, name: str, samples: list) -> VitalTrend:
+        from ecg_transcovnet.mews import _classify_direction, mann_kendall  # noqa: PLC0415
+
+        pts = sorted((s.timestamp, s.value) for s in samples)
+        mk = mann_kendall([v for _, v in pts]) if len(pts) >= 3 else None
+        rule = self.policy.vitals.get(name)
+        if rule is None:  # a vital the policy doesn't cover: the vendored statistical verdict
+            if mk is None:
+                return VitalTrend(direction="insufficient_data")
+            return VitalTrend(direction=_classify_direction(name, mk), p=mk.p_value, slope=mk.slope)
+        v = classify_trend(pts, mk.p_value if mk else None, rule, self.policy.alpha)
+        return VitalTrend(
+            direction=v.direction, p=mk.p_value if mk else None, slope=mk.slope if mk else None,
+            reason=v.reason, change=v.change, span_s=v.span_s, latest=v.latest,
+            min_change=rule.min_change, normal_low=rule.normal_low, normal_high=rule.normal_high,
+            unit=rule.unit,
         )
 
+    def analyze(self, window: SignalWindow, event_type: str | None = None) -> ClinicalAnalysis:
+        # Lazy import: ecgtranscnn.mews lives under a package whose __init__ pulls torch.
+        from ecg_transcovnet.mews import calculate_mews, correlate_ecg_vitals  # noqa: PLC0415
+
         vitals = _latest_vitals(window)
-        history = _history_dicts(window)
         care_guidance: list[str] = []
 
         # --- MEWS (degrade gracefully if a component vital is missing) ---
@@ -67,13 +84,8 @@ class MewsVitalsAnalysis(VitalsAnalysis):
             care_guidance.append(f"Insufficient vitals for MEWS (missing {', '.join(missing)})")
 
         # --- Per-vital trends ---
-        trends: dict[str, VitalTrend] = {}
-        for t in assess_event_trends(history):
-            trends[t.vital_name] = VitalTrend(direction=t.direction, p=t.p_value, slope=t.slope)
-        # Vitals with history present but too short to assess -> insufficient_data.
-        for name in _TREND_VITALS:
-            if name not in trends and 0 < len(history.get(name, [])) < 2:
-                trends[name] = VitalTrend(direction="insufficient_data")
+        trends = {name: self._trend(name, window.vitals_history[name])
+                  for name in _TREND_VITALS if window.vitals_history.get(name)}
 
         # --- ECG-vital correlation notes (needs the prediction) ---
         correlations: list[str] = []

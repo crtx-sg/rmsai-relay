@@ -53,8 +53,10 @@ def test_vitals_driven_normal_rhythm_names_each_trend_with_direction():
     x = explain_event(_event("NORMAL_SINUS", 0.91, trends=trends), _CFG)
     assert x["decision"]["reason_code"] == "fp_override" and x["basis"] == "vitals"
     assert x["vitals"]["deteriorating"] == [
-        {"vital": "HR", "direction": "rising", "p": 0.012, "samples": []},
-        {"vital": "SpO2", "direction": "falling", "p": 0.03, "samples": []}]
+        {"vital": "HR", "verdict": "deteriorating", "reason": None, "direction": "rising",
+         "p": 0.012, "samples": []},
+        {"vital": "SpO2", "verdict": "deteriorating", "reason": None, "direction": "falling",
+         "p": 0.03, "samples": []}]
     assert x["criticality"] == {"level": "High", "base": "Low",
                                 "escalated_by": ["deteriorating vitals"]}
     assert x["headline"] == ("Shown because the vitals warrant it, not the rhythm: HR rising "

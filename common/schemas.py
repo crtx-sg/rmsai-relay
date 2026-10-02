@@ -136,6 +136,18 @@ class VitalTrend(BaseModel):
     # Mann-Kendall (Sen) slope: its sign says rising vs falling, which `direction` (deteriorating /
     # improving, a clinical judgement per vital) doesn't. None when unknown.
     slope: Optional[float] = None
+    # Clinical-significance layer (`common.vitals_trends`), all optional so older payloads parse.
+    # `reason`: why this direction — not_significant / below_min_change / within_normal /
+    # away_from_normal / toward_normal. `change` is signed, in `unit`, over `span_s` seconds;
+    # `min_change` and `normal_low`/`normal_high` are the hospital policy it was judged against.
+    reason: Optional[str] = None
+    change: Optional[float] = None
+    span_s: Optional[float] = None
+    latest: Optional[float] = None
+    min_change: Optional[float] = None
+    normal_low: Optional[float] = None
+    normal_high: Optional[float] = None
+    unit: Optional[str] = None
 
 
 class ClinicalAnalysis(BaseModel):

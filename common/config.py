@@ -84,6 +84,9 @@ class Config:
     # Call even when the ECG is a (confident) false positive, if the patient's vitals warrant it
     # (MEWS >= threshold or deteriorating). Overrides the NORMAL_SINUS ⇒ no-call guard (spec D10).
     criticality_fp_override_on_vitals: bool = True
+    # Per-hospital vital-trend policy (alpha, min clinically significant change, normal ranges):
+    # `<dir>/default.yaml`, overridden by `<dir>/<hospital_id>.yaml`. See common/vitals_trends.py.
+    vitals_trends_dir: str = "config/vitals_trends"
 
     # Outbound calling (§6.1 / D16)
     outbound_enabled: bool = False
@@ -285,6 +288,7 @@ class Config:
             criticality_mews_threshold=_i("CRITICALITY_MEWS_THRESHOLD", 3),
             criticality_escalate_on_deteriorating=_b("CRITICALITY_ESCALATE_ON_DETERIORATING", True),
             criticality_fp_override_on_vitals=_b("CRITICALITY_FP_OVERRIDE_ON_VITALS", True),
+            vitals_trends_dir=os.environ.get("VITALS_TRENDS_DIR", "config/vitals_trends"),
             outbound_enabled=_b("OUTBOUND_ENABLED", False),
             outbound_call_number=os.environ.get("OUTBOUND_CALL_NUMBER", ""),
             outbound_from=os.environ.get("OUTBOUND_FROM", ""),

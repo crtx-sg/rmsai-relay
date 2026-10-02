@@ -6,8 +6,10 @@ vitals analysis (MEWS sub-scores, Mann-Kendall trends). So the explanation can't
 behaviour; it re-states the same rules, it doesn't re-decide them.
 
 Unlike `vitals_override`, which stops at the first trigger, this lists **every** reason: MEWS at or
-above the threshold *and* each deteriorating vital with its direction (rising/falling, from the trend
-slope) and p-value. The headline leads with what the alert actually rests on: the rhythm when it
+above the threshold *and* each deteriorating vital with its direction (rising/falling), its change
+over the window and the hospital threshold it crossed. Consistent trends that did NOT count
+(too small, back inside the normal range, recovering) are listed separately as `not_alerting`, with
+the reason, so a statistically clear but clinically trivial drift is visible rather than alarming. The headline leads with what the alert actually rests on: the rhythm when it
 stands on its own, the vitals when it doesn't, so it never asserts a rhythm the classifier couldn't
 stand behind.
 
@@ -82,18 +84,19 @@ def explain_event(event, config: Config = DEFAULT) -> dict:
     mews_thr = config.criticality_mews_threshold
     components = [{"name": c.name, "value": round_vital(c.name, c.value), "score": c.score}
                   for c in sorted(a.mews.components, key=lambda c: -c.score) if c.score > 0]
-    deteriorating = []
-    # most significant first, so a capped headline shows the strongest evidence
-    for name, t in sorted(a.vital_trends.items(), key=lambda kv: (kv[1].p is None, kv[1].p or 0, kv[0])):
-        if t.direction != "deteriorating":
-            continue
-        direction = "rising" if (t.slope or 0) > 0 else "falling" if (t.slope or 0) < 0 else "changing"
-        deteriorating.append({"vital": name, "direction": direction, "p": t.p,
-                              "samples": _trend_samples(event, name)})
+    deteriorating, not_alerting = [], []
+    # strongest first (furthest past its threshold, then most significant), so a capped headline
+    # shows the strongest evidence
+    for name, t in sorted(a.vital_trends.items(), key=lambda kv: _strength(kv[1]) + (kv[0],)):
+        if t.direction == "deteriorating":
+            deteriorating.append(_trend_entry(event, name, t))
+        elif t.reason in _NOT_ALERTING_REASONS:
+            not_alerting.append(_trend_entry(event, name, t))
     vitals = {
         "mews": {"score": a.mews.score, "risk": a.mews.risk, "threshold": mews_thr,
                  "triggered": a.mews.score >= mews_thr, "components": components},
         "deteriorating": deteriorating,
+        "not_alerting": not_alerting,
         "trend_triggered": bool(deteriorating) and config.criticality_escalate_on_deteriorating,
     }
 
@@ -120,6 +123,53 @@ def explain_event(event, config: Config = DEFAULT) -> dict:
     return out
 
 
+# consistent trends that the clinical policy did not count as deterioration
+_NOT_ALERTING_REASONS = {"below_min_change", "within_normal", "toward_normal"}
+
+
+def _strength(t) -> tuple:
+    over = abs(t.change) / t.min_change if t.change is not None and t.min_change else 0.0
+    return (-over, t.p is None, t.p or 0)
+
+
+def _trend_entry(event, name: str, t) -> dict:
+    """One trend for the app/log: direction of travel, how far over how long, against which policy."""
+    d = {"vital": name, "verdict": t.direction, "reason": t.reason, "p": t.p,
+         "direction": _travel(t), "samples": _trend_samples(event, name)}
+    if t.change is not None:
+        d.update(change=_round_change(t), unit=t.unit or "", span_s=t.span_s,
+                 min_change=t.min_change, normal=[t.normal_low, t.normal_high],
+                 latest=round_vital(name, t.latest) if t.latest is not None else None)
+    return d
+
+
+def _round_change(t) -> float:
+    """One decimal, unless that would round a below-threshold change up to the threshold
+    (+0.99 °F shown as "+1.0, below the 1 °F threshold")."""
+    c = round(t.change, 1)
+    return round(t.change, 2) if t.min_change and abs(c) >= t.min_change > abs(t.change) else c
+
+
+def _travel(t) -> str:
+    x = t.change if t.change is not None else (t.slope or 0)
+    return "rising" if x > 0 else "falling" if x < 0 else "changing"
+
+
+def _trend_phrase(d: dict) -> str:
+    """`resp rate rising +6 /min over 52 min` — or, for an event stored before the clinical
+    policy existed (no change recorded), the old `resp rate rising (p=0.02)`."""
+    name = f"{_VITAL_NAMES.get(d['vital'], d['vital'])} {d['direction']}"
+    if d.get("change") is None:
+        return name + _p(d["p"])
+    span = f" over {_duration(d['span_s'])}" if d.get("span_s") else ""
+    return f"{name} {d['change']:+g} {d['unit']}".rstrip() + span
+
+
+def _duration(seconds: float) -> str:
+    m = round(seconds / 60)
+    return f"{m} min" if m < 120 else f"{m / 60:.1f} h"
+
+
 def _trend_samples(event, vital: str) -> list[dict]:
     """The readings the trend was computed from: the window's history for `vital`, oldest first,
     at display precision. The vitals analysis runs Mann-Kendall on exactly these (sorted by time),
@@ -131,7 +181,8 @@ def _trend_samples(event, vital: str) -> list[dict]:
 
 
 def _vitals_phrase(vitals: dict) -> str:
-    """`MEWS 6 ≥ 3 (HR 2, resp rate 2); HR rising (p=0.01), SpO₂ falling (p=0.03)` or ''."""
+    """`MEWS 6 ≥ 3 (HR 2, resp rate 2); HR rising +14 bpm over 40 min, SpO₂ falling -5 % over 2.5 h`
+    or ''."""
     parts = []
     m = vitals["mews"]
     if m["triggered"]:
@@ -139,8 +190,7 @@ def _vitals_phrase(vitals: dict) -> str:
         parts.append(f"MEWS {m['score']} ≥ {m['threshold']}" + (f" ({comp})" if comp else ""))
     det = vitals["deteriorating"]
     if det:
-        trends = ", ".join(f"{_VITAL_NAMES.get(d['vital'], d['vital'])} {d['direction']}{_p(d['p'])}"
-                           for d in det[:_MAX_TRENDS])
+        trends = ", ".join(_trend_phrase(d) for d in det[:_MAX_TRENDS])
         if len(det) > _MAX_TRENDS:
             trends += f" (+{len(det) - _MAX_TRENDS} more)"
         parts.append(trends)

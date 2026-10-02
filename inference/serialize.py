@@ -47,8 +47,7 @@ def event_to_dict(event: DeviceEvent, *, include_signals: bool = False) -> dict[
         "criticality": criticality(event.event_type, a.mews.risk),
         "mews": {"score": a.mews.score, "risk": a.mews.risk,
                  "components": [c.model_dump() for c in a.mews.components]},
-        "vital_trends": {n: {"direction": t.direction, "p": t.p, "slope": t.slope}
-                         for n, t in a.vital_trends.items()},
+        "vital_trends": {n: t.model_dump(exclude_none=True) for n, t in a.vital_trends.items()},
         "care_guidance": a.care_guidance,
         "vitals": {
             n: {"value": v.value, "units": v.units, "timestamp": v.timestamp}
@@ -125,7 +124,7 @@ def dict_to_event(payload: dict[str, Any]) -> DeviceEvent:
         mews=MEWS(score=int(mews["score"]), risk=mews["risk"],
                   components=[MEWSComponentScore(**c) for c in mews.get("components", [])]),
         vital_trends={
-            n: VitalTrend(direction=t["direction"], p=t.get("p"), slope=t.get("slope"))
+            n: VitalTrend(**{k: v for k, v in t.items() if k in VitalTrend.model_fields})
             for n, t in payload.get("vital_trends", {}).items()
         },
         care_guidance=list(payload.get("care_guidance", [])),

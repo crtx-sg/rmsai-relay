@@ -44,8 +44,7 @@ def render_event_report(event: DeviceEvent) -> str:
     if a.vital_trends:
         lines.append("- Vital trends:")
         for name, t in sorted(a.vital_trends.items()):
-            p = f" (p={t.p:.3f})" if t.p is not None else ""
-            lines.append(f"  - {name}: {t.direction}{p}")
+            lines.append(f"  - {name}: {t.direction}{_trend_detail(t)}")
     if a.care_guidance:
         lines.append("- Care guidance:")
         lines += [f"  - {g}" for g in a.care_guidance]
@@ -55,3 +54,24 @@ def render_event_report(event: DeviceEvent) -> str:
         lines.append(f"- {name}: {fmt_vital(name, v.value)} {v.units}".rstrip())
 
     return "\n".join(lines) + "\n"
+
+
+_REASON_TEXT = {
+    "not_significant": "no consistent trend",
+    "below_min_change": "below the {min_change:g} {unit} threshold",
+    "within_normal": "within normal {normal_low:g}–{normal_high:g}",
+    "away_from_normal": "outside normal {normal_low:g}–{normal_high:g}, ≥ {min_change:g} {unit}",
+    "toward_normal": "returning toward normal {normal_low:g}–{normal_high:g}",
+}
+
+
+def _trend_detail(t) -> str:
+    """` — +1.6 /min over 52 min, below the 4 /min threshold (p=0.000)`; just ` (p=…)` for a trend
+    without the clinical-policy fields."""
+    p = "" if t.p is None else " (p<0.001)" if t.p < 0.001 else f" (p={t.p:.3f})"
+    if t.change is None or t.reason not in _REASON_TEXT:
+        return p
+    why = _REASON_TEXT[t.reason].format(min_change=t.min_change or 0, unit=t.unit or "",
+                                        normal_low=t.normal_low or 0, normal_high=t.normal_high or 0)
+    span = f" over {round((t.span_s or 0) / 60)} min" if t.span_s else ""
+    return f" — {round(t.change, 2):+g} {t.unit or ''}{span}, {why}{p}".replace("  ", " ")
