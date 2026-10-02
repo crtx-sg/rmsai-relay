@@ -76,10 +76,14 @@ ECG_CHECKPOINTS=external/ecgtranscnn/models/real_v2/fold0.pt external/ecgtranscn
 ## 1. Bring up and confirm the real model is loaded
 
 ```bash
-make docker-up        # redis, neo4j, qdrant, livekit + consumer, voice-worker, gateway
-make docker-ps        # all Up; gateway "Up (healthy)"
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/     # 200
+make demo-up          # starts everything in dependency order, waits for health, then runs demo-check
+make demo-check       # read-only, any time: every line "ok" and READY, exit 0
+make demo-down        # stop + remove containers; data volumes are kept
 ```
+
+`demo-up` is safe to re-run on a live stack. `demo-check` prints a FAIL line with the fix for
+whatever is wrong. Its "livekit registration" line catches a voice worker that is "Up" but stopped
+trying to reach LiveKit: events still reach the app, but nothing speaks and chat gets no reply.
 
 **Confirm it is real_v2 and not the stub.** Do this before every demo; a stub fallback looks just
 like a bad model:
@@ -403,6 +407,7 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | Worklist empty / `cli.kb_dump --list` returns `[]` | `tests/test_graph_templates.py`, `tests/test_orchestrator.py`, `cli.kb_eval` reset the **live** Neo4j | redo §2, then republish (§5) |
 | In-app chat gets no reply | voice worker restarted after the app connected | `$RMSAI cli.dispatch --all-inbox` |
 | Voice worker loops on `:7880` | LiveKit container not running | `docker compose -f infra/docker-compose.yml up -d livekit` |
+| Events arrive, but no speech on select and no chat reply; `make demo-check` FAILs on voice-worker | worker started before LiveKit, retried 16x and stopped (the container stays "Up") | `docker restart infra-voice-worker-1`, or `make demo-up` |
 | `[poison] … refusing to publish non-pseudonym patient ref: '106'` | `data/real` curated before pseudonymization (older `cli.real_samples`) | re-run `pick`; purge the old ids from Neo4j/Qdrant before republishing, or the same event ids end up under two patients |
 | `inbox push failed … TwirpError … 503 no response from servers` | app not connected, so the inbox room doesn't exist | log in to the app, then publish again |
 | Neo4j `warn: null value eliminated in set function` | harmless driver notice: an `OPTIONAL MATCH` over a patient with no history rows | ignore |

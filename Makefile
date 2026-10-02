@@ -11,7 +11,7 @@
 .DEFAULT_GOAL := setup
 .PHONY: setup setup-all external weights test lint \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps docker-shell \
-        stores-up stores-down stores-check phone-up phone-down phone-logs
+        stores-up stores-down stores-check phone-up phone-down phone-logs demo-up demo-check demo-down
 
 COMPOSE := docker compose -f infra/docker-compose.yml
 # The backing services. These run in Docker even when the app runs on the host.
@@ -85,6 +85,22 @@ docker-build:
 # Bring up everything: redis, neo4j, qdrant, livekit + consumer, voice-worker, gateway.
 docker-up:
 	$(DOCKER_USER) $(COMPOSE) up -d
+
+# THE one command for the Docker demo: bring everything up in dependency order and prove it.
+# `--wait` blocks until every service is running/healthy; compose starts the app services only once
+# redis/neo4j/livekit report healthy, and restarts the voice worker whenever livekit is recreated.
+# Then demo-check verifies endpoints and start order. Safe to re-run on a live stack.
+demo-up:
+	$(DOCKER_USER) $(COMPOSE) up -d --wait --wait-timeout 180
+	@./infra/demo-check.sh
+
+# Read-only: is the running demo healthy and started in the right order? Exit 0 = ready.
+demo-check:
+	@./infra/demo-check.sh
+
+# Stop and remove every demo container (incl. the telephony phone worker). Volumes are kept, so the
+# graph, vectors and KB survive; `make demo-up` brings it all back.
+demo-down: docker-down
 
 # --profile telephony: `down` skips services whose profile isn't active, which would leave the
 # phone worker running.

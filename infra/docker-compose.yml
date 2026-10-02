@@ -121,11 +121,14 @@ services:
       - "${LIVEKIT_PORT:-7880}:7880"
       - "${LIVEKIT_RTC_PORT:-7881}:7881"
       - "7882:7882/udp"     # muxed UDP media (rtc.udp_port); TCP 7881 is the fallback
+    # A real probe, not `true`: the app services wait on `service_healthy`, and a voice worker that
+    # starts before the server answers retries 16x, then gives up for good while staying "Up".
     healthcheck:
-      test: ["CMD-SHELL", "true"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7880/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   # --- Phase 1: telemetry stream broker ---
   mosquitto:
@@ -188,7 +191,7 @@ services:
       qdrant:
         condition: service_started
       livekit:
-        condition: service_started
+        condition: service_healthy
 
   # The LiveKit agent worker: joins rooms and runs the real audio loop
   # (STT -> Handler[PIN gate -> de-id -> KB/graph -> grounded answer] -> TTS).
@@ -209,8 +212,19 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
+      # restart: recreating livekit (e.g. `make stores-up` after a config change) drops the worker's
+      # registration and every room; restart the worker with it so it re-registers.
       livekit:
-        condition: service_started
+        condition: service_healthy
+        restart: true
+    # livekit-agents' own health server: 503 "failed to connect to livekit" once the worker has
+    # given up connecting (it does not retry after that, and the process does not exit).
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${LIVEKIT_WORKER_HTTP_PORT:-8091}/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     # Cold start loads Whisper/Piper/orchestrator; give it room to shut down cleanly mid-call.
     stop_grace_period: 30s
 
@@ -248,7 +262,7 @@ services:
       neo4j:
         condition: service_healthy
       livekit:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:${GATEWAY_PORT:-8080}/ >/dev/null || exit 1"]
       interval: 15s
