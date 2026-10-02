@@ -19,6 +19,7 @@ from common.config import DEFAULT
 from common.providers import DeidentifyingLLM
 from common.schemas import ChatTurn
 from common.tracing import Tracer
+from common.vitals_format import fmt_vital
 from kb.graph.driver import GraphDriver
 from kb.graph.llm_router import route as llm_route
 from kb.graph.lookup import match_intent
@@ -131,6 +132,8 @@ def _fmt_value(key: str, value) -> str:
         from datetime import datetime, timezone  # noqa: PLC0415
 
         return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    if key in _VITAL_KEYS and isinstance(value, (int, float)):
+        return fmt_vital(key, value)  # integers; temperature to one decimal
     if isinstance(value, float):
         return f"{value:g}"  # 171.0 -> "171", 97.9 -> "97.9"
     # Event types / conditions are SNAKE_CASE ("AV_BLOCK_2_TYPE2"); TTS would read the underscores

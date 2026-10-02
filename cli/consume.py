@@ -81,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--count", type=int, default=10, help="Max messages per read batch.")
     parser.add_argument("--block-ms", type=int, default=5000, help="Block this long awaiting messages.")
     parser.add_argument("--once", action="store_true", help="Process one batch (incl. backlog) then exit.")
+    parser.add_argument("--trend-samples", action="store_true",
+                        help="Append to each [event] line the vital readings behind each "
+                             "deteriorating trend (what 'rising'/'falling' was computed from).")
     parser.add_argument("--perf-every", type=int, default=10,
                         help="Print a model-performance summary every N labelled events (0 = only "
                              "on exit). See also `cli.model_perf` for the summary from the graph.")
@@ -203,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                             alert_store=alert_store,
                             inbox_publisher=inbox_publisher, token_store=token_store,
                         )
-                        _report(result)
+                        _report(result, samples=args.trend_samples)
                         if result.trace is not None:
                             tracker.add(result.trace)
                         if args.transport == "webrtc" and result.called:
@@ -268,7 +271,7 @@ def _print_webrtc_join(config, event_uuid: str) -> None:
     print(f"      Token: {token}")
 
 
-def _report(result) -> None:
+def _report(result, *, samples: bool = False) -> None:
     if result.trace is not None:
         from orchestrator.event_log import event_log_line  # noqa: PLC0415
 
@@ -276,7 +279,7 @@ def _report(result) -> None:
         print(event_log_line(
             result.trace, app=result.app_dispatched if result.trace["gate"] else None,
             call=ob.outcome if ob is not None and ob.called else None,
-            sms=ob.fallback if ob is not None else None), flush=True)
+            sms=ob.fallback if ob is not None else None, samples=samples), flush=True)
     tag = f"{result.patient_ref}/{result.event_type}"
     if not result.called:
         extra = " [app worklist pushed]" if result.app_dispatched else ""

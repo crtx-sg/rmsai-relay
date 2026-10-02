@@ -44,7 +44,7 @@ def test_render_dump_shows_graph_and_vector():
     out = render_dump("evt1", _GRAPH_ROW, chunks)
     assert "GRAPH (Neo4j)" in out and "VECTOR (Qdrant)" in out
     assert "patient    : PT4543" in out
-    assert "HR 171" in out and "BP 136.0/92.0" in out
+    assert "HR 171" in out and "BP 136/92" in out
     assert "chunks: 1" in out
     assert "Alert for patient PT4543" in out
 

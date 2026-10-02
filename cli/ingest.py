@@ -68,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--explain", action="store_true",
                         help="Add `why` to each line: the headline of why the event is (or isn't) "
                              "alerted (orchestrator.explain).")
+    parser.add_argument("--trend-samples", action="store_true",
+                        help="With --explain: add `trend_samples`, the readings behind each "
+                             "deteriorating trend.")
     parser.add_argument("--metrics", action="store_true",
                         help="Print the full model-performance breakdown (stderr) when events are "
                              "labelled.")
@@ -106,7 +109,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.explain:
             from orchestrator.explain import explain_event  # noqa: PLC0415
 
-            extra["why"] = explain_event(event, gate_config)["headline"]
+            x = explain_event(event, gate_config)
+            extra["why"] = x["headline"]
+            if args.trend_samples:
+                extra["trend_samples"] = {d["vital"]: [s["v"] for s in d["samples"]]
+                                          for d in x["vitals"]["deteriorating"]}
         if args.emit == "bus":
             msg_id = publish_to_bus(args.redis_url, args.stream, event_to_dict(event))
             audit.write(actor="cli.ingest", action="emit_event", subject=window.patient_ref,

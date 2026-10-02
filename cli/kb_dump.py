@@ -45,7 +45,10 @@ def fetch_event(driver, event_id: str) -> dict | None:
 
 
 def _fmt_vitals(ev: dict) -> str:
-    g = ev.get
+    from common.vitals_format import fmt_vital  # noqa: PLC0415
+
+    def g(k):
+        return fmt_vital(k, ev.get(k))
     return (f"HR {g('hr')}, BP {g('sbp')}/{g('dbp')}, SpO2 {g('spo2')}, "
             f"RR {g('rr')}, Temp {g('temp')}")
 

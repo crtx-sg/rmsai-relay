@@ -29,6 +29,11 @@ artifact links in inbox messages resolve here.
   confusion matrix, per-class table, and every labelled event (alerted or not), refreshing as events
   arrive. Rendering is tested in Node against a stub DOM (`tests/test_app_render.py`).
 
+- **Theme toggle** — header button switches a black or white background (default follows the OS;
+  the choice is kept in this browser's localStorage, best-effort).
+- **Trend evidence** — in the detail panel, each deteriorating vital expands to the readings the
+  trend test ran on, with a mini chart.
+
 **Stale-cache check:** the build tag (`APP_BUILD` in `app.js`) shows on screen; if it's old, the
 browser is running a cached `app.js`.
 

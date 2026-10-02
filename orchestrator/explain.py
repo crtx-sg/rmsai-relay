@@ -20,6 +20,7 @@ from dataclasses import replace
 
 from common.config import DEFAULT, Config
 from common.criticality import alert_basis, criticality, event_criticality, is_deteriorating
+from common.vitals_format import round_vital
 
 _VITAL_NAMES = {"HR": "HR", "SpO2": "SpO₂", "Systolic": "systolic BP", "Diastolic": "diastolic BP",
                 "RespRate": "resp rate", "Temp": "temp"}
@@ -79,7 +80,7 @@ def explain_event(event, config: Config = DEFAULT) -> dict:
 
     # --- vitals: every trigger, not just the first ---
     mews_thr = config.criticality_mews_threshold
-    components = [{"name": c.name, "value": c.value, "score": c.score}
+    components = [{"name": c.name, "value": round_vital(c.name, c.value), "score": c.score}
                   for c in sorted(a.mews.components, key=lambda c: -c.score) if c.score > 0]
     deteriorating = []
     # most significant first, so a capped headline shows the strongest evidence
@@ -87,7 +88,8 @@ def explain_event(event, config: Config = DEFAULT) -> dict:
         if t.direction != "deteriorating":
             continue
         direction = "rising" if (t.slope or 0) > 0 else "falling" if (t.slope or 0) < 0 else "changing"
-        deteriorating.append({"vital": name, "direction": direction, "p": t.p})
+        deteriorating.append({"vital": name, "direction": direction, "p": t.p,
+                              "samples": _trend_samples(event, name)})
     vitals = {
         "mews": {"score": a.mews.score, "risk": a.mews.risk, "threshold": mews_thr,
                  "triggered": a.mews.score >= mews_thr, "components": components},
@@ -116,6 +118,16 @@ def explain_event(event, config: Config = DEFAULT) -> dict:
     }
     out["headline"] = headline(out)
     return out
+
+
+def _trend_samples(event, vital: str) -> list[dict]:
+    """The readings the trend was computed from: the window's history for `vital`, oldest first,
+    at display precision. The vitals analysis runs Mann-Kendall on exactly these (sorted by time),
+    so this is the evidence behind "rising"/"falling". Empty when the history isn't available
+    (e.g. a payload that didn't carry it)."""
+    history = getattr(getattr(event, "window", None), "vitals_history", None) or {}
+    samples = sorted(history.get(vital, []), key=lambda s: s.timestamp)
+    return [{"t": s.timestamp, "v": round_vital(vital, s.value)} for s in samples]
 
 
 def _vitals_phrase(vitals: dict) -> str:

@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-10-01 model-perf-1";
+const APP_BUILD = "2026-10-02 theme-samples-1";
 
 const LK = window.LivekitClient;
 
@@ -335,6 +335,44 @@ async function showEventInfo(eventId, targetId) {
   }
 }
 
+// One deteriorating vital: the verdict, expandable to the readings it was computed from (the same
+// history the Mann-Kendall trend test ran on, oldest first) with a mini chart.
+function renderTrend(d) {
+  const p = d.p != null ? ` (p=${esc(d.p < 0.001 ? "<0.001" : Number(d.p).toPrecision(2))})` : "";
+  const vals = (d.samples || []).map((s) => s.v);
+  const head = `${esc(d.vital)} ${esc(d.direction)}${p}`;
+  if (!vals.length) return `<div>${head}</div>`;
+  const span = d.samples.length > 1 ? Math.round((d.samples[d.samples.length - 1].t - d.samples[0].t) / 60) : 0;
+  return `<details><summary>${head} · ${vals.length} samples${span ? ` over ${span} min` : ""}</summary>` +
+    `<div class="samples">${miniSpark(vals)} ${vals.map(esc).join(" → ")}</div></details>`;
+}
+
+function miniSpark(values) {
+  if (values.length < 2) return "";
+  const w = 200, h = 34, min = Math.min(...values), max = Math.max(...values), rng = (max - min) || 1;
+  const pts = values.map((v, i) => `${((i * w) / (values.length - 1)).toFixed(1)},${(h - 2 - ((v - min) * (h - 4)) / rng).toFixed(1)}`).join(" ");
+  return `<svg class="mini" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;
+}
+
+// --- theme: black or white background; remembered per browser (best-effort) --------------------
+function currentTheme() {
+  const set = document.documentElement.dataset.theme;
+  if (set) return set;
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function toggleTheme() {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("rmsai-theme", next); } catch (e) { /* storage unavailable: session only */ }
+  updateThemeButton();
+}
+
+function updateThemeButton() {
+  const b = document.getElementById("theme-btn");
+  if (b) b.textContent = currentTheme() === "dark" ? "☀ Light" : "☾ Dark";
+}
+
 function pct(x) { return typeof x === "number" ? `${Math.round(x * 100)}%` : "–"; }
 
 function renderInfo(i) {
@@ -342,8 +380,7 @@ function renderInfo(i) {
   const rh = x.rhythm || {}, vit = x.vitals || {}, crit = x.criticality || {}, dec = x.decision || {};
   const mews = vit.mews || {};
   const comps = (mews.components || []).map((c) => `${esc(c.name)} ${esc(c.value)} → ${esc(c.score)}`);
-  const trends = (vit.deteriorating || []).map((d) =>
-    `${esc(d.vital)} ${esc(d.direction)}${d.p != null ? ` (p=${d.p < 0.001 ? "<0.001" : Number(d.p).toPrecision(2)})` : ""}`);
+  const trends = (vit.deteriorating || []).map(renderTrend);
   const prov = i.provenance || {};
   const provRows = Object.entries(prov).map(([k, v]) => `<dt>${esc(k.replace(/_/g, " "))}</dt><dd>${esc(v)}</dd>`).join("");
   const delivery = Object.entries(i.delivery || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(" · ") || "–";
@@ -359,7 +396,7 @@ function renderInfo(i) {
       <dt>model</dt><dd>${esc(i.model_id || "–")}</dd></dl>
     <h3>Vitals</h3><dl>
       <dt>MEWS</dt><dd>${esc(mews.score)} (${esc(mews.risk)}; threshold ${esc(mews.threshold)})${comps.length ? ` — ${comps.join(", ")}` : ""}</dd>
-      <dt>deteriorating</dt><dd>${trends.length ? trends.join(", ") : "none"}</dd></dl>
+      <dt>deteriorating</dt><dd>${trends.length ? trends.join("") : "none"}</dd></dl>
     <h3>Criticality &amp; decision</h3><dl>
       <dt>criticality</dt><dd>${esc(crit.level || i.criticality)}${crit.escalated_by && crit.escalated_by.length
         ? ` (from ${esc(crit.base)}, raised by ${crit.escalated_by.map(esc).join(", ")})` : ""}</dd>
@@ -583,6 +620,10 @@ document.getElementById("rows").addEventListener("click", (e) => {
   const rowEl = t.closest("tr");
   if (rowEl && rowEl.dataset.eventId) selectEvent(rowEl.dataset.eventId);
 });
+
+// Theme toggle
+document.getElementById("theme-btn").addEventListener("click", toggleTheme);
+updateThemeButton();
 
 // Tabs + performance view
 document.getElementById("tabs").addEventListener("click", (e) => {

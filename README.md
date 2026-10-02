@@ -1206,10 +1206,10 @@ falling (p<0.001), HR rising (p<0.001), SpO₂ falling (p=0.0091). Rhythm reads 
 
 | Surface | What |
 |---|---|
-| `cli.ingest --explain --metrics` | `outcome` + `why` per event; the full breakdown on stderr |
-| consumer log (`make docker-logs`) | one `[event]` line per event (source · prediction vs truth → outcome · criticality · alert + delivery · why); a `[perf]` summary every `--perf-every` labelled events (default 10) and on exit |
+| `cli.ingest --explain --metrics` | `outcome` + `why` per event; the full breakdown on stderr; `--trend-samples` adds the readings behind each trend |
+| consumer log (`make docker-logs`) | one `[event]` line per event (source · prediction vs truth → outcome · criticality · alert + delivery · why; with `--trend-samples` in `CONSUME_ARGS`, also the readings behind each trend); a `[perf]` summary every `--perf-every` labelled events (default 10) and on exit |
 | `cli.model_perf` | the summary on request, from the graph: `--since 30m\|24h\|7d`, `--model`, `--dataset`, `--events`, `--json` |
-| companion app | worklist rows show the why line, a source badge (demo data only) and the outcome; selecting a row shows the full explanation + data source; the **Model performance** tab shows tiles, confusion matrix, per-class table and *every* labelled event, alerted or not, live-refreshing as events arrive |
+| companion app | worklist rows show the why line, a source badge (demo data only) and the outcome; selecting a row shows the full explanation + data source, and each "rising/falling" vital expands to the readings it was computed from (with a mini chart); the **Model performance** tab shows tiles, confusion matrix, per-class table and *every* labelled event, alerted or not, live-refreshing as events arrive |
 | graph | each `MonitoredEvent` stores `source_*`, `model_id`, `alert_gate` / `alert_reason_code`, `why` (+ `why_json`), `eval_outcome`, `delivered_app/call/sms`, `processed_at` |
 
 ```bash
@@ -1228,6 +1228,12 @@ $RMSAI cli.model_perf --since 1h --dataset mitbih
 - **Model mixing:** metrics are grouped **per model**; a summary mixing two models describes neither.
 - **Production data has no ground truth.** The performance view is for curated, labelled sets
   (`cli.real_samples`); on unlabelled data it says so.
+- **Display precision:** vitals are shown as integers, and temperature to one decimal, everywhere
+  people read or hear them (chat/voice answers, reports, the explanation, the app). Stored values stay
+  raw, since the trend tests and MEWS use them.
+- **Trend evidence:** "HR rising (p<0.001)" comes from a Mann-Kendall test on the vital's history in
+  the event window (typically 25–30 readings). The app and `--trend-samples` show exactly those
+  readings.
 - **Synthetic vitals:** for ecg_sigma data the vitals are synthetic (SpO₂/BP condition-keyed), so the
   vitals-driven parts of the alert-level metrics partly echo the label.
 

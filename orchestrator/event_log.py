@@ -69,12 +69,23 @@ def event_trace(event, config: Config = DEFAULT) -> dict:
         "criticality": x["criticality"]["level"],
         "gate": x["decision"]["dispatch"], "reason_code": x["decision"]["reason_code"],
         "why": x["headline"],
+        # The readings behind each deteriorating trend (oldest first), for `--trend-samples`.
+        "trend_samples": {d["vital"]: [s["v"] for s in d.get("samples", [])]
+                          for d in x["vitals"]["deteriorating"]},
     }
 
 
+def trend_samples_text(trace: dict) -> str:
+    """`trends: HR 88→90→94 (3 samples); SpO2 97→95 (2 samples)`, or '' when there are none."""
+    parts = [f"{vital} {'→'.join(str(v) for v in vals)} ({len(vals)} samples)"
+             for vital, vals in (trace.get("trend_samples") or {}).items() if vals]
+    return ("trends: " + "; ".join(parts)) if parts else ""
+
+
 def event_log_line(trace: dict, *, app: bool | None = None, call: str | None = None,
-                   sms: str | None = None) -> str:
-    """The `[event] …` line. Delivery parts appear only when they apply."""
+                   sms: str | None = None, samples: bool = False) -> str:
+    """The `[event] …` line. Delivery parts appear only when they apply; `samples` appends the
+    readings behind each deteriorating trend."""
     parts = [
         trace["patient"], trace["source"],
         f"pred {trace['predicted']} {trace['confidence']:.0%}",
@@ -88,7 +99,10 @@ def event_log_line(trace: dict, *, app: bool | None = None, call: str | None = N
         parts.append(f"call {call}")
     if sms:
         parts.append(sms.replace("_", " "))
-    return "[event] " + " · ".join(parts) + f" · why: {trace['why']}"
+    line = "[event] " + " · ".join(parts) + f" · why: {trace['why']}"
+    if samples and (text := trend_samples_text(trace)):
+        line += f" · {text}"
+    return line
 
 
 class PerfTracker:

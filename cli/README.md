@@ -7,7 +7,7 @@ Runnable harnesses, one per subsystem: `uv run python -m cli.<x>` on the host, o
   - `gen_synthetic`: synthetic signal/event generation.
   - `ingest`: HDF5 → model → `DeviceEvent`; `--file` or `--dir`, `--emit stdout|bus`, `--checkpoint`; each line has an `outcome`; `--explain` adds `why`, `--metrics` the full breakdown.
   - `real_samples`: `list` / `pick --pick LABEL:N,…`; held-out, labelled real-ECG events from an ecg_sigma package into `data/real/` (`PT9#####` pseudonyms).
-  - `consume`: bus consumer; persist + criticality-gated dispatch. `--channel voice|text`, `--caller simulated|livekit`, `--transport sip|webrtc`, `--notifier simulated|twilio`, `--number`, `--once`, `--perf-every N`. Logs an `[event]` line per event and a `[perf]` summary.
+  - `consume`: bus consumer; persist + criticality-gated dispatch. `--channel voice|text`, `--caller simulated|livekit`, `--transport sip|webrtc`, `--notifier simulated|twilio`, `--number`, `--once`, `--perf-every N`, `--trend-samples`. Logs an `[event]` line per event and a `[perf]` summary.
   - `model_perf`: model-performance summary on request from the graph (`--since`, `--model`, `--dataset`, `--events`, `--json`).
   - `outbound`: single-file outbound loop (`--no-answer`, `--fail-delivery`, `--notifier`).
 - **Knowledge base:** `kb_vector`, `kb_upload`, `graph`, `kb`, `kb_route`, `kb_dump`, `kb_eval`, `memory`.

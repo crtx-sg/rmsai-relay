@@ -53,8 +53,8 @@ def test_vitals_driven_normal_rhythm_names_each_trend_with_direction():
     x = explain_event(_event("NORMAL_SINUS", 0.91, trends=trends), _CFG)
     assert x["decision"]["reason_code"] == "fp_override" and x["basis"] == "vitals"
     assert x["vitals"]["deteriorating"] == [
-        {"vital": "HR", "direction": "rising", "p": 0.012},
-        {"vital": "SpO2", "direction": "falling", "p": 0.03}]
+        {"vital": "HR", "direction": "rising", "p": 0.012, "samples": []},
+        {"vital": "SpO2", "direction": "falling", "p": 0.03, "samples": []}]
     assert x["criticality"] == {"level": "High", "base": "Low",
                                 "escalated_by": ["deteriorating vitals"]}
     assert x["headline"] == ("Shown because the vitals warrant it, not the rhythm: HR rising "
@@ -141,3 +141,19 @@ def test_new_fields_survive_the_bus_and_old_payloads_still_parse():
     old = dict_to_event(payload)
     assert old.analysis.mews.components == [] and all(
         t.slope is None for t in old.analysis.vital_trends.values())
+
+
+def test_trend_samples_and_rounded_mews_values():
+    from common.schemas import VitalSample
+
+    ev = _event("NORMAL_SINUS", 0.91, mews=4, risk="Medium",
+                components=[("Respiratory Rate", 14.999999850000002, 1), ("Temperature", 101.26, 1)],
+                trends={"HR": VitalTrend(direction="deteriorating", p=0.001, slope=2.0)})
+    ev.window = SimpleNamespace(vitals_history={"HR": [
+        VitalSample(value=93.6, timestamp=30.0), VitalSample(value=88.2, timestamp=10.0),
+        VitalSample(value=90.49, timestamp=20.0)]})
+    x = explain_event(ev, _CFG)
+    assert {c["name"]: c["value"] for c in x["vitals"]["mews"]["components"]} == {
+        "Respiratory Rate": 15, "Temperature": 101.3}  # integers; temperature to one decimal
+    assert x["vitals"]["deteriorating"][0]["samples"] == [  # oldest first, display precision
+        {"t": 10.0, "v": 88}, {"t": 20.0, "v": 90}, {"t": 30.0, "v": 94}]

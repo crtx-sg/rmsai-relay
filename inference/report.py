@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from common.criticality import criticality
 from common.schemas import DeviceEvent
+from common.vitals_format import fmt_vital
 
 
 def render_event_report(event: DeviceEvent) -> str:
@@ -51,6 +52,6 @@ def render_event_report(event: DeviceEvent) -> str:
 
     lines += ["", "## Vitals at event", ""]
     for name, v in sorted(w.vitals.items()):
-        lines.append(f"- {name}: {v.value:g} {v.units}".rstrip())
+        lines.append(f"- {name}: {fmt_vital(name, v.value)} {v.units}".rstrip())
 
     return "\n".join(lines) + "\n"

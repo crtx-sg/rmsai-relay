@@ -45,6 +45,10 @@ def rendered(tmp_path_factory):
             _row("e3", AF, LBBB, "TP_WRONG_CLASS", dataset="incart")]
     ev = process_window(next(read_hdf5_file(_FIXTURE)), StubECGModel(), MewsVitalsAnalysis())
     x = explain_event(ev)
+    # a deteriorating trend with its readings, as the consumer stores it
+    x["vitals"]["deteriorating"] = [{"vital": "HR", "direction": "rising", "p": 0.0004,
+                                     "samples": [{"t": 0.0, "v": 88}, {"t": 300.0, "v": 91},
+                                                 {"t": 600.0, "v": 95}]}]
     info = {"event_id": "e2", "patient": "PT935761", "predicted": NSR, "confidence": 0.58,
             "truth": NSR, "outcome": "TN", "unscorable_reason": None, "model_id": "stub",
             "criticality": x["criticality"]["level"], "why": x["headline"], "explanation": x,
@@ -92,3 +96,16 @@ def test_worklist_row_shows_why_source_and_outcome(rendered):
     assert 'class="src"' in r and "INCART I05" in r
     assert "oc-TP" in r and "TP ✓" in r
     assert 'class="why"' in r and "Shown because the vitals warrant it." in r
+
+
+def test_trend_readings_expandable_with_chart(rendered):
+    i = rendered["info"]
+    assert "<details><summary>HR rising (p=&lt;0.001) · 3 samples over 10 min</summary>" in i
+    assert "88 → 91 → 95" in i and 'svg class="mini"' in i
+
+
+def test_theme_toggle_flips_black_and_white_without_storage(rendered):
+    t = rendered["theme"]
+    assert t["before"] in {"light", "dark"} and t["after"] in {"light", "dark"}
+    assert t["after"] != t["before"]
+    assert t["button"] in {"☀ Light", "☾ Dark"}

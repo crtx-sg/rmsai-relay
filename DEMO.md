@@ -308,6 +308,10 @@ reason (`below_threshold`, …).
 - **Model performance tab:** sensitivity, specificity, PPV and NPV with 95 % intervals, the confusion
   matrix, per-class precision/recall, and every labelled event *including those that weren't alerted*.
   It refreshes as events arrive.
+- **Trend evidence:** in a row's detail panel, each "rising/falling" vital expands to the readings it
+  was computed from, with a mini chart.
+- **Theme:** the header's ☾ Dark / ☀ Light button switches a black or white background, and the
+  browser remembers the choice.
 - **Terminal:** `$RMSAI cli.model_perf --events`, or watch the `[event]` lines in
   `docker compose -f infra/docker-compose.yml logs -f consumer`.
 

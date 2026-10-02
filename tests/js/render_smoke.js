@@ -14,6 +14,7 @@ const ctx = {
   console: { log() {}, warn() {}, error() {} }, Option: function (t, v) { this.text = t; this.value = v; },
   window: { LivekitClient: {} }, setTimeout, clearTimeout, Date,
   document: {
+    documentElement: { dataset: {} },
     getElementById: mk, querySelector: (q) => mk(q), querySelectorAll: () => [],
     createElement: () => ({ className: "", dataset: {}, innerHTML: "" }),
   },
@@ -28,9 +29,15 @@ const info = ctx.renderInfo(JSON.parse(fs.readFileSync(infoPath)));
 vm.runInContext(`applyMessage(state, ${fs.readFileSync(rowPath)}); render();`, ctx);
 const worklistRow = mk("rows").children.map((c) => c.innerHTML).join("");
 
+// theme toggle: no localStorage in this sandbox, so the toggle must still work (session only)
+const before = vm.runInContext("currentTheme()", ctx);
+vm.runInContext("toggleTheme()", ctx);
+const after = ctx.document.documentElement.dataset.theme;
+
 const all = models + rows + info + worklistRow;
 process.stdout.write(JSON.stringify({
   models, rows, info, worklistRow,
   datasetOptions: mk("f-dataset").options.map((o) => o.value),
+  theme: { before, after, button: mk("theme-btn").textContent },
   leaks: all.includes("${") || all.includes("undefined"),
 }));

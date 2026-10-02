@@ -7,9 +7,23 @@
   <!-- LiveKit browser client (control-plane data channel for the live worklist). Vendored locally
        (served by the gateway/edge) — no third-party CDN, so no PHI-context request leaves the edge. -->
   <script src="./vendor/livekit-client.umd.min.js"></script>
+  <script>
+    // Apply the saved theme before first paint (no flash). Storage can be unavailable (private
+    // mode, blocked site data): then the OS preference decides, via the CSS below.
+    try { const t = localStorage.getItem("rmsai-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
   <style>
-    :root { color-scheme: light dark; }
-    body { font: 14px/1.4 system-ui, sans-serif; margin: 0; }
+    /* Theme: white (light) or black (dark). Default follows the OS; the header toggle overrides it. */
+    :root { color-scheme: light; --bg: #ffffff; --fg: #1b1b1b; --sub: #5f5f5f; --panel: #f3f4f6; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { color-scheme: dark; --bg: #0f1115; --fg: #e8e8e8;
+                                        --sub: #a8a8a8; --panel: #1b1e24; }
+    }
+    :root[data-theme="dark"] { color-scheme: dark; --bg: #0f1115; --fg: #e8e8e8; --sub: #a8a8a8;
+                               --panel: #1b1e24; }
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
+    #theme-btn { background: transparent; color: #fff; border: 1px solid #fff6; border-radius: 4px;
+                 padding: .15rem .55rem; font-size: .78rem; cursor: pointer; }
     header { display: flex; align-items: center; gap: 1rem; padding: .75rem 1rem;
              background: #14213d; color: #fff; }
     header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
@@ -28,11 +42,11 @@
     .crit-High { color: #e67e22; }
     /* Rhythm confidence: quiet when the model is sure, marked when it isn't — an uncertain read
        must not look like an asserted finding (it can reach the worklist on the vitals override). */
-    .conf { font-variant-numeric: tabular-nums; color: #6b6b6b; }
+    .conf { font-variant-numeric: tabular-nums; color: var(--sub); }
     .conf.low { color: #c0392b; font-weight: 600; }
     /* Vitals-driven alert: the vital is the claim, the rhythm is only a suggestion. */
     .vitals-led { display: block; font-weight: 600; color: #8e44ad; }
-    .sub { display: block; font-size: .74rem; color: #6b6b6b; }
+    .sub { display: block; font-size: .74rem; color: var(--sub); }
     .badge { font-size: .7rem; padding: .1rem .45rem; border-radius: 999px; border: 1px solid #8886; }
     .badge.new { background: #e67e2222; border-color: #e67e22; }
     .badge.acknowledged { background: #27ae6022; border-color: #27ae60; }
@@ -59,9 +73,15 @@
     #ptt { padding: .45rem .8rem; user-select: none; }
     #ptt.talking { background: #c0392b; color: #fff; }
     /* --- why / source / outcome on worklist rows --- */
-    .why { display: block; font-size: .74rem; color: #555a; max-width: 46rem; overflow: hidden;
+    .why { display: block; font-size: .74rem; color: var(--sub); max-width: 46rem; overflow: hidden;
            text-overflow: ellipsis; white-space: nowrap; }
-    @media (prefers-color-scheme: dark) { .why { color: #bbb; } }
+    /* trend samples (the readings behind "rising"/"falling") */
+    .info details { margin: .15rem 0; }
+    .info details summary { cursor: pointer; }
+    .info .samples { font-size: .74rem; color: var(--sub); font-variant-numeric: tabular-nums;
+                     background: var(--panel); padding: .3rem .5rem; border-radius: 4px; margin: .2rem 0; }
+    svg.mini { width: 14rem; height: 2.4rem; vertical-align: middle; }
+    svg.mini polyline { fill: none; stroke: #e67e22; stroke-width: 1.5; }
     .src { font-size: .68rem; padding: .05rem .4rem; border-radius: 4px; background: #2980b922;
            border: 1px solid #2980b966; margin-right: .3rem; white-space: nowrap; }
     .oc { font-size: .68rem; padding: .05rem .4rem; border-radius: 4px; border: 1px solid #8886;
@@ -112,6 +132,7 @@
       <button data-tab="perf">Model performance</button>
     </nav>
     <span id="room-label"></span>
+    <button id="theme-btn" title="Switch background">◐ Theme</button>
     <span id="status-pill">not connected</span>
   </header>
 
