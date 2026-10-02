@@ -174,7 +174,7 @@ A few design points that aren't obvious from the diagram:
 | Language / runtime | Python ≥3.10, managed with **`uv`**; `pytest` + `ruff`, type hints throughout |
 | Contracts | **pydantic v2** schemas (`common/schemas.py`) |
 | ECG classifier | **`ECG_TransConv`** (vendored `crtx-sg/ecgtranscnn`, PyTorch CPU), wrapped never reimplemented. Default artifact: the real-ECG `real_v2` 5-fold ensemble (13 classes) |
-| Vitals analysis | `ecgtranscnn` MEWS + Mann-Kendall trend + ECG-vital correlation (statistical) |
+| Vitals analysis | `ecgtranscnn` MEWS + Mann-Kendall trend + ECG-vital correlation (statistical), with a per-hospital clinical-significance policy on the trend (`config/vitals_trends/`) |
 | Event bus | **Redis Streams** (`rmsai.events`, consumer groups; partition by `patient_id`) |
 | Graph KB | **Neo4j** + Cypher (patient ↔ event ↔ condition ↔ treatment ↔ guideline ↔ bed/unit) |
 | Vector KB | **Qdrant** + embeddings (BGE via `sentence-transformers`, deterministic Hashing fallback) |
@@ -467,8 +467,9 @@ outbound-call gate, and all of its inputs are configurable (table above). It is 
    - the event is **not** the normal baseline (`CRITICALITY_NORMAL_EVENT`, default `NORMAL_SINUS`) —
      i.e. *any* real arrhythmia is at least High;
    - the **MEWS score ≥ `CRITICALITY_MEWS_THRESHOLD`** (default 3);
-   - a **vital is deteriorating** (Mann-Kendall trend), when `CRITICALITY_ESCALATE_ON_DETERIORATING`
-     is on.
+   - a **vital is deteriorating** (clinically significant trend, see
+     [Vital trends](#vital-trends-when-is-a-vital-deteriorating)), when
+     `CRITICALITY_ESCALATE_ON_DETERIORATING` is on.
 
    Escalation only ever raises to `High` — it never lowers an already-`Critical` event.
 3. **Call gate** (`should_call`) — dials out when `outbound_enabled` and the criticality is at or
@@ -507,6 +508,60 @@ so the call still fires. This case is made explicit at three layers so it is nev
 
 Set `CRITICALITY_FP_OVERRIDE_ON_VITALS=false` to revert to the strict spec-D10 behaviour
 (NORMAL_SINUS ⇒ never call).
+
+### Vital trends: when is a vital deteriorating?
+
+Each event carries a history of 10–30 readings per vital (HR, RespRate, SpO2, Systolic, Diastolic,
+Temp). `common/vitals_trends.py` classifies each one against the hospital's policy in
+`config/vitals_trends/`. A vital is **deteriorating** only when all three hold:
+
+1. **Consistent:** the vendored Mann-Kendall test gives p < `alpha` (default 0.05).
+2. **Big enough:** the change over the window is at least the vital's `min_change`. The change is
+   Sen's slope per *second* times the window span, so unevenly spaced readings are handled.
+3. **Abnormal and getting worse:** the latest reading is outside the vital's `normal` range and moving
+   further away from it. A latest reading inside `normal` is never deteriorating.
+
+Moving back toward normal by at least `min_change` is **improving**. Everything else is **stable**, and
+the event records why:
+
+| `reason` | Meaning |
+|---|---|
+| `not_significant` | no consistent drift (p ≥ alpha) |
+| `below_min_change` | consistent, but smaller than `min_change` |
+| `within_normal` | big enough, but the latest reading is inside the normal range |
+| `toward_normal` | improving |
+| `away_from_normal` | deteriorating |
+
+**Defaults** (`config/vitals_trends/default.yaml`). Normal ranges are the MEWS 0-score bands; the
+minimum changes are POC starting values pending clinical sign-off.
+
+| Vital | `min_change` | `normal` |
+|---|---|---|
+| HR | 10 bpm | 51–100 |
+| RespRate | 4 /min | 9–14 |
+| SpO2 | 3 % | 94–100 |
+| Systolic | 20 mmHg | 101–200 |
+| Diastolic | 10 mmHg | 60–90 (MEWS does not score it; conventional range) |
+| Temp | 1.0 °F | 95.0–101.1 |
+
+**Per hospital.** Add `config/vitals_trends/<HOSPITAL_ID>.yaml` with only the keys that differ; it is
+merged over the default. An invalid file stops the producer at startup. `VITALS_TRENDS_DIR` moves the
+directory. Policy is applied when an event is analysed (`cli.ingest`), so a change affects **new events
+only**: stored events keep the verdict they were given.
+
+**Reading it in the app.** The event panel lists *deteriorating* vitals and, separately, *trends, not
+alerting*, each with the change, the time span, the current value and the threshold or range it was
+judged against. The p-value is only a tooltip: it says how *consistent* the drift is, not how large.
+With 25 readings, a steady 1–2 breaths/min drift scores p < 0.001.
+
+**Level vs trend.** MEWS scores each vital's *current level*; the trend judges its *change*. They can
+disagree. RR at a steady 23–25 /min scores 2 MEWS points (shown as `Respiratory Rate 25 → 2`, and it
+can make MEWS reach the threshold), while its trend is `below_min_change`. Both are correct.
+
+**Simulator caveat.** The simulated Diastolic BP is 35–49 mmHg for nearly every patient, below the 60–90
+normal range, so any 10 mmHg drift in it is flagged. That is an artefact of the data, not of the
+policy, and it is deliberately left as is. To quiet it for a demo, lower the Diastolic `normal` floor
+in a hospital file, for example `Diastolic: {normal: [30, 90]}`.
 
 ### Safety & PHI guarantees
 

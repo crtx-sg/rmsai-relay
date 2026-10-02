@@ -389,6 +389,12 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
   - Pulse, SpO2, BP and Temp are *invented*, SpO2 and BP from **condition-keyed** ranges. So MEWS
     and vitals-driven criticality partly echo the label, not the patient.
   - On MIT-BIH, only leads II and V1 are recorded; the other limb leads are computed from them.
+- **"Deteriorating" means clinically significant, not just statistically consistent.** A vital must
+  move by at least the hospital's minimum change and end up outside its normal range (README,
+  "Vital trends"). Small drifts appear under *trends, not alerting* with the reason. MEWS scores
+  the current *level* separately, so a steady RR of 25 can add MEWS points while its trend is flat.
+  The simulated Diastolic BP (35–49 mmHg) sits below the normal range for nearly every patient, so
+  a 10 mmHg drift in it is flagged; that is the data, not the policy.
 - **Never use the train split for numbers.** For example, MIT-BIH record 105 scores 0.780, but it
   is in ecgpkg v2's *train* split. `pick` defaults to `test` for this reason.
 - **The data is public, de-identified research data** (PhysioNet). It is still pseudonymized
