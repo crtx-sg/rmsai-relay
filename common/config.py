@@ -320,7 +320,7 @@ class Config:
             stt_initial_prompt=os.environ.get("STT_INITIAL_PROMPT", CLINICAL_STT_PROMPT),
             piper_voice_path=os.environ.get("PIPER_VOICE_PATH", ""),
             elevenlabs_api_key=os.environ.get("ELEVENLABS_API_KEY", ""),
-            elevenlabs_voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+            elevenlabs_voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
             elevenlabs_tts_model=os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_flash_v2_5"),
             elevenlabs_stt_model=os.environ.get("ELEVENLABS_STT_MODEL", "scribe_v1"),
             elevenlabs_tts_sample_rate=_i("ELEVENLABS_TTS_SAMPLE_RATE", 22050),

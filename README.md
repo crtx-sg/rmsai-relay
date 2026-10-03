@@ -1223,6 +1223,202 @@ After `down -v` you are back to step 3 — re-initialize the KB, then re-ingest.
 
 ---
 
+## Testing the speech engines and the knowledge base
+
+Two checklists for "is this subsystem working, and how well?", independent of the companion app.
+Commands use `uv run` on the host; inside Docker, swap `uv run python -m` for `$RMSAI`
+(`docker compose -f infra/docker-compose.yml run --rm tools python -m`).
+
+### A. Speech engines (TTS and STT)
+
+**What is configured** (`.env`; the voice worker also prints the backends at startup):
+
+| Setting | Engine | Current demo value |
+|---|---|---|
+| `STT_BACKEND` | `whisper` (local) / `elevenlabs` (cloud) / `stub` | `elevenlabs` |
+| `ELEVENLABS_STT_MODEL` | ElevenLabs Scribe model | `scribe_v2` |
+| `WHISPER_MODEL` | faster-whisper model | `base.en` (`tiny.en` is faster, `small.en` more accurate) |
+| `STT_LANGUAGE` | pinned language, `auto` to detect | `en` |
+| `TTS_BACKEND` | `piper` (local) / `elevenlabs` (cloud) / `stub` | `elevenlabs` |
+| `ELEVENLABS_VOICE_ID` | ElevenLabs voice | `pNInz6obpgDQGcFmaJgB` (Adam, premade) |
+| `ELEVENLABS_TTS_MODEL` | ElevenLabs TTS model | `eleven_flash_v2` |
+| `PIPER_VOICE_PATH` | Piper `.onnx` voice file | `~/.local/share/piper/en_US-lessac-medium.onnx` |
+
+```bash
+docker logs infra-voice-worker-1 2>&1 | grep -m2 -E 'STT_BACKEND|TTS_BACKEND'   # what the worker runs
+```
+
+**1. Round-trip test, no microphone.** `cli.speech_check` synthesizes your text (TTS), transcribes it
+back (STT) and compares. Pick each leg independently to compare engines on the same sentence:
+
+```bash
+uv run python -m cli.speech_check --tts elevenlabs --stt elevenlabs --text "What were the vitals at the start of this event?"
+uv run python -m cli.speech_check --tts elevenlabs --stt whisper    --text "What were the vitals at the start of this event?"
+uv run python -m cli.speech_check --tts piper      --stt whisper    --text "Bed four, atrial fibrillation, MEWS five"
+uv run python -m cli.speech_check --interactive    # type sentences, 'quit' to exit
+uv run python -m cli.speech_check --out /tmp/say.wav   # also save the audio to listen to
+```
+
+```
+  said  : 'What were the vitals at the start of this event?'
+  heard : 'What were the vitals at the start of this event?'  [OK]
+  audio : 94252 bytes  |  TTS 743 ms  STT 793 ms
+  ...
+  said  : 'Bed four, atrial fibrillation, MEWS five'
+  heard : 'VED4, atrial fibrillation, NEWS 5.'  [differs]      <- base.en on clinical terms
+```
+
+`[differs]` on clean synthetic audio is an engine problem (model too small, vocabulary). Try a
+larger `WHISPER_MODEL` or the other backend.
+
+**2. A specific voice or model.** Settings come from `.env`, but a variable set on the command line
+wins, so you can try one without editing anything:
+
+```bash
+ELEVENLABS_VOICE_ID=<voice_id> uv run python -m cli.speech_check --tts elevenlabs --stt elevenlabs
+ELEVENLABS_STT_MODEL=scribe_v1 uv run python -m cli.speech_check --tts elevenlabs --stt elevenlabs
+WHISPER_MODEL=small.en         uv run python -m cli.speech_check --tts elevenlabs --stt whisper
+PIPER_VOICE_PATH=/path/to/en_GB-alan-medium.onnx uv run python -m cli.speech_check --tts piper --stt whisper
+```
+
+ElevenLabs voice ids are listed in the ElevenLabs web app under *Voices*. Limits seen on this
+account:
+
+- The **free tier only allows premade voices** via the API. A library voice fails with
+  `ElevenLabs API error 402: Free users cannot use library voices via the API`. `pNInz6obpgDQGcFmaJgB`
+  (Adam, also the default when `ELEVENLABS_VOICE_ID` is unset) works; `21m00Tcm4TlvDq8ikWAM` (Rachel)
+  does not.
+- Listing voices through the API (`GET /v1/voices`) needs a key with the `voices_read` permission.
+
+Piper voices are `.onnx` + `.onnx.json` pairs from the Piper voice list (rhasspy/piper-voices); put
+both files side by side and point `PIPER_VOICE_PATH` at the `.onnx`.
+
+**3. What the worker heard from the app.** When a spoken question gets a wrong answer, check the
+transcript before the KB:
+
+```bash
+docker logs -f infra-voice-worker-1 2>&1 | grep -E '\[worker\] (stt|heard|reply|ptt)'
+```
+
+```
+[worker] ptt: mic open (audio_enabled=True, linked=clinician-355eed)
+[worker] stt: transcribing 2.84s of audio (ElevenLabsSTT)
+[worker] heard: 'Welcome to the batteries and start of this unit'
+[worker] reply: "I don't have information on that in the knowledge base."
+```
+
+| Log | Meaning |
+|---|---|
+| `ptt` start/end but no `stt: transcribing` | no audio reached the worker (mic permission, released too early) |
+| `stt: transcribing …` then a garbled `heard:` | audio arrived but was poor: clipped start, low level, noise |
+| `heard:` correct, `reply:` wrong | speech is fine; investigate the KB (section B) |
+
+If the round-trip in step 1 is clean but the app transcripts are garbled, the problem is the mic
+audio, not the engine: press, wait about half a second, speak, release after you finish; a headset
+helps.
+
+> ⚠️ ElevenLabs is a cloud service. TTS text is de-identified first, but **STT sends raw audio**, so
+> use synthetic speech only, never real patients (hard rules 4 and 5).
+
+### B. Knowledge base (Neo4j graph + Qdrant vectors)
+
+**1. What is stored.**
+
+```bash
+# Neo4j: node counts by type (GUI: http://localhost:7474, neo4j / rmsai_dev_pw)
+docker exec infra-neo4j-1 cypher-shell -u neo4j -p rmsai_dev_pw \
+  "MATCH (n) RETURN labels(n)[0] AS label, count(*) AS n ORDER BY n DESC"
+
+# Qdrant: chunk count, vector size, and chunks per document (GUI: http://localhost:6333/dashboard)
+curl -s localhost:6333/collections/rmsai_docs | python3 -m json.tool | grep -E 'points_count|"size"'
+curl -s -X POST localhost:6333/collections/rmsai_docs/points/scroll -H 'content-type: application/json' \
+  -d '{"limit":1000,"with_payload":["doc_id"],"with_vector":false}' | python3 -c "
+import sys,json,collections
+pts=json.load(sys.stdin)['result']['points']
+c=collections.Counter(p['payload']['doc_id'].split('#')[0] for p in pts)
+[print(f'{n:4d}  {d}') for d,n in c.most_common()]"
+```
+
+Expect clinical documents (`afib_rvr.md`, `af_sop.pdf`, …) plus one `report:<event_id>` entry per
+consumed event. Vector size 384 means the BGE embedder (`EMBEDDER=bge`); 256 is the hashing embedder.
+Every indexing command must use the same embedder as the collection.
+
+**2. One event across both stores.**
+
+```bash
+uv run python -m cli.kb_dump --list            # recent event ids
+uv run python -m cli.kb_dump <event_id>        # graph node + report file + vector chunks
+uv run python -m cli.graph template outstanding_action_items
+uv run python -m cli.graph lookup "critical events in the last 24 hours"
+```
+
+**3. Add documents.** Markdown in `docs/` (top level) is the built-in corpus; anything else goes
+through `cli.kb_upload` (PDF, markdown, text). Uploads are incremental: an unchanged file is a no-op,
+an edited one replaces its chunks.
+
+```bash
+uv run --extra pdf python -m cli.kb_upload --file protocols/af_sop.pdf --dry-run   # preview chunks
+uv run --extra pdf python -m cli.kb_upload --file protocols/af_sop.pdf             # index it
+uv run --extra pdf python -m cli.kb_upload --dir protocols/ --glob '*.pdf' --extract  # + graph entities
+uv run python -m cli.kb_vector index --dir docs                                     # re-index docs/
+```
+
+Then confirm it is retrievable, and cited by page:
+
+```bash
+uv run python -m cli.kb_vector retrieve "rate control in atrial fibrillation"
+# [1] score=0.771  (af_sop.pdf#page 1)
+# [2] score=0.746  (afib_rvr.md#Overview)
+```
+
+Scanned (image-only) PDFs have no text and are rejected rather than indexed empty.
+
+**4. Answer quality for a question.**
+
+```bash
+uv run python -m cli.kb_route "what is the SOP for AF?"            # which path: template / LLM router / documents
+uv run python -m cli.kb_route --llm --patient PT992591 "how have their vitals been?"
+uv run python -m cli.kb --show-context "what is the SOP for atrial fibrillation?"   # answer + evidence blocks
+uv run python -m cli.kb --mode vector "what is the SOP for atrial fibrillation?"    # passages only, for comparison
+uv run python -m cli.kb_vector ask "what triggers escalation to critical care"      # grounded answer, declines off-corpus
+```
+
+Read the result against three questions: is the answer supported by the passages shown, are the
+citations the right document and page, and does an off-topic question decline instead of guessing?
+Retrieval scores on this corpus with BGE: on-topic 0.61–0.83, off-topic 0.35–0.54; answers need
+≥ `KB_MIN_RELEVANCE` (0.60) or a graph relationship. A declined turn logs both numbers and the top
+passage in the orchestrator log (see [Managing & inspecting the KB](#managing--inspecting-the-kb)).
+
+**5. Quality and performance benchmark.** `cli.kb_eval` runs a gold question set
+(`kb/eval/questions.json`) through vector-only and hybrid retrieval and reports correctness, citation
+grounding, context-token cost and latency. Its Qdrant index is in memory, but **by default it resets
+the live Neo4j** and seeds its own patient cohort:
+
+```bash
+uv run python -m cli.kb_eval --no-seed          # safe on a live demo graph
+uv run python -m cli.kb_eval                    # ⚠️ wipes Neo4j; re-run DEMO.md §2 and republish afterwards
+uv run python -m cli.kb_eval --no-seed --json   # raw report for comparing runs
+```
+
+```
+metric                          vector      hybrid
+correctness (overall)              71%         71%
+  correctness: passage            100%        100%
+  correctness: relationship          0%          0%     <- R1/R2 need the eval cohort (no --no-seed)
+  correctness: safety             100%        100%
+citation grounding                 60%         80%
+avg context tokens               260.7       292.6
+avg latency                      0.3ms      18.1ms
+```
+
+With `--no-seed` the relationship questions miss because they ask about the eval cohort's patients,
+which a demo graph doesn't have; passage and safety scores are the meaningful ones there. To check a
+new document, add questions about it to a copy of `questions.json` and pass `--questions <file>`.
+
+End-to-end latency of one answer includes model loading and the LLM call: `time uv run python -m
+cli.kb "<question>"` takes about 15 s from a cold start on `llama3.2:3b`, most of it process start
+and model load. See [8. Performance](#8-performance) for the knobs that change it.
+
 ## Model performance & traceability
 
 For every event the relay records, and shows in the logs, the CLI and the companion app:
