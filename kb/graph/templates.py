@@ -65,6 +65,26 @@ TEMPLATES: dict[str, str] = {
                e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
                e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
     """,
+    # MEWS for the selected worklist event / the session patient's latest event. The score and the
+    # vitals that contributed to it live in the event's stored explanation (`why_json`, written for
+    # every event at persist time); the answer renderer reads them from there and never voices the
+    # raw JSON. Routed by match_intent on MEWS / early-warning / criticality questions.
+    "mews_at_selected_event": """
+        MATCH (e:MonitoredEvent {uuid: $event_uuid})
+        OPTIONAL MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event_type,
+               e.criticality AS criticality, e.mews_risk AS mews_risk, e.why_json AS why_json,
+               e.timestamp AS ts
+    """,
+    "mews_at_patient_last_event": """
+        MATCH (p:Patient {id: $patient_id})-[:HAD_EVENT]->(e:MonitoredEvent)
+        WITH p, e ORDER BY e.timestamp DESC LIMIT 1
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event_type,
+               e.criticality AS criticality, e.mews_risk AS mews_risk, e.why_json AS why_json,
+               e.timestamp AS ts
+    """,
     # Vitals snapshot for the event the companion app has *selected* — the same shape as
     # `vitals_at_patient_last_event`, keyed by event uuid instead of "the patient's latest", so a
     # chat scoped to an older worklist row answers about that row's rhythm and not a newer one.

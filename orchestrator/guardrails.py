@@ -47,6 +47,24 @@ class InputDecision:
     message: str = ""  # refusal message when not allowed
 
 
+# Patient pseudonyms, as common/deid.py preserves them (rule #6).
+_PATIENT_REF = re.compile(r"\bPT\d+\b", re.IGNORECASE)
+
+#: What the clinician hears instead of an answer that names a patient the model was never given.
+UNCONFIRMED_PATIENT = ("I can't confirm that for this patient from the information I have. "
+                       "Please check the event details.")
+
+
+def foreign_patient_refs(answer: str, context: str, session_patient: str | None = None) -> list[str]:
+    """Patient ids named in a model answer that appear neither in the context it was given nor as
+    the session's patient. Any hit means the model invented or misattributed a patient, which on a
+    clinical relay is worse than no answer, so the caller replaces the answer."""
+    allowed = {m.upper() for m in _PATIENT_REF.findall(context)}
+    if session_patient:
+        allowed.add(session_patient.upper())
+    return sorted({m.upper() for m in _PATIENT_REF.findall(answer)} - allowed)
+
+
 def check_input(text: str) -> InputDecision:
     """Refuse unsafe inputs before retrieval/model. Returns allowed=False + a refusal message."""
     if _INJECTION.search(text):

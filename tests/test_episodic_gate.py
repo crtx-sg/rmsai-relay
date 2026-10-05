@@ -17,6 +17,7 @@ from orchestrator.orchestrator import Orchestrator
 class _FakeState:
     def __init__(self):
         self.patient_ref = None
+        self.event_ref = None  # the worklist event the app selected (read by match_intent)
         self.turns: list[ChatTurn] = []
 
 

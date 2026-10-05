@@ -35,6 +35,16 @@ _ALL_PATIENTS = re.compile(
 # The *analysis report* intent (T4). Word-boundary so "reported"/"reports" (the verb in
 # "events reported on bed") does NOT trigger it — only the noun "report"/"analysis".
 _REPORT = re.compile(r"\breport\b|\banalysis\b", re.IGNORECASE)
+# The patient's MEWS / early-warning score / criticality. STT hears "MEWS" as "NEWS" ("NEWS 5"),
+# so "news" counts only before "score" or a number, never in "any news on this patient?". A
+# definitional question about the score is a *document* question, not a lookup.
+_MEWS = re.compile(
+    r"\b(mews|news\s+(?:score|\d)|early warning|warning score|criticality)\b", re.IGNORECASE)
+_DEFINITIONAL = re.compile(
+    r"\b(how (?:is|are|do|does|to)|what does|means?|meaning|explain|definition|define|calculat\w*|"
+    r"formula|criteria|protocol|guideline|escalat\w*|threshold|when should)\b",
+    re.IGNORECASE,
+)
 # "this/current/same patient" — scopes a query to the session's patient (outbound call).
 _THIS_PATIENT = re.compile(r"\b(this|current|same) patient(?:'s|s)?\b", re.IGNORECASE)
 
@@ -76,6 +86,15 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # List all patients who had an event of a type ("show all patients with an AFib event").
     if etype and _ALL_PATIENTS.search(q):
         return "patients_with_event_type", {"event_type": etype}
+
+    # MEWS for the selected event, else the session patient's latest. Without this, "what is the
+    # MEWS score?" fell through to document retrieval, where no patient data is in context and a
+    # small model invented a patient (observed 2026-10-05).
+    if _MEWS.search(q) and not _DEFINITIONAL.search(q) and not bed:
+        if event_ref:
+            return "mews_at_selected_event", {"event_uuid": event_ref}
+        if patient_ref:
+            return "mews_at_patient_last_event", {"patient_id": patient_ref}
 
     # T5 — vitals at the event: a named bed wins (an explicit target beats the session's), then the
     # selected worklist event, then the session patient's latest.

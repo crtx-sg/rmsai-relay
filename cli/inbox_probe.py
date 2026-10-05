@@ -34,6 +34,11 @@ _TOPIC = "lk.chat"
 #: it turns "did the TTS actually run?" into something you can see without audio hardware — which is
 #: the only way to tell a silent speaker apart from a speech step that never fired.
 _TOPIC_SPOKEN = "lk.transcription"
+# The worker only answers chat from participants it has registered as human/SIP (it drops unknown
+# senders, which could be another agent: `chat_sender_allowed`). Its participant list updates a
+# moment after we join, so a message sent immediately is ignored (`lk.chat ignoring probe-cli
+# (kind=None…)`). Wait this long after joining before sending.
+_SETTLE_S = 2.0
 
 
 async def _run(messages: list[str], *, wait_s: float, config: Config) -> int:
@@ -67,6 +72,7 @@ async def _run(messages: list[str], *, wait_s: float, config: Config) -> int:
     print(f"agents in room: {agents or 'NONE (no worker joined — nothing will answer)'}", flush=True)
 
     try:
+        await asyncio.sleep(_SETTLE_S)
         for msg in messages:
             print(f"  -> {msg}", flush=True)
             await room.local_participant.send_text(msg, topic=_TOPIC)

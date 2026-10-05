@@ -11,6 +11,7 @@ checkpointer and node boundaries are already in place).
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -29,7 +30,7 @@ from kb.vector.answer import _best_overlap
 from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
 
-from .guardrails import Guardrails
+from .guardrails import UNCONFIRMED_PATIENT, Guardrails, foreign_patient_refs
 
 _MIN_OVERLAP = 0.18
 
@@ -96,7 +97,7 @@ _MAX_HISTORY = 6
 _ANSWER_INSTRUCTIONS = (
     "You are a clinical relay assistant answering a clinician over voice or chat. Using ONLY the "
     "facts in the context below, answer the question directly in one or two short sentences. State "
-    "the specific values, patient IDs (e.g. PT4543), and bed labels exactly as given in the context "
+    "the specific values, patient IDs, and bed labels exactly as given in the context "
     "— do not say information is unavailable when it is listed. Do NOT greet, restate the question, "
     "explain your reasoning, add disclaimers, mention internal field/table/report names, or offer "
     "further help. Only if the context contains no matching records, say so in one short sentence."
@@ -203,7 +204,10 @@ def _row_to_sentence(row: dict) -> str:
     mews = r.pop("mews_risk", None)
     if mews is None:
         mews = r.pop("mews", None)
-    if mews:
+    mews_detail = _mews_from_explanation(r.pop("why_json", None))  # never voiced raw
+    if mews_detail:
+        clauses.append(mews_detail)
+    elif mews:
         clauses.append(f"MEWS risk {mews}")
     # `false_positive` is a bool: voice "flagged as a false positive" only when True; a bare
     # "false positive False" reads as noise, so drop it otherwise.
@@ -230,6 +234,22 @@ def _row_to_sentence(row: dict) -> str:
 
     text = text.strip().strip(";").strip()
     return (text + ".") if text else "a record with no details."
+
+
+def _mews_from_explanation(why_json) -> str | None:
+    """`MEWS 6 (High); contributing: Respiratory Rate 25 scores 2, …` from an event's stored
+    explanation (`why_json`), or None when it is missing or unreadable (the caller then falls back to
+    the MEWS risk alone)."""
+    if not why_json:
+        return None
+    try:
+        m = json.loads(why_json)["vitals"]["mews"]
+        text = f"MEWS {m['score']} ({m['risk']})"
+    except (ValueError, KeyError, TypeError):
+        return None
+    comps = ", ".join(f"{c['name']} {c['value']} scores {c['score']}"
+                      for c in m.get("components") or [] if isinstance(c, dict))
+    return text + (f"; contributing: {comps}" if comps else "")
 
 
 def _trend_word(values: list) -> str:
@@ -427,6 +447,13 @@ class Orchestrator:
             with tracer.span("generate") as sp:
                 answer_text, failed = self._generate(prompt)  # de-id'd + retried inside
                 sp.attributes["llm_failed"] = failed
+                # Output guardrail: a patient the model was never given is invented or misattributed.
+                foreign = foreign_patient_refs(answer_text, prompt, state.patient_ref)
+                if foreign:
+                    print(f"[orchestrator] blocked answer naming patient(s) not in context: "
+                          f"{', '.join(foreign)}", flush=True)
+                    sp.attributes["blocked_patient_refs"] = foreign
+                    answer_text = UNCONFIRMED_PATIENT
             model_input = self.llm.deidentifier.deidentify(prompt)
 
         with tracer.span("persist"):

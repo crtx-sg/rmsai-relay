@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-10-02 reauth-1";
+const APP_BUILD = "2026-10-05 agent-reselect-1";
 
 const LK = window.LivekitClient;
 
@@ -327,7 +327,11 @@ async function connect(sess) {
   room.on(LK.RoomEvent.Reconnected, () => setStatus("live"));
   // The chat worker (agent) joins a few seconds after we connect; if a row was already selected,
   // (re)send the selection so it isn't lost to the join race.
-  room.on(LK.RoomEvent.ParticipantConnected, () => { if (currentSelection) sendSelect(currentSelection); });
+  // Only for the agent: anyone else joining (a second tab, `cli.inbox_probe`) must not make the
+  // worker announce the selected event again.
+  room.on(LK.RoomEvent.ParticipantConnected, (p) => {
+    if (p && p.isAgent && currentSelection) sendSelect(currentSelection);
+  });
 
   // The agent's typed reply arrives as a text stream on the chat topic.
   room.registerTextStreamHandler(CHAT_TOPIC, async (reader) => {
