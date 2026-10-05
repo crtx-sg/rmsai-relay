@@ -12,22 +12,17 @@ bradycardia reads as "improving"). This module adds the clinical layer on top of
 Only then is the vital `deteriorating`. Back toward normal by >= `min_change` is `improving`;
 anything else is `stable`, with a `reason` code saying which test it failed.
 
-Policy lives in `config/vitals_trends/default.yaml`, overridden key-by-key by
-`config/vitals_trends/<hospital_id>.yaml` when that file exists.
+Policy is the `vitals_trends:` section of the hospital config (`config/hospitals/default.yaml`,
+overridden key-by-key by `config/hospitals/<hospital_id>.yaml`; see `common.hospital_config`).
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 
-import yaml
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DIR = _REPO_ROOT / "config" / "vitals_trends"
-_HOSPITAL_ID = re.compile(r"^[A-Za-z0-9_-]+$")  # the id becomes a file name: no paths
+from .hospital_config import load_hospital_config
 
 # `reason` codes on a classified trend
 NOT_SIGNIFICANT = "not_significant"    # p >= alpha: no consistent drift
@@ -61,36 +56,11 @@ class TrendVerdict:
     latest: float | None = None
 
 
-def _merge(base: dict, override: dict) -> dict:
-    out = dict(base)
-    for k, v in (override or {}).items():
-        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
-    return out
-
-
-def _read(path: Path) -> dict:
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected a mapping at the top level")
-    return data
-
-
 def load_trend_policy(hospital_id: str = "", directory: str | Path | None = None) -> TrendPolicy:
-    """`default.yaml`, then `<hospital_id>.yaml` on top (if present). Raises ValueError on a bad
-    file or hospital id — a misconfigured alerting policy should stop startup, not run silently."""
-    d = Path(directory) if directory else DEFAULT_DIR
-    if not d.is_absolute():
-        d = _REPO_ROOT / d
-    raw = _read(d / "default.yaml")
-    sources = ["default.yaml"]
-    if hospital_id:
-        if not _HOSPITAL_ID.match(hospital_id):
-            raise ValueError(f"invalid hospital id for a trend policy file: {hospital_id!r}")
-        site = d / f"{hospital_id}.yaml"
-        if site.exists():
-            raw = _merge(raw, _read(site))
-            sources.append(site.name)
-
+    """The `vitals_trends` section of the hospital config. Raises ValueError on a bad file or
+    hospital id: a misconfigured alerting policy should stop startup, not run silently."""
+    hospital, source = load_hospital_config(hospital_id, directory)
+    raw = hospital.get("vitals_trends") or {}
     alpha = float(raw.get("alpha", 0.05))
     if not 0 < alpha < 1:
         raise ValueError(f"vitals_trends alpha must be in (0, 1), got {alpha}")
@@ -105,7 +75,7 @@ def load_trend_policy(hospital_id: str = "", directory: str | Path | None = None
         if rule.min_change <= 0 or rule.normal_low >= rule.normal_high:
             raise ValueError(f"vitals_trends {name}: min_change must be > 0 and low < high")
         vitals[name] = rule
-    return TrendPolicy(alpha=alpha, vitals=vitals, source=" + ".join(sources))
+    return TrendPolicy(alpha=alpha, vitals=vitals, source=source)
 
 
 def _change_over_window(samples: list[tuple[float, float]]) -> tuple[float, float]:

@@ -66,6 +66,10 @@ app = [
     "uvicorn>=0.27",
     "httpx>=0.27",
 ]
+llm-cloud = [
+    "anthropic>=1.11.0",
+    "openai>=2.41.1",
+]
 
 # Keep torch on the CPU wheel index — no GPU needed for the POC stub path,
 # and it keeps the install small.

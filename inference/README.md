@@ -1,6 +1,6 @@
 # inference
 
-ECGModel (wraps ecgtranscnn classifier+preprocessing) → event_type+confidence; FP gate; VitalsAnalysis (MEWS+trend); assembles enriched DeviceEvent + markdown report. Phase 1.
+ECGModel (wraps ecgtranscnn classifier+preprocessing) → event_type+confidence; FP gate; VitalsAnalysis (MEWS + per-vital trend, judged by the hospital trend policy in `common/vitals_trends.py`); assembles enriched DeviceEvent + markdown report. Phase 1.
 
 ## Which model
 

@@ -52,7 +52,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project \
-        --extra dev --extra rag --extra deid --extra voice --extra livekit --extra app --extra pdf
+        --extra dev --extra rag --extra deid --extra voice --extra livekit --extra app --extra pdf \
+        --extra llm-cloud
 
 # 2. Vendored ecgtranscnn (model + simulator). Installed NON-editable, unlike the host `make
 #    external`: the image must be importable on its own, and this is upstream code we don't edit.

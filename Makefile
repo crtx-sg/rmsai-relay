@@ -24,9 +24,11 @@ setup:
 	uv sync --extra dev
 	$(MAKE) external
 
-# Full setup: all optional extras (rag, deid, voice, livekit, app) + the spaCy model Presidio needs.
+# Full setup: all optional extras (rag, deid, voice, livekit, app, pdf, llm-cloud) + the spaCy model
+# Presidio needs.
 setup-all:
-	uv sync --extra dev --extra rag --extra deid --extra voice --extra livekit --extra app --extra pdf
+	uv sync --extra dev --extra rag --extra deid --extra voice --extra livekit --extra app --extra pdf \
+	    --extra llm-cloud
 	$(MAKE) external
 	uv run python -m spacy download en_core_web_sm
 

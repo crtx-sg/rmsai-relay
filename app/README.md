@@ -6,6 +6,9 @@ client vendored in `vendor/` (`livekit-client.umd.min.js`).
 - `index.html` / `app.js` — PIN login → `POST /session` → join the inbox room
   `rmsai-inbox-<hospital_id>` → render a live worklist from `event`/`status` data messages
   (live-push-only). `applyMessage(state, msg)` is the pure reducer behind the table.
+- **Session expiry** — the session lasts 1 h. After that a session-gated call (artifacts, details,
+  ack, metrics) gets 401; the app asks for the PIN in a dialog, swaps in the fresh token and retries
+  (`sessionPost` in `app.js`). The room, and with it the worklist, chat and audio, stays connected.
 
 Served by the gateway (`live/gateway.py`, run via `python -m cli.gateway`), same-origin so the scoped
 artifact links in inbox messages resolve here.
@@ -31,8 +34,10 @@ artifact links in inbox messages resolve here.
 
 - **Theme toggle** — header button switches a black or white background (default follows the OS;
   the choice is kept in this browser's localStorage, best-effort).
-- **Trend evidence** — in the detail panel, each deteriorating vital expands to the readings the
-  trend test ran on, with a mini chart.
+- **Trend evidence** — in the detail panel, each deteriorating vital shows its change, time span,
+  current value and the hospital threshold or range it crossed, and expands to the readings with a
+  mini chart. Consistent but clinically insignificant trends are listed separately under *trends,
+  not alerting*, with the reason. The Mann-Kendall p-value is only a tooltip.
 
 **Stale-cache check:** the build tag (`APP_BUILD` in `app.js`) shows on screen; if it's old, the
 browser is running a cached `app.js`.

@@ -6,6 +6,7 @@ Every value here is a deliberate POC simplification to revisit for production (s
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -84,9 +85,11 @@ class Config:
     # Call even when the ECG is a (confident) false positive, if the patient's vitals warrant it
     # (MEWS >= threshold or deteriorating). Overrides the NORMAL_SINUS ⇒ no-call guard (spec D10).
     criticality_fp_override_on_vitals: bool = True
-    # Per-hospital vital-trend policy (alpha, min clinically significant change, normal ranges):
-    # `<dir>/default.yaml`, overridden by `<dir>/<hospital_id>.yaml`. See common/vitals_trends.py.
-    vitals_trends_dir: str = "config/vitals_trends"
+    # Per-hospital policy files: vital trends, escalation (the criticality_* / confidence fields
+    # here) and outbound (outbound_*, dispatch_mode, the inbound allowlist). `<dir>/default.yaml`,
+    # overridden by `<dir>/<hospital_id>.yaml`; an env var overrides both. common/hospital_config.py
+    hospital_config_dir: str = "config/hospitals"
+    hospital_config_source: str = ""  # which files were loaded, e.g. "default.yaml + h1.yaml"
 
     # Outbound calling (§6.1 / D16)
     outbound_enabled: bool = False
@@ -119,10 +122,30 @@ class Config:
     neo4j_password: str = "rmsai_dev_pw"
     qdrant_url: str = "http://localhost:6333"
 
-    # LLM service (self-hosted default; cloud only on synthetic data)
-    llm_provider: str = "echo"  # echo (deterministic, offline) | ollama
+    # LLM service (self-hosted default; cloud only on synthetic data). Every provider sits behind
+    # DeidentifyingLLM, so prompts are de-identified before any call.
+    #   echo      deterministic, offline (tests)
+    #   ollama    self-hosted local model (LLM_MODEL)
+    #   anthropic Claude via the Anthropic API (ANTHROPIC_API_KEY, ANTHROPIC_MODEL)
+    #   gemini    Google Gemini via its OpenAI-compatible endpoint (GEMINI_API_KEY, GEMINI_MODEL)
+    #   openai    any OpenAI-compatible API: OpenAI, Mistral, Groq, OpenRouter, vLLM, LM Studio, ...
+    #             (OPENAI_API_KEY, OPENAI_MODEL, OPENAI_BASE_URL)
+    llm_provider: str = "echo"
     ollama_url: str = "http://localhost:11434"
-    llm_model: str = "llama3.2"
+    llm_model: str = "llama3.2"  # the Ollama model
+    # Cloud providers: per-answer output cap. 0 = the provider's own default (OpenAI-compatible APIs
+    # differ: reasoning models reject `max_tokens`, smaller hosted models cap below 16000); Anthropic
+    # requires a cap, so it uses 16000 when this is 0.
+    llm_max_tokens: int = 0
+    llm_timeout_s: float = 60.0  # cloud providers: per-request timeout
+    anthropic_model: str = "claude-opus-5-5"
+    # Thinking depth vs latency (low | medium | high | xhigh | max). Answers here are short and
+    # often spoken, so low keeps time-to-first-word down.
+    anthropic_effort: str = "low"
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
 
     # Embeddings (semantic + episodic memory, vector RAG)
     embedder: str = "hashing"  # hashing (offline) | bge | auto
@@ -280,24 +303,42 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        from .hospital_config import SETTINGS, hospital_settings, load_hospital_config  # noqa: PLC0415
+
+        # Hospital files supply the defaults for the escalation/outbound fields; an env var (shell
+        # or .env) still wins, and each such override is logged by name (values can be numbers).
+        hospital_id = os.environ.get("HOSPITAL_ID", "")
+        hospital_dir = os.environ.get("HOSPITAL_CONFIG_DIR", "config/hospitals")
+        raw, hospital_source = load_hospital_config(hospital_id, hospital_dir)
+        H = hospital_settings(raw)
+        overridden = [env for _f_, (_s, _k, env) in SETTINGS.items() if env in os.environ]
+        if overridden:
+            print(f"[config] environment overrides hospital config ({hospital_source}): "
+                  f"{', '.join(overridden)}", file=sys.stderr, flush=True)
         return cls(
-            fp_suppress_min_confidence=_f("FP_SUPPRESS_MIN_CONFIDENCE", 0.80),
-            low_confidence_caveat=_f("LOW_CONFIDENCE_CAVEAT", 0.60),
+            fp_suppress_min_confidence=_f("FP_SUPPRESS_MIN_CONFIDENCE", H["fp_suppress_min_confidence"]),
+            low_confidence_caveat=_f("LOW_CONFIDENCE_CAVEAT", H["low_confidence_caveat"]),
             inbound_auth_pin=os.environ.get("INBOUND_AUTH_PIN", "1234"),
-            criticality_normal_event=os.environ.get("CRITICALITY_NORMAL_EVENT", "NORMAL_SINUS"),
-            criticality_mews_threshold=_i("CRITICALITY_MEWS_THRESHOLD", 3),
-            criticality_escalate_on_deteriorating=_b("CRITICALITY_ESCALATE_ON_DETERIORATING", True),
-            criticality_fp_override_on_vitals=_b("CRITICALITY_FP_OVERRIDE_ON_VITALS", True),
-            vitals_trends_dir=os.environ.get("VITALS_TRENDS_DIR", "config/vitals_trends"),
-            outbound_enabled=_b("OUTBOUND_ENABLED", False),
-            outbound_call_number=os.environ.get("OUTBOUND_CALL_NUMBER", ""),
-            outbound_from=os.environ.get("OUTBOUND_FROM", ""),
-            outbound_min_criticality=os.environ.get("OUTBOUND_MIN_CRITICALITY", "High"),
-            outbound_min_arrhythmia_confidence=_f("OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE", 0.60),
-            outbound_max_retries=_i("OUTBOUND_MAX_RETRIES", 2),
-            outbound_retry_delay_s=_i("OUTBOUND_RETRY_DELAY_S", 30),
-            dispatch_mode=os.environ.get("DISPATCH_MODE", "app+call"),
-            hospital_id=os.environ.get("HOSPITAL_ID", ""),
+            criticality_normal_event=os.environ.get("CRITICALITY_NORMAL_EVENT",
+                                                    H["criticality_normal_event"]),
+            criticality_mews_threshold=_i("CRITICALITY_MEWS_THRESHOLD", H["criticality_mews_threshold"]),
+            criticality_escalate_on_deteriorating=_b("CRITICALITY_ESCALATE_ON_DETERIORATING",
+                                                     H["criticality_escalate_on_deteriorating"]),
+            criticality_fp_override_on_vitals=_b("CRITICALITY_FP_OVERRIDE_ON_VITALS",
+                                                 H["criticality_fp_override_on_vitals"]),
+            hospital_config_dir=hospital_dir,
+            hospital_config_source=hospital_source,
+            outbound_enabled=_b("OUTBOUND_ENABLED", H["outbound_enabled"]),
+            outbound_call_number=os.environ.get("OUTBOUND_CALL_NUMBER", H["outbound_call_number"] or ""),
+            outbound_from=os.environ.get("OUTBOUND_FROM", H["outbound_from"] or ""),
+            outbound_min_criticality=os.environ.get("OUTBOUND_MIN_CRITICALITY",
+                                                    H["outbound_min_criticality"]),
+            outbound_min_arrhythmia_confidence=_f("OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE",
+                                                  H["outbound_min_arrhythmia_confidence"]),
+            outbound_max_retries=_i("OUTBOUND_MAX_RETRIES", H["outbound_max_retries"]),
+            outbound_retry_delay_s=_i("OUTBOUND_RETRY_DELAY_S", H["outbound_retry_delay_s"]),
+            dispatch_mode=os.environ.get("DISPATCH_MODE", H["dispatch_mode"]),
+            hospital_id=hospital_id,
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             neo4j_uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
             neo4j_user=os.environ.get("NEO4J_USER", "neo4j"),
@@ -306,6 +347,15 @@ class Config:
             llm_provider=os.environ.get("LLM_PROVIDER", "echo"),
             ollama_url=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
             llm_model=os.environ.get("LLM_MODEL", "llama3.2"),
+            llm_max_tokens=_i("LLM_MAX_TOKENS", 0),
+            llm_timeout_s=_f("LLM_TIMEOUT_S", 60.0),
+            anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-opus-5-5"),
+            anthropic_effort=os.environ.get("ANTHROPIC_EFFORT", "low"),
+            gemini_model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+            gemini_base_url=os.environ.get(
+                "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
+            openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             embedder=os.environ.get("EMBEDDER", "hashing"),
             bge_model=os.environ.get("BGE_MODEL", "BAAI/bge-small-en-v1.5"),
             kb_min_relevance=_f("KB_MIN_RELEVANCE", 0.60),
@@ -354,7 +404,8 @@ class Config:
             twilio_sip_termination_uri=os.environ.get("TWILIO_SIP_TERMINATION_URI", ""),
             twilio_sip_username=os.environ.get("TWILIO_SIP_USERNAME", ""),
             twilio_sip_password=os.environ.get("TWILIO_SIP_PASSWORD", ""),
-            sip_inbound_allowed_numbers=_list("SIP_INBOUND_ALLOWED_NUMBERS"),
+            sip_inbound_allowed_numbers=(_list("SIP_INBOUND_ALLOWED_NUMBERS")
+                                         or H["sip_inbound_allowed_numbers"]),
             audio_wake_word=os.environ.get("AUDIO_WAKE_WORD", "hey vios"),
             audio_wake_window_s=_f("AUDIO_WAKE_WINDOW_S", 30.0),
             audio_wake_required=_b("AUDIO_WAKE_REQUIRED", True),

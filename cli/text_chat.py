@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session", default="text-desk")
     parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
                         help=f"Must match the KB collections (default from EMBEDDER: {DEFAULT.embedder}).")
-    parser.add_argument("--llm", default="echo", choices=["echo", "ollama"])
+    parser.add_argument("--llm", default="echo", choices=["echo", "ollama", "anthropic", "gemini", "openai"])
     args = parser.parse_args(argv)
 
     # deid backend comes from config (DEID_BACKEND: regex | presidio | auto)

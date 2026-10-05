@@ -69,8 +69,8 @@ not put the Cloud values there: that would move the app inbox and WebRTC to Clou
 
 1. **API** (dashboard → API): note the **Space URL** (`<space>.signalwire.com`), **Project ID** and an
    **API token**. The relay uses these for read-only checks; the call path itself doesn't.
-2. **Phone Numbers → Buy**: one voice-capable number. It becomes `OUTBOUND_FROM` (the caller ID and
-   the trunk's number).
+2. **Phone Numbers → Buy**: one voice-capable number. It becomes the hospital's `outbound.from` (the
+   caller ID and the trunk's number).
 
 `.env`:
 
@@ -79,9 +79,20 @@ TELEPHONY_CARRIER=signalwire
 SIGNALWIRE_SPACE=<space>.signalwire.com
 SIGNALWIRE_PROJECT_ID=<project id>
 SIGNALWIRE_API_TOKEN=<token>
-OUTBOUND_FROM=+1XXXXXXXXXX            # the SignalWire number
-OUTBOUND_CALL_NUMBER=+XXXXXXXXXXX     # the clinician / your mobile (also the default allowed caller)
 ```
+
+The phone numbers are per hospital, in `config/hospitals/<HOSPITAL_ID>.yaml` (copy
+`h1.example.yaml`; the file is gitignored). Quote them:
+
+```yaml
+outbound:
+  from: "+1XXXXXXXXXX"            # the SignalWire number
+  call_number: "+XXXXXXXXXXX"     # the clinician / your mobile (also the default allowed caller)
+  inbound_allowed_numbers: []     # other numbers allowed to call in
+```
+
+`OUTBOUND_FROM` / `OUTBOUND_CALL_NUMBER` / `SIP_INBOUND_ALLOWED_NUMBERS` in `.env` still work, as
+logged overrides.
 
 ## 3. The two SWML scripts
 
@@ -154,8 +165,8 @@ This creates, in the LiveKit Cloud project:
 
 | Object | Name | What it does |
 |---|---|---|
-| outbound trunk | `rmsai-outbound-signalwire` | address = `SIGNALWIRE_SIP_DOMAIN`, transport **TLS**, digest credentials, number = `OUTBOUND_FROM` |
-| inbound trunk | `rmsai-inbound-signalwire` | accepts calls *to* `OUTBOUND_FROM`, only *from* the allowed callers (`SIP_INBOUND_ALLOWED_NUMBERS`, else `OUTBOUND_CALL_NUMBER`). Never created with an empty allow-list |
+| outbound trunk | `rmsai-outbound-signalwire` | address = `SIGNALWIRE_SIP_DOMAIN`, transport **TLS**, digest credentials, number = `outbound.from` |
+| inbound trunk | `rmsai-inbound-signalwire` | accepts calls *to* `outbound.from`, only *from* the allowed callers (`outbound.inbound_allowed_numbers`, else `outbound.call_number`). Never created with an empty allow-list |
 | dispatch rule | `rmsai-inbound-dispatch-signalwire` | one `rmsai-call-…` room per inbound call; dispatches `rmsai-agent-phone` |
 
 It ends with `LIVEKIT_SIP_TRUNK_ID=ST_…`. Paste that line into `.env`. **The dry run can't print it,
@@ -181,13 +192,13 @@ restart).
 ## 8. Test
 
 ```bash
-# A. On-demand outbound: rings OUTBOUND_CALL_NUMBER, the agent asks for the PIN
+# A. On-demand outbound: rings the hospital's outbound.call_number, the agent asks for the PIN
 uv run python -m cli.call --caller livekit
 
 # B. Inbound: call your SignalWire number from an allowed phone → PIN prompt → ask a question
 
 # C. Event-driven alert call (the consumer container on the SIP transport)
-#    .env: DISPATCH_MODE=app+call ; then (Compose reads this from the shell, not .env):
+#    hospital file: outbound.dispatch_mode: app+call ; then (Compose reads this from the shell, not .env):
 CONSUME_ARGS="--channel voice --caller livekit --transport sip --number +XXXXXXXXXXX" make docker-up
 #    publish an event (DEMO.md §5); the phone rings → PIN → spoken alert → Q&A → "acknowledge"
 ```
@@ -207,8 +218,8 @@ CONSUME_ARGS="--channel voice --caller livekit --transport sip --number +XXXXXXX
 | `[sip_setup] PROBLEM: SIGNALWIRE_SIP_… is empty` | step 4 not in `.env` | step 4 |
 | `LIVEKIT_SIP_TRUNK_ID is not set` / `outcome=invalid` | step 6's id not pasted | step 6 |
 | `cli.call` answered but silence | the phone worker isn't running, or isn't on Cloud | step 7 |
-| Calling in rings out / is rejected | the number has no `rmsai-inbound` resource, or the caller isn't allowed | step 5; `SIP_INBOUND_ALLOWED_NUMBERS` |
-| `no destination: pass --number or set OUTBOUND_CALL_NUMBER` | a real call with no destination | set `OUTBOUND_CALL_NUMBER` or pass `--number` |
+| Calling in rings out / is rejected | the number has no `rmsai-inbound` resource, or the caller isn't allowed | step 5; `outbound.inbound_allowed_numbers` in the hospital file |
+| `no destination: pass --number or set OUTBOUND_CALL_NUMBER` | a real call with no destination | set `outbound.call_number` in the hospital file, or pass `--number` |
 
 **Note on retries:** a SIP error such as `603` counts as "no answer", so the relay retries
 (`OUTBOUND_MAX_RETRIES`, every `OUTBOUND_RETRY_DELAY_S`) and then, with `--notifier twilio`, sends

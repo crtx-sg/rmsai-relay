@@ -38,9 +38,9 @@ make phone-up && make phone-logs            # "registered worker" url must be th
 `voice/sip_setup.py` holds the code: `plan()` is pure and unit-tested; `apply()` runs against the SDK's
 `SipService`. Objects are idempotent by name, and each carrier has its own:
 - **SignalWire:** `rmsai-outbound-signalwire` (TLS + digest), `rmsai-inbound-signalwire` (matched on
-  `OUTBOUND_FROM`, `allowed_numbers` = call-in numbers), and `rmsai-inbound-dispatch-signalwire`
+  the hospital's `outbound.from`, `allowed_numbers` = call-in numbers), and `rmsai-inbound-dispatch-signalwire`
   (individual rule, `rmsai-call-…` room per call, agent `rmsai-agent-phone`).
-- **Twilio:** `rmsai-inbound-twilio` (digest + `allowed_numbers` = call-in numbers + `OUTBOUND_FROM`)
+- **Twilio:** `rmsai-inbound-twilio` (digest + `allowed_numbers` = call-in numbers + `outbound.from`)
   and `rmsai-inbound-dispatch` (callee rule: room = the SIP user part, agent named), plus
   `rmsai-outbound-twilio` only when `TWILIO_SIP_*` is set (paid).
 
@@ -53,11 +53,11 @@ in a room with nobody in it.
 1. stages the event's alert in the shared Redis for `rmsai-outbound-<event_id>`;
 2. dispatches `rmsai-agent-phone` into that room;
 3. dials `CreateSIPParticipant` through `LIVEKIT_SIP_TRUNK_ID` to `--number`, else
-   `OUTBOUND_CALL_NUMBER`, with `wait_until_answered` (`cli/consume.py: livekit_voice_wiring`).
+   the hospital's `outbound.call_number` (`config/hospitals/<HOSPITAL_ID>.yaml`), with `wait_until_answered` (`cli/consume.py: livekit_voice_wiring`).
 
 `cli.call --caller livekit` is the same dial into `rmsai-call-<id>` with no staged alert, so the
 worker runs the PIN-gated Q&A. Any SIP error counts as **no answer**: retried
-(`OUTBOUND_MAX_RETRIES`), then the SMS fallback (`--notifier twilio`). A missing trunk or number
+(`outbound.max_retries`), then the SMS fallback (`--notifier twilio`). A missing trunk or number
 fails fast.
 
 ## Inbound (call-in)

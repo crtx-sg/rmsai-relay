@@ -1,0 +1,33 @@
+# Hospital h1: overrides config/hospitals/default.yaml key by key (see its header).
+# Selected by HOSPITAL_ID=h1 in .env. TEMPLATE (committed): copy to h1.yaml and put the real numbers there.
+# Every setting is listed so this file is the one place to tune the site; delete a line to fall
+# back to the default. Phone numbers are E.164 and must be QUOTED.
+
+escalation:
+  normal_event: NORMAL_SINUS
+  mews_threshold: 3
+  escalate_on_deteriorating: true
+  fp_override_on_vitals: true
+  fp_suppress_min_confidence: 0.80
+  low_confidence_caveat: 0.60
+
+outbound:
+  dispatch_mode: app                  # app | call | app+call  (app+call for event-driven phone calls)
+  enabled: false
+  call_number: "+15551234567"               # the clinician's mobile
+  from: "+15557654321"                       # carrier voice number (caller ID + SMS sender)
+  min_criticality: High
+  min_arrhythmia_confidence: 0.60
+  max_retries: 2
+  retry_delay_s: 30
+  inbound_allowed_numbers: []         # e.g. ["+15551234567"]; empty = call_number only
+
+vitals_trends:
+  alpha: 0.05
+  vitals:
+    HR:        {min_change: 10,  normal: [51, 100],   unit: bpm}
+    RespRate:  {min_change: 4,   normal: [9, 14],     unit: /min}
+    SpO2:      {min_change: 3,   normal: [94, 100],   unit: "%"}
+    Systolic:  {min_change: 20,  normal: [101, 200],  unit: mmHg}
+    Diastolic: {min_change: 10,  normal: [60, 90],    unit: mmHg}   # [30, 90] quiets the simulator's low DBP
+    Temp:      {min_change: 1.0, normal: [95.0, 101.1], unit: °F}

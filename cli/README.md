@@ -15,7 +15,9 @@ Runnable harnesses, one per subsystem: `uv run python -m cli.<x>` on the host, o
 - **Companion app:** `gateway`, `inbox_publish`, `inbox_probe`.
 - **Telephony:**
   - `sip_setup`: provision the telephony LiveKit's trunks + dispatch rule for `TELEPHONY_CARRIER` (signalwire: outbound + inbound trunk, individual rule; twilio: inbound trunk + callee rule, outbound only on the paid path); `--dry-run`, `--swml`, `--twiml`.
-  - `call`: ring `OUTBOUND_CALL_NUMBER` on demand; `--caller livekit` needs `LIVEKIT_SIP_TRUNK_ID` (SignalWire, or Twilio paid).
+  - `call`: ring the hospital's `outbound.call_number` on demand; `--caller livekit` needs `LIVEKIT_SIP_TRUNK_ID` (SignalWire, or Twilio paid).
 
-Note: `consume` and `outbound` take the destination from `--number`, else `OUTBOUND_CALL_NUMBER`; a
-real call/SMS with neither refuses to start.
+Note: `consume` and `outbound` take the destination from `--number`, else the hospital's
+`outbound.call_number` (`config/hospitals/<HOSPITAL_ID>.yaml`; `OUTBOUND_CALL_NUMBER` overrides it); a
+real call/SMS with neither refuses to start. `text_chat --llm` accepts `echo`, `ollama`, `anthropic`,
+`gemini`, `openai`.

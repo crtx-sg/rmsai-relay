@@ -6,6 +6,8 @@ Mann-Kendall test, exactly as the analyzer runs it.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from common.vitals_trends import (
@@ -99,19 +101,16 @@ def test_change_uses_time_not_sample_count():
     assert uneven.change != even.change
 
 
-# --- policy files ---
+# --- policy files (the vitals_trends section of config/hospitals/*.yaml) ---
+
+_REPO_DEFAULT = Path(__file__).resolve().parents[1] / "config" / "hospitals" / "default.yaml"
 
 
-def _write(d, name, text):
-    (d / name).write_text(text, encoding="utf-8")
-
-
-_DEFAULT = """
-alpha: 0.05
-vitals:
-  HR:       {min_change: 10, normal: [51, 100], unit: bpm}
-  RespRate: {min_change: 4,  normal: [9, 14],   unit: /min}
-"""
+def _dir(tmp_path, site: str | None = None):
+    (tmp_path / "default.yaml").write_text(_REPO_DEFAULT.read_text(encoding="utf-8"), encoding="utf-8")
+    if site is not None:
+        (tmp_path / "h1.yaml").write_text(site, encoding="utf-8")
+    return tmp_path
 
 
 def test_repo_default_policy_loads_with_all_trend_vitals():
@@ -121,37 +120,32 @@ def test_repo_default_policy_loads_with_all_trend_vitals():
 
 
 def test_hospital_file_overrides_only_its_keys(tmp_path):
-    _write(tmp_path, "default.yaml", _DEFAULT)
-    _write(tmp_path, "h1.yaml", "alpha: 0.01\nvitals:\n  RespRate: {min_change: 3}\n")
-    p = load_trend_policy("h1", tmp_path)
+    d = _dir(tmp_path, "vitals_trends:\n  alpha: 0.01\n  vitals:\n    RespRate: {min_change: 3}\n")
+    p = load_trend_policy("h1", d)
     assert p.alpha == 0.01 and p.source == "default.yaml + h1.yaml"
     assert p.vitals["RespRate"].min_change == 3 and p.vitals["RespRate"].normal_high == 14
     assert p.vitals["HR"].min_change == 10
 
 
 def test_unknown_hospital_falls_back_to_default(tmp_path):
-    _write(tmp_path, "default.yaml", _DEFAULT)
-    assert load_trend_policy("h9", tmp_path).source == "default.yaml"
+    assert load_trend_policy("h9", _dir(tmp_path)).source == "default.yaml"
 
 
 @pytest.mark.parametrize("bad", ["../etc", "h1/x", "h 1"])
 def test_hospital_id_cannot_escape_the_directory(tmp_path, bad):
-    _write(tmp_path, "default.yaml", _DEFAULT)
     with pytest.raises(ValueError):
-        load_trend_policy(bad, tmp_path)
+        load_trend_policy(bad, _dir(tmp_path))
 
 
 @pytest.mark.parametrize("site", [
-    "vitals:\n  HR: {min_change: 0}\n",           # non-positive threshold
-    "vitals:\n  HR: {normal: [100, 51]}\n",       # inverted range
-    "vitals:\n  Pulse: {min_change: 5}\n",        # new vital without a normal range
-    "alpha: 1.5\n",
+    "vitals_trends:\n  vitals:\n    HR: {min_change: 0}\n",        # non-positive threshold
+    "vitals_trends:\n  vitals:\n    HR: {normal: [100, 51]}\n",    # inverted range
+    "vitals_trends:\n  vitals:\n    Pulse: {min_change: 5}\n",     # new vital without a normal range
+    "vitals_trends:\n  alpha: 1.5\n",
 ])
 def test_invalid_policy_fails_loudly(tmp_path, site):
-    _write(tmp_path, "default.yaml", _DEFAULT)
-    _write(tmp_path, "h1.yaml", site)
     with pytest.raises(ValueError):
-        load_trend_policy("h1", tmp_path)
+        load_trend_policy("h1", _dir(tmp_path, site))
 
 
 def test_analyzer_applies_the_policy_end_to_end():

@@ -49,3 +49,9 @@ infra/data/
 *.swp
 *.swo
 *~
+
+# Per-hospital site config holds real phone numbers: keep it local, like .env. default.yaml and
+# the *.example.yaml templates are committed.
+config/hospitals/*.yaml
+!config/hospitals/default.yaml
+!config/hospitals/*.example.yaml

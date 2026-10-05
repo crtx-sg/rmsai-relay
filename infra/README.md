@@ -10,7 +10,9 @@ Everything runs as a Docker service — the backing stores *and* the application
 
 ```bash
 make docker-build     # once, and after pyproject.toml / uv.lock / vendored-package changes
-make docker-up        # redis, neo4j, qdrant, livekit + consumer, voice-worker, gateway
+make demo-up          # start everything in dependency order, wait for health, then demo-check
+make demo-check       # read-only: containers, endpoints, voice worker registered with LiveKit
+make demo-down        # stop + remove containers (named volumes are kept)
 make docker-logs      # tail the three app services
 ```
 

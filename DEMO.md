@@ -23,8 +23,8 @@ can stay there. They are only used by four explicit options, none of them a defa
 
 | Mode | Set | What you get |
 |---|---|---|
-| **App only** | `DISPATCH_MODE=app`, then `make docker-up` | worklist, event-scoped chat and voice in the app, speak-on-select (§5A) |
-| **Event call in the browser** | `DISPATCH_MODE=app+call`, then `make docker-up` | per critical event, the consumer log prints a room + token; join in the LiveKit playground → PIN → spoken alert → Q&A → acknowledge (§5B) |
+| **App only** | `outbound.dispatch_mode: app` in `config/hospitals/<HOSPITAL_ID>.yaml`, then `make docker-restart` | worklist, event-scoped chat and voice in the app, speak-on-select (§5A) |
+| **Event call in the browser** | `outbound.dispatch_mode: app+call` in the hospital file, then `make docker-restart` | per critical event, the consumer log prints a room + token; join in the LiveKit playground → PIN → spoken alert → Q&A → acknowledge (§5B) |
 | **Offline, scripted** | nothing (host `uv run`) | the whole loop with no browser or audio (below) |
 
 ```bash
@@ -292,7 +292,7 @@ docker compose -f infra/docker-compose.yml logs -f consumer
 Critical/High events are dispatched. `NORMAL_SINUS`/Low events are persisted but skipped with a
 reason (`below_threshold`, …).
 
-### A. Companion app (default, `DISPATCH_MODE=app`)
+### A. Companion app (default, `dispatch_mode: app`)
 
 1. (Already done above.) Open `http://localhost:8080/` and enter the PIN (`INBOUND_AUTH_PIN`, default `1234`).
 2. The worklist fills live. Patients appear as `PT9#####` pseudonyms. The dry-run output in §4
@@ -323,7 +323,8 @@ With a handful of events the intervals are wide, and the tab says so. Say it out
 
 ### B. Outbound voice call over WebRTC (no phone)
 
-Set `DISPATCH_MODE=app+call` in `.env`, run `make docker-up` to recreate the consumer, and publish
+Set `outbound.dispatch_mode: app+call` in `config/hospitals/<HOSPITAL_ID>.yaml` (README, "Per-hospital
+configuration"), run `make docker-restart` so the consumer reloads it, and publish
 again. For each critical event, the consumer log prints an `rmsai-outbound-<event_id>` room and a
 `Token:`. Join it at <https://agents-playground.livekit.io> (Manual → URL + token → allow mic):
 
@@ -352,8 +353,8 @@ Full step-by-step setup: **[`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)**. Once se
 
 ```bash
 make phone-up && make phone-logs           # "registered worker" url must be the Cloud URL
-uv run python -m cli.call --caller livekit # on-demand: rings OUTBOUND_CALL_NUMBER → PIN → Q&A
-# event-driven: DISPATCH_MODE=app+call in .env, then (Compose reads this from the shell):
+uv run python -m cli.call --caller livekit # on-demand: rings the hospital's outbound.call_number → PIN → Q&A
+# event-driven: outbound.dispatch_mode: app+call in the hospital file, then (Compose reads this from the shell):
 CONSUME_ARGS="--channel voice --caller livekit --transport sip" make docker-up
 # publish an event (§5): the phone rings → PIN → this event's alert → Q&A → "acknowledge"
 ```

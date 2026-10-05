@@ -62,9 +62,10 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
 
 - **Self-hosted by default; provider abstraction always.** All real/PHI processing runs against
   local models. The LLM sits behind one `LLMProvider` interface: `EchoLLM` (offline, deterministic)
-  is the code default, `LLM_PROVIDER=ollama` selects the self-hosted model. Anthropic/OpenAI
-  providers are planned behind the same interface but not implemented (an unknown name falls back
-  to echo). Cloud APIs are used **only** on synthetic data, never PHI.
+  is the code default, `LLM_PROVIDER=ollama` selects the self-hosted model, and `anthropic`,
+  `gemini` or `openai` (any OpenAI-compatible API) select a cloud model behind the same interface
+  (see [Choosing the LLM](#choosing-the-llm)). Cloud APIs are used **only** on synthetic data, never
+  PHI.
 - **Synthetic data only in development.** PHI never reaches a third-party API and is never written
   to plain-text logs.
 - **Redaction by construction.** Patients are referenced by `id`/`pseudonym` everywhere, including
@@ -114,8 +115,8 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
         │  relay PLACES the call (LiveKitCaller → SIP dial / WebRTC room)                  │
         │  cli.voice_worker JOINS the room (Handler is the 'LLM' node; stub LLM fills the  │
         │  pipeline gate so llm_node runs):                                                │
-        │   audio ─Whisper STT─►[wake word]─► OutboundHandler ─Ollama LLM(RAG)─► Piper TTS │
-        │   text  ─chat box────────────────► OutboundHandler ─Ollama LLM(RAG)─► chat text  │
+        │   audio ─Whisper STT─►[wake word]─► OutboundHandler ─LLM(RAG)────────► Piper TTS │
+        │   text  ─chat box────────────────► OutboundHandler ─LLM(RAG)────────► chat text  │
         │     PIN gate → speak THIS event's alert → Q&A grounded in KB+graph → "ack"       │
         │     → MonitoredEvent.status = acknowledged                                       │
         │  modality-matched: audio→audio (wake-gated), text→text; never crossed            │
@@ -134,12 +135,12 @@ A few design points that aren't obvious from the diagram:
   STT → *LLM* → TTS. We override that LLM node (`HandlerAgent.llm_node`) to call our conversation
   `Handler` instead. The Handler runs the **PIN gate → de-identification → KB/graph retrieval →
   grounded answer** path — i.e. all the safety and grounding logic lives here, *not* in a raw model
-  prompt. The real LLM (**Ollama**, local) is still used, but **inside** the Handler/orchestrator
+  prompt. The real LLM (`LLM_PROVIDER`: **Ollama** locally, or a cloud model for synthetic data) is still used, but **inside** the Handler/orchestrator
   (RAG over the clinical KB + per-patient graph), one layer below the pipeline.
 - **The "stub LLM" is a permanent shim, not a placeholder.** LiveKit *skips reply generation
   entirely* when `session.llm is None`, so `llm_node` would never run. We install a no-op
   `make_stub_llm()` purely to satisfy that gate; its `chat()` is never called. This is **not** a
-  temporary fix awaiting a "real LLM" — Ollama is already the real LLM (via the Handler). Swapping
+  temporary fix awaiting a "real LLM" — the configured provider is already the real LLM (via the Handler). Swapping
   providers means changing `LLM_PROVIDER` (the orchestrator's provider), never this shim.
 - **Modality-matched I/O.** *Audio* turns go STT → wake-word gate → Handler → **TTS (audio)**.
   *Text* turns (LiveKit chat box) go through a separate `text_input_cb` → Handler → **`send_text`
@@ -174,12 +175,12 @@ A few design points that aren't obvious from the diagram:
 | Language / runtime | Python ≥3.10, managed with **`uv`**; `pytest` + `ruff`, type hints throughout |
 | Contracts | **pydantic v2** schemas (`common/schemas.py`) |
 | ECG classifier | **`ECG_TransConv`** (vendored `crtx-sg/ecgtranscnn`, PyTorch CPU), wrapped never reimplemented. Default artifact: the real-ECG `real_v2` 5-fold ensemble (13 classes) |
-| Vitals analysis | `ecgtranscnn` MEWS + Mann-Kendall trend + ECG-vital correlation (statistical), with a per-hospital clinical-significance policy on the trend (`config/vitals_trends/`) |
+| Vitals analysis | `ecgtranscnn` MEWS + Mann-Kendall trend + ECG-vital correlation (statistical), with a per-hospital clinical-significance policy on the trend (`config/hospitals/`) |
 | Event bus | **Redis Streams** (`rmsai.events`, consumer groups; partition by `patient_id`) |
 | Graph KB | **Neo4j** + Cypher (patient ↔ event ↔ condition ↔ treatment ↔ guideline ↔ bed/unit) |
 | Vector KB | **Qdrant** + embeddings (BGE via `sentence-transformers`, deterministic Hashing fallback) |
 | Memory tiers | working (Redis) · episodic (Qdrant) · semantic (= vector KB) |
-| LLM | behind `LLMProvider`: `EchoLLM` (offline, code default) or **Ollama** (self-hosted, `LLM_PROVIDER=ollama`); Anthropic/OpenAI planned, not implemented |
+| LLM | behind `LLMProvider`: `EchoLLM` (offline, code default), **Ollama** (self-hosted, `LLM_PROVIDER=ollama`), or a cloud model for synthetic data: Anthropic Claude, Google Gemini, or any OpenAI-compatible API ([Choosing the LLM](#choosing-the-llm)) |
 | De-identification | Regex (default) or **Presidio** + spaCy (`deid` extra), fail-closed before any model call |
 | Speech | self-hosted **faster-whisper** STT + **Piper** TTS + **silero** VAD; optional cloud **ElevenLabs** STT/TTS for benchmarking on synthetic data only (`STT_BACKEND`/`TTS_BACKEND=elevenlabs`). Code default is `stub` |
 | Telephony / WebRTC | local **LiveKit** (agent worker, app inbox, browser WebRTC); optional second **LiveKit Cloud** project for phone calls (`LIVEKIT_SIP_URL`) with a carrier: **SignalWire** (native SIP trunk, SWML) or **Twilio** (Programmable Voice TwiML `<Dial><Sip>` bridge, or paid Elastic SIP); **Twilio SMS** over stdlib HTTP |
@@ -413,20 +414,24 @@ touching callers.
 Keys marked *Compose* are Docker Compose settings, which Compose does **not** read from that file;
 see [Two `.env` readers](#two-env-readers)):
 
+Keys marked *(hospital)* are per-hospital policy: set them in `config/hospitals/<HOSPITAL_ID>.yaml`
+(see [Per-hospital configuration](#per-hospital-configuration)). The environment variable still works,
+but only as a logged override.
+
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `FP_SUPPRESS_MIN_CONFIDENCE` | `0.80` | suppress as FP only if `NORMAL_SINUS` ≥ this; else flag `uncertain` |
-| `LOW_CONFIDENCE_CAVEAT` | `0.60` | top-class confidence below this marks the event `low_confidence` |
-| `CRITICALITY_NORMAL_EVENT` | `NORMAL_SINUS` | the only event treated as non-critical; any other event ⇒ at least High |
-| `CRITICALITY_MEWS_THRESHOLD` | `3` | MEWS score at/above this ⇒ escalate criticality to High |
-| `CRITICALITY_ESCALATE_ON_DETERIORATING` | `true` | any deteriorating vital trend ⇒ escalate criticality to High |
-| `CRITICALITY_FP_OVERRIDE_ON_VITALS` | `true` | call even on a confident false-positive ECG (NORMAL_SINUS) when vitals warrant it (MEWS ≥ threshold or deteriorating); overrides the spec-D10 no-call guard |
-| `DISPATCH_MODE` | `app+call` | where a gated event goes: `app` (worklist push only), `call` (voice/text only), `app+call` |
-| `HOSPITAL_ID` | *(empty)* | scopes the app inbox room `rmsai-inbox-<id>` |
-| `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` | `false` / `High` | read by `should_call`, but **`cli.consume` and `cli.outbound` force `OUTBOUND_ENABLED` on** and take the threshold from `--min-criticality` (default `High`). The gate governs both the worklist push and the call |
-| `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` | `0.60` | a non-normal (arrhythmia) event is only asserted *as a rhythm* if confidence is at/above this. Below it: withheld when the vitals are calm, or re-based as a **vitals-driven alert** (rhythm marked unconfirmed) when they aren't. Vitals never raise the bar |
-| `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` | — | destination (the default for `--number` on `cli.consume`/`cli.outbound`, and for `cli.call`) + caller ID (the carrier's number; also the Twilio SMS sender). A real call/SMS with neither `--number` nor `OUTBOUND_CALL_NUMBER` refuses to start; a placeholder is used only for simulated runs |
-| `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` | `2` / `30` | no-answer retry policy |
+| `FP_SUPPRESS_MIN_CONFIDENCE` *(hospital)* | `0.80` | suppress as FP only if `NORMAL_SINUS` ≥ this; else flag `uncertain` |
+| `LOW_CONFIDENCE_CAVEAT` *(hospital)* | `0.60` | top-class confidence below this marks the event `low_confidence` |
+| `CRITICALITY_NORMAL_EVENT` *(hospital)* | `NORMAL_SINUS` | the only event treated as non-critical; any other event ⇒ at least High |
+| `CRITICALITY_MEWS_THRESHOLD` *(hospital)* | `3` | MEWS score at/above this ⇒ escalate criticality to High |
+| `CRITICALITY_ESCALATE_ON_DETERIORATING` *(hospital)* | `true` | any deteriorating vital trend ⇒ escalate criticality to High |
+| `CRITICALITY_FP_OVERRIDE_ON_VITALS` *(hospital)* | `true` | call even on a confident false-positive ECG (NORMAL_SINUS) when vitals warrant it (MEWS ≥ threshold or deteriorating); overrides the spec-D10 no-call guard |
+| `DISPATCH_MODE` *(hospital)* | `app+call` | where a gated event goes: `app` (worklist push only), `call` (voice/text only), `app+call` |
+| `HOSPITAL_ID` | *(empty)* | scopes the app inbox room `rmsai-inbox-<id>` and selects `config/hospitals/<id>.yaml` |
+| `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` *(hospital)* | `false` / `High` | read by `should_call`, but **`cli.consume` and `cli.outbound` force `OUTBOUND_ENABLED` on** and take the threshold from `--min-criticality` (default `High`). The gate governs both the worklist push and the call |
+| `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` *(hospital)* | `0.60` | a non-normal (arrhythmia) event is only asserted *as a rhythm* if confidence is at/above this. Below it: withheld when the vitals are calm, or re-based as a **vitals-driven alert** (rhythm marked unconfirmed) when they aren't. Vitals never raise the bar |
+| `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` *(hospital)* | — | destination (the default for `--number` on `cli.consume`/`cli.outbound`, and for `cli.call`) + caller ID (the carrier's number; also the Twilio SMS sender). A real call/SMS with neither `--number` nor `OUTBOUND_CALL_NUMBER` refuses to start; a placeholder is used only for simulated runs |
+| `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` *(hospital)* | `2` / `30` | no-answer retry policy |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
 | `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word so audio follow-ups needn't repeat it (audio only — does not affect text chat) |
@@ -435,12 +440,12 @@ see [Two `.env` readers](#two-env-readers)):
 | `LIVEKIT_REDISPATCH_ON_START` | `true` | on worker startup, auto re-dispatch the agent into live `rmsai-inbox-*` rooms that lost their agent (e.g. after a worker restart), so the app doesn't need a re-login. On-demand equivalent: `cli.dispatch` |
 | `LIVEKIT_WORKER_HTTP_PORT` | `8081` | port for livekit-agents' health-check HTTP server. Only matters when two workers run side by side. The Docker `voice-worker` gets `8091` from Compose (*Compose*: set in the shell to change it), because host networking would otherwise collide with a worker run by hand (`[errno 98] address already in use`). The phone worker uses `LIVEKIT_SIP_WORKER_HTTP_PORT` (`8082`) |
 | `GATEWAY_PORT` | `8080` | *Compose*: host port for the containerized gateway. Move it (`GATEWAY_PORT=8090 make docker-up`) if `hapi-fhir` (`--profile emr`) or a hand-run gateway already holds 8080 |
-| `LLM_PROVIDER` / `LLM_MODEL` / `OLLAMA_URL` | `echo` / `llama3.2` / `http://localhost:11434` | `echo` is offline and deterministic; `ollama` for real answers. Any other name silently falls back to echo |
+| `LLM_PROVIDER` / `LLM_MODEL` / `OLLAMA_URL` | `echo` / `llama3.2` / `http://localhost:11434` | `echo` is offline and deterministic; `ollama` for self-hosted answers (`LLM_MODEL` is the Ollama model); `anthropic` / `gemini` / `openai` for cloud models, see [Choosing the LLM](#choosing-the-llm). An unknown name is an error |
 | `EMBEDDER` / `KB_MIN_RELEVANCE` / `KB_LLM_ROUTER` / `KB_UPLOAD_DIR` | `hashing` / `0.60` / `false` / `data/kb_uploads` | KB embedder (must match the collection), relevance floor for grounded answers, LLM question router, managed upload folder |
 | `STT_BACKEND` / `TTS_BACKEND` | `stub` / `stub` | `whisper`/`piper` (self-hosted) or `elevenlabs` (cloud, synthetic data only) |
 | `LIVEKIT_AGENT_NAME` / `LIVEKIT_CALL_ROOM_PREFIX` | `rmsai-agent` / `rmsai-call-` | the app worker's dispatch name; prefix of on-demand and inbound phone-call rooms |
 | `SIP_RINGING_TIMEOUT_S` / `SIP_MAX_CALL_DURATION_S` | `30` / `600` | call safety rails (unanswered ring time; hard cap on a call) |
-| `LIVEKIT_SIP_*`, `SIP_INBOUND_ALLOWED_NUMBERS`, `TWILIO_SIP_*`, `LIVEKIT_SIP_TRUNK_ID` | *(empty)* | phone calls: see [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio) |
+| `LIVEKIT_SIP_*`, `TWILIO_SIP_*`, `LIVEKIT_SIP_TRUNK_ID` | *(empty)* | phone calls (who may call in is per hospital: `outbound.inbound_allowed_numbers`): see [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio) |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | *(empty)* | real SMS (`--notifier twilio`): the text channel and the unanswered-call fallback |
 | `EPISODIC_RECALL` | `false` | condition free-text answers on recalled cross-session past Q&A; off keeps answers grounded in the live KB + current conversation only |
 | `STT_LANGUAGE` | `en` | force the STT language (ISO 639-1); blank/`auto` = auto-detect. Stops Whisper/Scribe "hearing" other languages on noise |
@@ -454,6 +459,56 @@ research checkpoint, or the deterministic test stub when none is configured → 
 on Triton) · `EventStore` (Neo4j → Postgres/
 TimescaleDB at scale) · FHIR client (stub → HAPI) · outbound (single number → escalation tree) ·
 caller auth (shared PIN → per-user identity/MFA) · audit (JSONL → tamper-evident store).
+
+### Choosing the LLM
+
+The LLM writes the grounded answer for KB questions (chat and voice) and, with `KB_LLM_ROUTER=true`,
+picks the graph template. Retrieval itself (BGE embeddings, Qdrant, Neo4j) does not use it. Pick one
+with `LLM_PROVIDER`:
+
+| `LLM_PROVIDER` | Model setting (default) | Credentials | Notes |
+|---|---|---|---|
+| `echo` | — | — | deterministic, offline; tests |
+| `ollama` | `LLM_MODEL` (`llama3.2`) | — | self-hosted (`OLLAMA_URL`); the only option for real PHI |
+| `anthropic` | `ANTHROPIC_MODEL` (`claude-opus-5-5`) | `ANTHROPIC_API_KEY` | `ANTHROPIC_EFFORT` (`low`) trades thinking depth for latency |
+| `gemini` | `GEMINI_MODEL` (`gemini-2.5-flash`) | `GEMINI_API_KEY` | via Google's OpenAI-compatible endpoint (`GEMINI_BASE_URL`) |
+| `openai` | `OPENAI_MODEL` (`gpt-4o-mini`) | `OPENAI_API_KEY` | **any OpenAI-compatible API**: set `OPENAI_BASE_URL` for Mistral, Groq, OpenRouter, Together, or a local vLLM / LM Studio server |
+
+```bash
+# .env, e.g. Claude:
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+# or Groq through the OpenAI-compatible provider:
+LLM_PROVIDER=openai
+OPENAI_BASE_URL=https://api.groq.com/openai/v1
+OPENAI_API_KEY=gsk_...
+OPENAI_MODEL=<model id from the provider>
+```
+
+Then restart what uses it (`make docker-restart`, or the host CLIs). Try it without the app:
+`uv run python -m cli.kb "what is the SOP for atrial fibrillation?"` or
+`uv run python -m cli.text_chat --llm anthropic`.
+
+- **Install.** Cloud providers use the official `anthropic` / `openai` SDKs from the `llm-cloud` extra,
+  included in `make setup-all` and the Docker image. After pulling this change, rebuild the image once
+  (`make docker-build && make docker-up`).
+- **Safety.** Cloud providers are for **synthetic data only** (hard rules 4 and 5). Every provider
+  sits behind `DeidentifyingLLM`, so the prompt is de-identified (`DEID_BACKEND`) before it leaves,
+  and selecting a cloud provider prints a warning at startup. Real patients stay on `ollama`.
+- **Answers are short and often spoken**, so each request carries a one-line latency instruction.
+  `LLM_MAX_TOKENS` caps the answer; the default `0` leaves it to the provider (OpenAI reasoning models
+  reject the parameter and smaller hosted models cap lower), except Anthropic, which requires a cap
+  and gets 16000. `LLM_TIMEOUT_S` (60) bounds a request. If a call fails (no credit,
+  rate limit, network), the orchestrator retries and then falls back to a safe answer instead of
+  crashing the turn.
+- **Claude specifics.** Thinking is adaptive; `ANTHROPIC_EFFORT=low` keeps time-to-first-word down for
+  voice (raise to `medium`/`high` for harder questions; `none` sends no effort, and Haiku or older
+  models, which reject it, get none automatically). On current models a refused request is
+  re-run server-side on Anthropic's recommended fallback model; a refusal that still stands returns
+  "The model declined to answer that." When streaming (voice), words already spoken can't be
+  recalled, so that sentence is appended to mark where the answer stopped.
+- **Model names change.** The defaults above are starting points; check the provider's model list and
+  set the `*_MODEL` variable.
 
 ### Criticality & the outbound-call decision
 
@@ -509,11 +564,55 @@ so the call still fires. This case is made explicit at three layers so it is nev
 Set `CRITICALITY_FP_OVERRIDE_ON_VITALS=false` to revert to the strict spec-D10 behaviour
 (NORMAL_SINUS ⇒ never call).
 
+### Per-hospital configuration
+
+Alerting policy differs by site, so it lives in one YAML file per hospital rather than in `.env`:
+
+```
+config/hospitals/
+  default.yaml        every setting, the defaults (committed)
+  h1.example.yaml     template for a site file (committed, placeholder numbers)
+  h1.yaml             the site's own values (gitignored: it holds real phone numbers)
+```
+
+`HOSPITAL_ID` in `.env` picks the file (`h1` → `h1.yaml`); `HOSPITAL_CONFIG_DIR` moves the directory.
+Settings combine in this order, each overriding the one before:
+
+1. `default.yaml`
+2. `<HOSPITAL_ID>.yaml`, key by key (list only what differs, or everything to keep it in one place)
+3. an environment variable (shell or `.env`), meant for a quick test. Every such override is logged at
+   startup by name, never by value: `[config] environment overrides hospital config (default.yaml +
+   h1.yaml): OUTBOUND_CALL_NUMBER`
+
+| Section | YAML key | Environment override |
+|---|---|---|
+| `escalation` | `normal_event`, `mews_threshold`, `escalate_on_deteriorating`, `fp_override_on_vitals` | `CRITICALITY_NORMAL_EVENT`, `CRITICALITY_MEWS_THRESHOLD`, `CRITICALITY_ESCALATE_ON_DETERIORATING`, `CRITICALITY_FP_OVERRIDE_ON_VITALS` |
+| `escalation` | `fp_suppress_min_confidence`, `low_confidence_caveat` | `FP_SUPPRESS_MIN_CONFIDENCE`, `LOW_CONFIDENCE_CAVEAT` |
+| `outbound` | `dispatch_mode`, `enabled`, `min_criticality`, `min_arrhythmia_confidence` | `DISPATCH_MODE`, `OUTBOUND_ENABLED`, `OUTBOUND_MIN_CRITICALITY`, `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` |
+| `outbound` | `call_number`, `from`, `inbound_allowed_numbers` | `OUTBOUND_CALL_NUMBER`, `OUTBOUND_FROM`, `SIP_INBOUND_ALLOWED_NUMBERS` |
+| `outbound` | `max_retries`, `retry_delay_s` | `OUTBOUND_MAX_RETRIES`, `OUTBOUND_RETRY_DELAY_S` |
+| `vitals_trends` | `alpha`, `vitals.<name>.{min_change, normal, unit}` | — (see [Vital trends](#vital-trends-when-is-a-vital-deteriorating)) |
+
+**A new site:** `cp config/hospitals/h1.example.yaml config/hospitals/<id>.yaml`, edit it, set
+`HOSPITAL_ID=<id>` in `.env`, then `make docker-restart` (the repo is bind-mounted, so the containers
+see the file without a rebuild).
+
+**Validation** stops startup with a message naming the key: phone numbers must be **quoted** E.164
+(`"+15551234567"`; unquoted, YAML reads `+91…` as an integer and drops the `+`), `dispatch_mode` must be
+`app`, `call` or `app+call`, `min_criticality` one of `Low`/`Medium`/`High`/`Critical`, confidences
+between 0 and 1, and `default.yaml` must define every setting.
+
+Check what a process actually loaded:
+
+```bash
+uv run python -c "from common.config import DEFAULT as c; print(c.hospital_config_source, c.dispatch_mode, c.outbound_min_criticality)"
+```
+
 ### Vital trends: when is a vital deteriorating?
 
 Each event carries a history of 10–30 readings per vital (HR, RespRate, SpO2, Systolic, Diastolic,
-Temp). `common/vitals_trends.py` classifies each one against the hospital's policy in
-`config/vitals_trends/`. A vital is **deteriorating** only when all three hold:
+Temp). `common/vitals_trends.py` classifies each one against the `vitals_trends:` section of the
+[hospital config](#per-hospital-configuration). A vital is **deteriorating** only when all three hold:
 
 1. **Consistent:** the vendored Mann-Kendall test gives p < `alpha` (default 0.05).
 2. **Big enough:** the change over the window is at least the vital's `min_change`. The change is
@@ -532,7 +631,7 @@ the event records why:
 | `toward_normal` | improving |
 | `away_from_normal` | deteriorating |
 
-**Defaults** (`config/vitals_trends/default.yaml`). Normal ranges are the MEWS 0-score bands; the
+**Defaults** (`config/hospitals/default.yaml`, `vitals_trends:`). Normal ranges are the MEWS 0-score bands; the
 minimum changes are POC starting values pending clinical sign-off.
 
 | Vital | `min_change` | `normal` |
@@ -544,10 +643,11 @@ minimum changes are POC starting values pending clinical sign-off.
 | Diastolic | 10 mmHg | 60–90 (MEWS does not score it; conventional range) |
 | Temp | 1.0 °F | 95.0–101.1 |
 
-**Per hospital.** Add `config/vitals_trends/<HOSPITAL_ID>.yaml` with only the keys that differ; it is
-merged over the default. An invalid file stops the producer at startup. `VITALS_TRENDS_DIR` moves the
-directory. Policy is applied when an event is analysed (`cli.ingest`), so a change affects **new events
-only**: stored events keep the verdict they were given.
+**Per hospital.** Override any of these in `config/hospitals/<HOSPITAL_ID>.yaml` under
+`vitals_trends:`, with only the keys that differ (see
+[Per-hospital configuration](#per-hospital-configuration)). An invalid file stops startup. Policy is
+applied when an event is analysed (`cli.ingest`), so a change affects **new events only**: stored
+events keep the verdict they were given.
 
 **Reading it in the app.** The event panel lists *deteriorating* vitals and, separately, *trends, not
 alerting*, each with the change, the time span, the current value and the threshold or range it was
@@ -561,7 +661,7 @@ can make MEWS reach the threshold), while its trend is `below_min_change`. Both 
 **Simulator caveat.** The simulated Diastolic BP is 35–49 mmHg for nearly every patient, below the 60–90
 normal range, so any 10 mmHg drift in it is flagged. That is an artefact of the data, not of the
 policy, and it is deliberately left as is. To quiet it for a demo, lower the Diastolic `normal` floor
-in a hospital file, for example `Diastolic: {normal: [30, 90]}`.
+in the hospital file, for example `vitals_trends: {vitals: {Diastolic: {normal: [30, 90]}}}`.
 
 ### Safety & PHI guarantees
 
@@ -599,8 +699,8 @@ cp .env.example .env      # then set LIVEKIT_API_KEY / LIVEKIT_API_SECRET, HOSPI
 # 3. Build the shared app image (once; ~5-10 min for torch + whisper + presidio)
 make docker-build
 
-# 4. Bring up every service
-make docker-up
+# 4. Bring up every service, in dependency order, then check it (READY = all ok)
+make demo-up
 ```
 
 That starts **redis, neo4j, qdrant, livekit** and the three application services — **consumer**
@@ -732,7 +832,8 @@ uv sync --extra pdf                                   # PDF uploads for cli.kb_u
 `.env` keys that matter: `REDIS_URL`, `NEO4J_*`, `QDRANT_URL`, `DEID_BACKEND`, `STT_BACKEND`/
 `TTS_BACKEND`, `INBOUND_AUTH_PIN`, `AUDIO_WAKE_REQUIRED` (wake-word gate on/off),
 `INBOX_SPEAK_ON_SELECT` (voice the event on worklist select), `LIVEKIT_URL` / `LIVEKIT_API_KEY` /
-`LIVEKIT_API_SECRET` + `HOSPITAL_ID` + `DISPATCH_MODE` for the app and WebRTC calls, and the
+`LIVEKIT_API_SECRET` + `HOSPITAL_ID` for the app and WebRTC calls (`HOSPITAL_ID` also selects
+`config/hospitals/<id>.yaml`: dispatch mode, phone numbers, alert thresholds), and the
 telephony block for phone calls (see [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)).
 
 **Swappable speech backends.** STT/TTS sit behind `STTAdapter`/`TTSAdapter` (`voice/adapters.py`),
@@ -853,7 +954,7 @@ the real checkpoint loaded. A 16-class line means a simulator checkpoint; no lin
 stub, and the ERROR above it says why.
 
 > **Only for `--emit stdout`.** A raw ecg_sigma file keeps the dataset's record id as the patient
-> (`"105"` above). Published with `--emit bus` while `DISPATCH_MODE` includes `app`, the consumer
+> (`"105"` above). Published with `--emit bus` while the hospital's `dispatch_mode` includes `app`, the consumer
 > refuses it (`[poison] … refusing to publish non-pseudonym patient ref`: the event is persisted
 > but not dispatched). For anything that goes on the bus, curate with `cli.real_samples` below,
 > which assigns `PT9#####` pseudonyms.
@@ -932,6 +1033,7 @@ uv run python -m cli.ingest --dir data/real
 ```bash
 make docker-build      # once; ~5-10 min (torch, faster-whisper, presidio, spaCy)
 make docker-up         # redis, neo4j, qdrant, livekit + consumer, voice-worker, gateway
+make demo-check        # or `make demo-up` for both: ordered start + health check
 make docker-ps
 ```
 
@@ -1503,8 +1605,8 @@ them, and none is a default: `--transport sip`, `--caller livekit`, `--notifier 
 | `cli.consume --transport sip`, `cli.call --caller livekit`, phone worker | telephony LiveKit (Cloud), only when asked |
 
 Modes:
-- **App only:** `DISPATCH_MODE=app`, `make docker-up`, log in, publish.
-- **Event call in the browser:** `DISPATCH_MODE=app+call`, `make docker-up`. Per critical event the
+- **App only:** `outbound.dispatch_mode: app` in the hospital file, `make docker-restart`, log in, publish.
+- **Event call in the browser:** `outbound.dispatch_mode: app+call`, `make docker-restart`. Per critical event the
   consumer log prints a room + token; join at agents-playground.livekit.io (a page LiveKit hosts that
   connects to your local `ws://localhost:7880`; no account, audio stays local).
 - **Offline, scripted:** `cli.consume --channel voice --once --follow-up … --ack …`,
@@ -1555,7 +1657,7 @@ What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-
 2. It **dispatches** `rmsai-agent-phone` into that room on the telephony LiveKit, before dialling, so
    the agent is waiting when the phone answers.
 3. It **dials**: `CreateSIPParticipant` on the telephony LiveKit with `LIVEKIT_SIP_TRUNK_ID`, the
-   number (`--number`, else `OUTBOUND_CALL_NUMBER`), caller ID `OUTBOUND_FROM`,
+   number (`--number`, else the hospital's `outbound.call_number`), caller ID `outbound.from`,
    `ringing_timeout=SIP_RINGING_TIMEOUT_S`, `max_call_duration=SIP_MAX_CALL_DURATION_S` and
    `wait_until_answered`.
 4. LiveKit Cloud sends the SIP INVITE through the outbound trunk.
@@ -1586,8 +1688,8 @@ What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-
 | `LIVEKIT_SIP_URL` / `LIVEKIT_SIP_API_KEY` / `LIVEKIT_SIP_API_SECRET` | the LiveKit Cloud project (Settings → Keys) |
 | `LIVEKIT_SIP_URI` | its SIP host (Settings → SIP URI), without `sip:`, e.g. `abc123.sip.livekit.cloud` |
 | `TELEPHONY_CARRIER` | `signalwire` or `twilio` (default) |
-| `OUTBOUND_FROM` | the carrier's voice number (E.164): caller ID, trunk number (and SMS sender for Twilio SMS) |
-| `OUTBOUND_CALL_NUMBER` / `SIP_INBOUND_ALLOWED_NUMBERS` | default call destination; who may call in (the explicit list, else the on-call number, else nobody) |
+| `outbound.from` *(hospital file)* | the carrier's voice number (E.164): caller ID, trunk number (and SMS sender for Twilio SMS) |
+| `outbound.call_number` / `outbound.inbound_allowed_numbers` *(hospital file)* | default call destination; who may call in (the explicit list, else the on-call number, else nobody) |
 | `LIVEKIT_SIP_TRUNK_ID` | the outbound trunk's `ST_…` id, printed by `cli.sip_setup` (not by `--dry-run`) |
 | `LIVEKIT_SIP_AGENT_NAME` / `LIVEKIT_SIP_WORKER_HTTP_PORT` | phone worker identity; defaults `rmsai-agent-phone` / `8082` |
 | **SignalWire:** `SIGNALWIRE_SPACE` / `_PROJECT_ID` / `_API_TOKEN` | API (read-only checks) |
@@ -1604,7 +1706,7 @@ uv run python -m cli.sip_setup --twiml     # Twilio: the TwiML Bin to paste (unm
 uv run python -m cli.sip_setup --dry-run   # masked plan; PROBLEM lines name any missing key (exit 2)
 uv run python -m cli.sip_setup             # create/update in the Cloud project; prints LIVEKIT_SIP_TRUNK_ID
 make phone-up && make phone-logs           # "registered worker" url must be the Cloud URL
-uv run python -m cli.call --caller livekit # first live test: rings OUTBOUND_CALL_NUMBER
+uv run python -m cli.call --caller livekit # first live test: rings the hospital's outbound.call_number
 ```
 
 | Carrier | LiveKit objects (idempotent, by name) |
@@ -1638,11 +1740,11 @@ synthetic or public data only until BAAs or self-hosted SIP are in place.
 `--notifier simulated|twilio` on `cli.consume` and `cli.outbound` selects the SMS backend for the
 text channel **and** for voice calls that go unanswered after retries. The fallback texts
 "Missed call from RMS relay. <spoken alert>" to the call's destination (`--number`, else
-`OUTBOUND_CALL_NUMBER`). Delivered keeps the event `reported` (alerted, awaiting an ack); failed is
+the hospital's `outbound.call_number`). Delivered keeps the event `reported` (alerted, awaiting an ack); failed is
 `notify_failed`; an invalid number is never texted. Each attempt is audited as `sms_fallback`.
 
 The Twilio sender uses the REST API over stdlib HTTP (no SDK) and needs `TWILIO_ACCOUNT_SID`,
-`TWILIO_AUTH_TOKEN` and `OUTBOUND_FROM`. **With `TELEPHONY_CARRIER=signalwire`, `OUTBOUND_FROM` is the
+`TWILIO_AUTH_TOKEN` and the hospital's `outbound.from`. **With `TELEPHONY_CARRIER=signalwire`, `outbound.from` is the
 SignalWire number, so Twilio SMS can't use it as the sender**: SignalWire messaging isn't wired in
 yet, so use `--notifier simulated` there. A Twilio rejection (e.g. `21608`, unverified number on a
 trial) returns "not delivered" with the reason logged and the number masked; it never crashes the
@@ -1659,8 +1761,8 @@ carriers.
 | `[sip_setup] PROBLEM: …` | fill the key it names; re-run `--dry-run` |
 | `voice-worker-phone` exits: `VOICE_WORKER_ROLE=phone needs LIVEKIT_SIP_URL` | set the `LIVEKIT_SIP_*` keys, then `make phone-up` |
 | `[call] … outcome=invalid` / `LIVEKIT_SIP_TRUNK_ID is not set` | run `cli.sip_setup` (not `--dry-run`) and paste the id; on the Twilio trial there is no outbound trunk |
-| `no destination: pass --number or set OUTBOUND_CALL_NUMBER` | a real call/SMS needs a destination; set either |
-| `--notifier twilio needs …` | set `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `OUTBOUND_FROM` |
+| `no destination: pass --number or set OUTBOUND_CALL_NUMBER` | a real call/SMS needs a destination: pass `--number`, or set `outbound.call_number` in the hospital file |
+| `--notifier twilio needs …` | set `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN`, and `outbound.from` in the hospital file |
 | `[sms] … rejected (400) code 21608` | trial account: verify the destination number in Twilio |
 
 ## End-to-end testing
@@ -1821,7 +1923,7 @@ dashboard at `http://localhost:6333/dashboard` shows the same collection interac
 
 ### 3b. On-demand call (no event at all)
 
-Rings `OUTBOUND_CALL_NUMBER` because you asked it to, not because something happened. Each call gets
+Rings the hospital's `outbound.call_number` because you asked it to, not because something happened. Each call gets
 its own room (`rmsai-call-<id>`); the agent is dispatched there **before** the dial, and with no
 alert staged in that room the worker runs the PIN-gated Q&A handler — so the callee authenticates,
 then asks grounded questions.
@@ -1834,7 +1936,7 @@ uv run python -m cli.call --caller livekit --to +15551234567 --no-dispatch   # t
 
 In split mode (`LIVEKIT_SIP_URL` set) the dial and the dispatch go to the telephony LiveKit, so the
 phone worker must be running (`make phone-up`). `--caller livekit` needs an outbound trunk
-(`LIVEKIT_SIP_TRUNK_ID`) and a caller ID (`OUTBOUND_FROM`). `cli.sip_setup` creates the trunk with
+(`LIVEKIT_SIP_TRUNK_ID`) and a caller ID (the hospital's `outbound.from`). `cli.sip_setup` creates the trunk with
 `TELEPHONY_CARRIER=signalwire`, or on Twilio's paid Elastic SIP path. **A Twilio trial has no
 outbound trunk**: the call fails fast as invalid (exit 2). See
 [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio). Exit code is 0 answered / 1 no-answer / 2 invalid.
@@ -1880,8 +1982,8 @@ uv run python -m cli.livekit_token --room rmsai-call-demo
 # → speak the PIN → ask a KB question
 ```
 
-**Outbound (event-driven, carries the event context).** Needs `DISPATCH_MODE` to include `call`
-(`app+call`, the code default). With `DISPATCH_MODE=app` nothing is staged or called.
+**Outbound (event-driven, carries the event context).** Needs the hospital's `outbound.dispatch_mode`
+to include `call` (`app+call`, the default). With `app` nothing is staged or called.
 ```bash
 # produce an event (step 4 producer), then stage the alert + print a join token
 uv run python -m cli.consume --channel voice --caller livekit --transport webrtc --once
@@ -1924,13 +2026,13 @@ uv run python -m cli.consume --channel voice --caller livekit --transport sip --
 ```
 
 Prerequisites (details in [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)):
-- `DISPATCH_MODE` includes `call`. `OUTBOUND_ENABLED` does not matter (`cli.consume` forces it on).
-- A destination: `--number`, else `OUTBOUND_CALL_NUMBER` (a real call refuses to start with neither).
+- The hospital's `outbound.dispatch_mode` includes `call`. `outbound.enabled` does not matter (`cli.consume` forces it on).
+- A destination: `--number`, else the hospital's `outbound.call_number` (a real call refuses to start with neither).
 - In split mode, the phone worker is running (`make phone-up`), not the step-5A app worker.
 - `LIVEKIT_SIP_TRUNK_ID`: SignalWire (`TELEPHONY_SETUP.md`) or Twilio's paid Elastic SIP path; a
   Twilio trial has none.
 - `--notifier twilio` texts the alert if the call goes unanswered (needs the Twilio SMS keys and a
-  Twilio `OUTBOUND_FROM`; with SignalWire use `--notifier simulated`).
+  Twilio number as `outbound.from`; with SignalWire use `--notifier simulated`).
 
 ### Recommended smoke test (clean, single pass)
 
@@ -1941,7 +2043,7 @@ uv run python -m cli.consume --channel voice --once \
     --follow-up "what were the vitals" --ack "yes I acknowledge"
 ```
 
-Expect (with `DISPATCH_MODE` including `call`; this uses the simulated caller): critical events
+Expect (with `dispatch_mode` including `call`; this uses the simulated caller): critical events
 (e.g. AFib/High) persisted + called + acknowledged; a confident NORMAL_SINUS persisted but skipped
 (`false_positive`), unless the vitals trigger `fp_override (…)`, which is common on simulator data.
 

@@ -1,0 +1,73 @@
+# Hospital policy defaults: vital trends, escalation, outbound alerting.
+# Full explanation: README.md, "Per-hospital configuration" and "Vital trends".
+#
+# ---- How settings combine -------------------------------------------------------------------------
+#   1. this file                      every setting, the defaults for any hospital
+#   2. <HOSPITAL_ID>.yaml (optional)   only the keys that differ, merged over this file key by key
+#   3. environment / .env              an explicit override for one setting (testing); logged at
+#                                      startup as "[config] environment overrides hospital config"
+# HOSPITAL_ID comes from .env (e.g. h1 -> config/hospitals/h1.yaml). HOSPITAL_CONFIG_DIR moves the
+# directory. Site files hold real phone numbers, so `<id>.yaml` is gitignored; copy
+# `h1.example.yaml` to start one. An invalid file stops startup. Changes apply after a restart
+# (`make docker-restart`); stored events keep the verdicts they were given.
+#
+# Each setting's environment-variable name is shown on its line.
+
+# ---- Escalation: what makes an event critical ------------------------------------------------------
+escalation:
+  normal_event: NORMAL_SINUS          # CRITICALITY_NORMAL_EVENT  the only rhythm treated as non-critical
+  mews_threshold: 3                   # CRITICALITY_MEWS_THRESHOLD  MEWS at/above this => at least High
+  escalate_on_deteriorating: true     # CRITICALITY_ESCALATE_ON_DETERIORATING  a deteriorating vital => at least High
+  fp_override_on_vitals: true         # CRITICALITY_FP_OVERRIDE_ON_VITALS  alert on a confident NORMAL_SINUS when vitals warrant it
+  fp_suppress_min_confidence: 0.80    # FP_SUPPRESS_MIN_CONFIDENCE  NORMAL_SINUS at/above this = false positive; below = uncertain
+  low_confidence_caveat: 0.60         # LOW_CONFIDENCE_CAVEAT  top-class confidence below this is flagged low-confidence
+
+# ---- Outbound: who is alerted, how, and when --------------------------------------------------------
+outbound:
+  dispatch_mode: app+call             # DISPATCH_MODE  app (worklist push) | call (phone/voice/text) | app+call
+  enabled: false                      # OUTBOUND_ENABLED  cli.consume / cli.outbound force this on; DISPATCH_MODE is the real switch
+  call_number: ""                     # OUTBOUND_CALL_NUMBER  the clinician to call, E.164 and QUOTED ("+15551234567")
+  from: ""                            # OUTBOUND_FROM  the carrier caller ID / SMS sender, E.164, quoted
+  min_criticality: High               # OUTBOUND_MIN_CRITICALITY  Low | Medium | High | Critical
+  min_arrhythmia_confidence: 0.60     # OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE  below this a rhythm is never asserted
+  max_retries: 2                      # OUTBOUND_MAX_RETRIES  re-dials of an unanswered call
+  retry_delay_s: 30                   # OUTBOUND_RETRY_DELAY_S
+  inbound_allowed_numbers: []         # SIP_INBOUND_ALLOWED_NUMBERS  who may dial IN; empty = call_number only
+
+# ---- Vital trends: when is a vital clinically *deteriorating*? -------------------------------------
+# A vital is deteriorating only when ALL of these hold over the event window's history:
+#   1. consistent:   Mann-Kendall p < alpha
+#   2. big enough:   |change over the window| >= min_change
+#                    (time-based Sen's slope x span, so uneven reading intervals are handled)
+#   3. abnormal:     the latest reading is outside `normal` AND moving further away from it
+# A latest reading inside `normal` is never deteriorating. Moving back toward `normal` by at least
+# min_change is "improving". Anything else is "stable", and the event records the reason:
+#   not_significant   no consistent drift (p >= alpha)
+#   below_min_change  consistent, but smaller than min_change
+#   within_normal     big enough, but the latest reading is inside `normal`
+#   toward_normal     improving
+#   away_from_normal  deteriorating
+#
+# What the p-value is NOT: a measure of size. It says how unlikely a drift this consistent is by
+# chance; with 25 readings a steady 1-2 breaths/min drift scores p < 0.001. That is why min_change
+# exists. The app shows p only as a tooltip.
+#
+# Trend vs level: MEWS scores each vital's *current level*, independently of this section. RR at a
+# steady 23-25 /min scores 2 MEWS points while its trend here is below_min_change. Both are correct.
+#
+# Rules: `normal` is inclusive [low, high] with low < high; min_change > 0; 0 < alpha < 1. A vital
+# added here needs both min_change and normal.
+# `normal`: the MEWS 0-score bands (ecgtranscnn.mews), except Diastolic, which MEWS does not score
+#   (60-90 mmHg is a conventional range). `min_change`: POC starting values pending clinical sign-off.
+# Simulator caveat: simulated Diastolic BP is 35-49 mmHg for nearly every patient, below the 60-90
+# range, so any 10 mmHg drift in it is flagged. Left as is deliberately; to quiet it for a demo, set
+# `Diastolic: {normal: [30, 90]}` in the hospital file.
+vitals_trends:
+  alpha: 0.05
+  vitals:
+    HR:        {min_change: 10,  normal: [51, 100],   unit: bpm}
+    RespRate:  {min_change: 4,   normal: [9, 14],     unit: /min}
+    SpO2:      {min_change: 3,   normal: [94, 100],   unit: "%"}
+    Systolic:  {min_change: 20,  normal: [101, 200],  unit: mmHg}
+    Diastolic: {min_change: 10,  normal: [60, 90],    unit: mmHg}
+    Temp:      {min_change: 1.0, normal: [95.0, 101.1], unit: °F}

@@ -35,7 +35,7 @@ class MewsVitalsAnalysis(VitalsAnalysis):
     def __init__(self, policy: TrendPolicy | None = None):
         # Default: this deployment's hospital policy. Loaded eagerly so a broken policy file fails
         # at startup rather than on the first event.
-        self.policy = policy or load_trend_policy(DEFAULT.hospital_id, DEFAULT.vitals_trends_dir)
+        self.policy = policy or load_trend_policy(DEFAULT.hospital_id, DEFAULT.hospital_config_dir)
 
     def _trend(self, name: str, samples: list) -> VitalTrend:
         from ecg_transcovnet.mews import _classify_direction, mann_kendall  # noqa: PLC0415

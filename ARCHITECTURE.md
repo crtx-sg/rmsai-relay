@@ -83,7 +83,10 @@ package. Runbook: [`DEMO.md`](DEMO.md).
 **Step 3 · Vitals + false-positive gate** (`inference/pipeline.py`). Separately — and **not ML** — the
 pipeline computes the **MEWS** score (Modified Early Warning Score: a **rule-based clinical rubric**,
 a fixed points table over the vitals) and per-vital **Mann-Kendall trends** (a **classical statistical
-test** for a monotonic trend, yielding a direction + p-value — nothing trained or learned). Then the FP gate: a *confident*
+test** for a monotonic trend, yielding a p-value — nothing trained or learned). A trend only counts as
+*deteriorating* when it is also clinically significant: the change over the window reaches the
+hospital's `min_change` and the latest reading is outside the vital's normal range, moving away
+(`common/vitals_trends.py`; README, "Vital trends"). Then the FP gate: a *confident*
 `NORMAL_SINUS` (≥ `FP_SUPPRESS_MIN_CONFIDENCE`) is flagged a **false positive**. The output is a
 `DeviceEvent` = the window + predicted type + confidence + MEWS + criticality + care guidance + a
 markdown report.
@@ -99,7 +102,9 @@ markdown report.
   a reworded question instead of declining it. The collection's vector dimension (384 vs 256) is the
   only fingerprint of which embedder built it, so switching requires a rebuild.
 
-**Step 5 · The call decision** (`should_call`, `orchestrator/outbound_flow.py`) — a pure gate:
+**Step 5 · The call decision** (`should_call`, `orchestrator/outbound_flow.py`) — a pure gate. Its
+thresholds are **per hospital** (`config/hospitals/<HOSPITAL_ID>.yaml`, sections `escalation:` and
+`outbound:`; README, "Per-hospital configuration"); the names below are their environment overrides:
 1. `OUTBOUND_ENABLED` must be on.
 2. **Criticality** ≥ `OUTBOUND_MIN_CRITICALITY` (default `High`). Criticality is the more severe of
    the arrhythmia class and the MEWS risk, escalated to at least `High` for any real arrhythmia,
