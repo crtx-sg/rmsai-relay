@@ -169,10 +169,36 @@ def select_events(
     return Selection(rows=chosen, shortfall=shortfall)
 
 
+def _is_pick_output(path: Path) -> bool:
+    """True for an HDF5 file this module wrote (it carries the ``ecgpkg_version`` stamp)."""
+    try:
+        with h5py.File(path, "r") as hf:
+            return "metadata" in hf and "ecgpkg_version" in hf["metadata"].attrs
+    except OSError:
+        return False
+
+
+def _clear_previous_picks(out_dir: Path) -> None:
+    """Delete earlier pick outputs from ``out_dir``. Anything else there is left alone (and noted)."""
+    removed, kept = 0, []
+    for path in sorted(out_dir.glob("*.h5")):
+        if _is_pick_output(path):
+            path.unlink()
+            removed += 1
+        else:
+            kept.append(path.name)
+    if removed:
+        _log.info("cleared %d earlier pick file(s) from %s", removed, out_dir)
+    if kept:
+        _log.warning("left %d non-pick .h5 file(s) in %s (cli.ingest --dir will read them): %s",
+                     len(kept), out_dir, ", ".join(kept))
+
+
 def write_samples(pkg: Package, selection: Selection, out_dir: str | Path) -> list[Path]:
     """Copy the selected events into ``out_dir``, one file per source record. Returns the files.
 
-    An output file of the same name is replaced — each run is a fresh curation.
+    Each run is a fresh curation: once the selection has passed its checks, every earlier pick
+    output in ``out_dir`` is removed first, so ``cli.ingest --dir`` sees only this run's events.
     """
     out_dir = Path(out_dir)
     if out_dir.resolve().is_relative_to(pkg.root.resolve()):
@@ -192,6 +218,7 @@ def write_samples(pkg: Package, selection: Selection, out_dir: str | Path) -> li
             raise SampleError(f"pseudonym collision: {owners[pid]} and {subject} -> {pid}; "
                               "re-run with another --seed")
 
+    _clear_previous_picks(out_dir)
     written: list[Path] = []
     for relpath, rows in sorted(by_file.items()):
         src_path = pkg.root / relpath

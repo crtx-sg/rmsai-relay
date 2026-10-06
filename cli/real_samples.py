@@ -108,7 +108,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pick", required=True, help="LABEL:N[,LABEL:N...] using class names.")
     p.add_argument("--dataset", nargs="*", help="restrict to these datasets (e.g. mitbih vfdb).")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--out", default="data/real", help="output directory (default data/real).")
+    p.add_argument("--out", default="data/real",
+                   help="output directory (default data/real); earlier pick files in it are "
+                        "removed first.")
     p.add_argument("--checkpoint", nargs="*", default=None,
                    help="checkpoint(s) to check the package against; defaults to ECG_CHECKPOINTS.")
     p.add_argument("--allow-mismatch", action="store_true",

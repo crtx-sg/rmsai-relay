@@ -169,3 +169,28 @@ def test_pseudonym_collision_refused(pkg, tmp_path, monkeypatch):
     with pytest.raises(SampleError, match="collision"):
         write_samples(pkg, sel, tmp_path / "out")
     assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
+
+
+def test_pick_clears_earlier_picks_but_not_other_files(pkg, tmp_path):
+    out = tmp_path / "out"
+    write_samples(pkg, select_events(pkg, {"ATRIAL_FIBRILLATION": 1}), out)  # writes rec_b.h5
+    stale = out / "old_record.h5"
+    (out / "rec_b.h5").rename(stale)                     # an earlier pick under another name
+    foreign = out / "simulator.h5"
+    shutil.copy(_FIXTURE, foreign)                       # not written by pick → must survive
+
+    files = write_samples(pkg, select_events(pkg, {"VENTRICULAR_TACHYCARDIA": 1}, seed=7), out)
+    names = sorted(p.name for p in out.glob("*.h5"))
+    assert not stale.exists()
+    assert names == sorted([f.name for f in files] + ["simulator.h5"])
+
+
+def test_refused_pick_keeps_previous_set(pkg, tmp_path, monkeypatch):
+    import ingest.real_samples as mod
+
+    out = tmp_path / "out"
+    files = write_samples(pkg, select_events(pkg, {"ATRIAL_FIBRILLATION": 1}), out)
+    monkeypatch.setattr(mod, "pseudonym_for", lambda _s: "PT900000")
+    with pytest.raises(SampleError, match="collision"):
+        write_samples(pkg, select_events(pkg, {"VENTRICULAR_TACHYCARDIA": 2}), out)
+    assert all(f.exists() for f in files)
