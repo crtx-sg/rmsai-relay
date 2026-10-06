@@ -183,6 +183,12 @@ services:
     command: >
       python -m cli.consume
       ${CONSUME_ARGS:---channel voice --caller livekit --transport webrtc}
+    environment:
+      # Load BGE from the shared hf_cache only. Online, sentence-transformers HEADs huggingface.co
+      # on every start; a network blip there either crashes startup or hangs it forever (no
+      # consumer group is ever created, so nothing is read off the stream). Set to 0 for the first
+      # run on a fresh hf_cache volume (or run any `tools` command that loads BGE once).
+      HF_HUB_OFFLINE: "${CONSUMER_HF_OFFLINE:-1}"
     depends_on:
       redis:
         condition: service_healthy
