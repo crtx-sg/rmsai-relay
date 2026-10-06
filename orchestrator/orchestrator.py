@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from common.config import DEFAULT
 from common.providers import DeidentifyingLLM
+from common.redacting_logger import get_redacting_logger
 from common.schemas import ChatTurn
 from common.tracing import Tracer
 from common.vitals_format import fmt_vital
@@ -89,6 +90,7 @@ _REPEAT = re.compile(
 )
 _NOTHING_TO_REPEAT = "There is nothing to repeat yet."
 _LLM_FALLBACK = "I'm having trouble generating a response right now; please try again."
+_log = get_redacting_logger("rmsai.orchestrator")
 _MAX_HISTORY = 6
 
 # Keep answers crisp: this is a clinical relay heard over the phone / read in a chat box, so the
@@ -297,6 +299,17 @@ def _answer_operational(rows: list[dict] | None) -> str:
     return header + "\n" + "\n".join(f"- {s}" for s in per_row)
 
 
+def _describe_llm_error(exc: Exception) -> str:
+    """One-line, prompt-free summary of a provider failure: type, HTTP status, short message.
+
+    Never the prompt: provider errors (auth, rate limit, timeout, connection refused) describe the
+    transport, and the message is truncated and passed through the redacting logger regardless.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    msg = " ".join(str(exc).split())[:200]
+    return f"{type(exc).__name__}" + (f" [{status}]" if status else "") + (f": {msg}" if msg else "")
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -329,13 +342,16 @@ class Orchestrator:
         """Generate with one retry on transient failure; return (text, failed). Never raises."""
         from common.deid import DeidError  # noqa: PLC0415
 
-        for _ in range(self.llm_retries + 1):
+        attempts = self.llm_retries + 1
+        for attempt in range(1, attempts + 1):
             try:
                 return self.llm.generate(prompt), False
             except DeidError:
                 return "I couldn't safely process that request.", True  # fail closed
-            except Exception:  # noqa: BLE001 - timeout/rate-limit/unreachable -> retry then fall back
-                continue
+            except Exception as exc:  # noqa: BLE001 - timeout/rate-limit/unreachable -> retry then fall back
+                _log.warning("LLM generate failed (attempt %d/%d): %s", attempt, attempts,
+                             _describe_llm_error(exc))
+        _log.error("LLM unavailable after %d attempt(s); returning fallback answer", attempts)
         return _LLM_FALLBACK, True
 
     def handle_turn(

@@ -44,3 +44,23 @@ def test_llm_timeout_retries_then_falls_back():
 def test_deid_failure_is_fail_closed():
     text, failed = _orch(_DeidFailLLM())._generate("prompt with PHI")
     assert failed and "couldn't safely process" in text  # no model output produced
+
+
+class _AuthFailLLM(LLMProvider):
+    def generate(self, prompt: str, **kwargs) -> str:
+        exc = RuntimeError("API key is invalid.")
+        exc.status_code = 401
+        raise exc
+
+    def embed(self, texts):
+        return [[0.0] for _ in texts]
+
+
+def test_llm_failure_is_logged_without_prompt(caplog):
+    with caplog.at_level("WARNING", logger="rmsai.orchestrator"):
+        text, failed = _orch(_AuthFailLLM(), retries=1)._generate("secret prompt text PT1234")
+    assert failed and text == _LLM_FALLBACK
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "RuntimeError [401]: API key is invalid." in logged
+    assert "attempt 2/2" in logged and "fallback" in logged
+    assert "secret prompt text" not in logged
