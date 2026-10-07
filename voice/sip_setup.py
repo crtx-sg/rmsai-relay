@@ -116,9 +116,21 @@ def inbound_twiml_bin(config: Config = DEFAULT) -> str:
 def swml_outbound(config: Config = DEFAULT) -> str:
     """SWML for the SignalWire Domain App: dial the PSTN number LiveKit asked for, from our number.
 
-    Verbatim shape of SignalWire's LiveKit guide; `answer_on_bridge` keeps LiveKit's call ringing
-    until the callee actually answers, so `wait_until_answered` means answered.
+    Shape of SignalWire's LiveKit guide; `answer_on_bridge` keeps LiveKit's call ringing until the
+    callee actually answers, so `wait_until_answered` means answered. With `SIGNALWIRE_SIP_USER`
+    set, the request URI is that fixed user, so the callee is read from the `X-RMSAI-To` header
+    instead of the guide's `call.to` user part (see `voice.livekit_cloud.signalwire_routing`).
     """
+    if config.signalwire_sip_user:
+        return (
+            "version: 1.0.0\n"
+            "sections:\n"
+            "  main:\n"
+            "    - connect:\n"
+            "        answer_on_bridge: true\n"
+            f'        from: "{config.outbound_from}"\n'
+            f"        to: \"{_SWML_DEST_FROM_HEADER}\"\n"
+        )
     return (
         "version: 1.0.0\n"
         "sections:\n"
@@ -128,6 +140,12 @@ def swml_outbound(config: Config = DEFAULT) -> str:
         f'        from: "{config.outbound_from}"\n'
         "        to: \"%{call.to.replace(/^sip:/i, '').replace(/@.*/, '')}\"\n"
     )
+
+
+# SWML expression: the value of the X-RMSAI-To INVITE header (SIP header names are case-insensitive).
+_SWML_DEST_FROM_HEADER = (
+    "%{call.headers.find(h => h.name.toLowerCase() == 'x-rmsai-to').value}"
+)
 
 
 def swml_inbound(config: Config = DEFAULT) -> str:

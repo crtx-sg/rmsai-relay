@@ -246,6 +246,11 @@ class Config:
     # The SIP domain of the SignalWire Domain App that runs the outbound SWML
     # (e.g. `rmsai.dapp.signalwire.com`), and the SIP credentials LiveKit's outbound trunk uses there.
     signalwire_sip_domain: str = ""
+    # The user part of that SIP address (dashboard: the address's `user`, e.g. `rmsai` in
+    # sip:rmsai@murata-vios-public.dapp.signalwire.com). SignalWire routes ONLY that user part; any
+    # other (e.g. the callee's number) is declined with 603. When set, the dial targets it and the
+    # destination number rides in the `X-RMSAI-To` header, which the outbound SWML reads.
+    signalwire_sip_user: str = ""
     signalwire_sip_username: str = ""
     signalwire_sip_password: str = field(default="", repr=False)
     # The telephony server's SIP host (LiveKit Cloud → Settings → SIP URI, e.g. `abc123.sip.livekit.cloud`).
@@ -396,6 +401,7 @@ class Config:
             signalwire_project_id=os.environ.get("SIGNALWIRE_PROJECT_ID", ""),
             signalwire_api_token=os.environ.get("SIGNALWIRE_API_TOKEN", ""),
             signalwire_sip_domain=os.environ.get("SIGNALWIRE_SIP_DOMAIN", ""),
+            signalwire_sip_user=os.environ.get("SIGNALWIRE_SIP_USER", "").strip(),
             signalwire_sip_username=os.environ.get("SIGNALWIRE_SIP_USERNAME", ""),
             signalwire_sip_password=os.environ.get("SIGNALWIRE_SIP_PASSWORD", ""),
             livekit_sip_uri=os.environ.get("LIVEKIT_SIP_URI", ""),

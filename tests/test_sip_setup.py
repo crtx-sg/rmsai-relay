@@ -343,6 +343,17 @@ def test_swml_scripts_are_valid_and_point_at_the_right_places():
     assert inb["to"] == "sip:%{call.to}@abc123.sip.livekit.cloud;transport=tcp"
 
 
+def test_swml_outbound_reads_the_destination_header_with_a_fixed_sip_user():
+    import yaml
+
+    from voice.sip_setup import swml_outbound
+
+    out = yaml.safe_load(swml_outbound(replace(_SW, signalwire_sip_user="rmsai")))
+    conn = out["sections"]["main"][0]["connect"]
+    assert conn["from"] == "+15550001000" and conn["answer_on_bridge"] is True
+    assert "x-rmsai-to" in conn["to"] and "call.headers" in conn["to"]
+
+
 def test_cli_swml_prints_both_scripts(capsys):
     assert main(["--swml"], config=_SW) == 0
     out = capsys.readouterr().out

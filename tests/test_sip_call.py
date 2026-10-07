@@ -139,3 +139,31 @@ def test_placeholder_only_for_simulated_runs():
     assert resolve_destination(None, "", real=False) == PLACEHOLDER_NUMBER
     with pytest.raises(ValueError, match="OUTBOUND_CALL_NUMBER"):
         resolve_destination(None, "", real=True)  # a real call/SMS never goes to a made-up number
+
+
+# --- SignalWire: fixed SIP-address user + destination header -------------------------------------
+
+_SWC = replace(_CFG, telephony_carrier="signalwire", signalwire_sip_user="rmsai",
+               signalwire_sip_domain="sip:sp-public.dapp.signalwire.com")
+
+
+def test_signalwire_dials_the_address_user_and_carries_the_callee_in_a_header():
+    kw = build_sip_participant_kwargs(room="r", number="+15559998888", config=_SWC)
+    # SignalWire routes only the address's user part; the callee number there is declined (603).
+    assert kw["sip_request_uri"] == {"raw": "sip:rmsai@sp-public.dapp.signalwire.com"}
+    assert kw["headers"] == {"X-RMSAI-To": "+15559998888"}
+    assert kw["sip_call_to"] == "+15559998888"  # LiveKit still requires the callee
+
+
+def test_request_is_unchanged_without_signalwire_user():
+    for cfg in (_CFG, replace(_SWC, signalwire_sip_user=""), replace(_SWC, telephony_carrier="twilio")):
+        kw = build_sip_participant_kwargs(room="r", number="+1555", config=cfg)
+        assert "sip_request_uri" not in kw and "headers" not in kw
+
+
+def test_signalwire_kwargs_build_a_valid_sdk_request():
+    sip = pytest.importorskip("livekit.protocol.sip")
+    req = sip.CreateSIPParticipantRequest(
+        **build_sip_participant_kwargs(room="r", number="+15559998888", config=_SWC))
+    assert req.sip_request_uri.raw == "sip:rmsai@sp-public.dapp.signalwire.com"
+    assert req.headers["X-RMSAI-To"] == "+15559998888"

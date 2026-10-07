@@ -343,7 +343,31 @@ def build_sip_participant_kwargs(
     }
     if config.outbound_from:  # caller ID; omitted entirely when unset so the trunk default applies
         kwargs["sip_number"] = config.outbound_from
+    kwargs.update(signalwire_routing(number, config))
     return kwargs
+
+
+# Custom INVITE header that carries the callee number to SignalWire's outbound SWML.
+SIGNALWIRE_DEST_HEADER = "X-RMSAI-To"
+
+
+def signalwire_routing(number: str, config: Config = DEFAULT) -> dict:
+    """Extra `CreateSIPParticipantRequest` fields for a SignalWire SIP address, else `{}`.
+
+    A SignalWire SIP address routes only its own user part (`SIGNALWIRE_SIP_USER`), so the request
+    URI must be `sip:<user>@<domain>`; LiveKit's default, `sip:<callee>@<domain>`, is declined with
+    603 before any script runs. The callee then rides in `X-RMSAI-To`, which the outbound SWML
+    (`voice.sip_setup.swml_outbound`) dials. `sip_call_to` stays the number (LiveKit requires it; it
+    becomes the To header, which SWML's `call.to` does NOT read: that is the request URI).
+    """
+    if config.telephony_carrier != "signalwire" or not config.signalwire_sip_user:
+        return {}
+    domain = config.signalwire_sip_domain.strip()
+    domain = domain[4:] if domain.lower().startswith("sip:") else domain
+    return {
+        "sip_request_uri": {"raw": f"sip:{config.signalwire_sip_user}@{domain}"},
+        "headers": {SIGNALWIRE_DEST_HEADER: number},
+    }
 
 
 def _duration(seconds: int):
