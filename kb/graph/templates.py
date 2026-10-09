@@ -16,8 +16,8 @@ WORKLIST_LEVELS = ["High", "Critical"]
 CLOSED_STATUSES = ["acknowledged", "resolved"]
 
 TEMPLATES: dict[str, str] = {
-    # Worklist — every unacknowledged event at WORKLIST_LEVELS, newest first. `$since` = 0 means
-    # "no time window"; a question naming hours ("in the last 6 hours") narrows it.
+    # Worklist — every unacknowledged event at WORKLIST_LEVELS, most severe first, then newest.
+    # `$since` = 0 means "no time window"; a question naming hours ("in the last 6 hours") narrows it.
     "worklist": """
         MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
         WHERE e.criticality IN $levels AND NOT coalesce(e.status, 'reported') IN $closed
@@ -27,7 +27,7 @@ TEMPLATES: dict[str, str] = {
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
                e.event_type AS event, e.criticality AS criticality,
                coalesce(e.status, 'reported') AS status, e.timestamp AS ts
-        ORDER BY e.timestamp DESC
+        ORDER BY CASE e.criticality WHEN 'Critical' THEN 0 ELSE 1 END, e.timestamp DESC
     """,
     # Alarm counts per patient + bed, most first: "which patient has the most alarms?"
     "alarm_counts": """

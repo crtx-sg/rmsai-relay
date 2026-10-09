@@ -172,6 +172,7 @@ def test_worklist_template_gets_its_defaults():
     run_template(_Driver(), "worklist")  # e.g. picked by the LLM router with no params
     assert seen["since"] == 0 and seen["levels"] == WORKLIST_LEVELS == ["High", "Critical"]
     assert seen["closed"] == CLOSED_STATUSES and "e.criticality IN $levels" in seen["cypher"]
+    assert "WHEN 'Critical' THEN 0" in seen["cypher"]  # most severe first ("most severe alarm?")
 
 
 def test_router_can_pick_the_worklist_templates():
