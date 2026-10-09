@@ -197,3 +197,33 @@ def test_barge_in_policy_survives_slow_stt():
     # 2.0s before resuming a "false" interruption) let the answer run on over it.
     assert BARGE_IN["mode"] == "vad" and BARGE_IN["min_duration"] <= 0.3
     assert BARGE_IN["false_interruption_timeout"] >= 3.0
+
+
+# --- PIN with a leading interjection (live: "Oh, one, two, three, four" -> rejected) --------------
+
+from voice.auth import parse_pin  # noqa: E402
+
+
+@pytest.mark.parametrize("spoken, ok", [
+    ("Oh, one, two, three, four", True), ("oh one two three four", True), ("Um, 1234", True),
+    ("one two three four", True), ("Oh, one, two, three, five", False), ("oh", False),
+    ("Oh, one, two, three, four, five", False),
+])
+def test_pin_ignores_a_leading_interjection(spoken, ok):
+    assert PinAuthGate(NS(inbound_auth_pin="1234")).verify(spoken) is ok
+
+
+def test_mid_pin_oh_is_still_zero():
+    assert parse_pin("one oh two three") == "1023"
+    assert PinAuthGate(NS(inbound_auth_pin="1023")).verify("one oh two three")
+
+
+# --- call_still_up ---------------------------------------------------------------------------------
+
+def test_call_is_up_while_a_sip_participant_remains():
+    from livekit.protocol.models import ParticipantInfo
+
+    from voice.livekit_cloud import call_still_up
+
+    K = ParticipantInfo.Kind
+    assert call_still_up([K.AGENT, K.SIP]) and not call_still_up([K.AGENT]) and not call_still_up([])

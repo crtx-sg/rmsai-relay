@@ -29,10 +29,19 @@ def parse_pin(text: str) -> str:
     return "".join(digits)
 
 
+_LEADING_INTERJECTION = re.compile(r"^\W*(?:oh|uh|um|ok(?:ay)?|so|er)\b\W*", re.IGNORECASE)
+
+
 class PinAuthGate:
     def __init__(self, config: Config = DEFAULT) -> None:
         self._pin = config.inbound_auth_pin
 
     def verify(self, spoken_or_digits: str) -> bool:
         parsed = parse_pin(spoken_or_digits)
-        return bool(parsed) and parsed == self._pin
+        if bool(parsed) and parsed == self._pin:
+            return True
+        # "Oh, one, two, three, four": a leading interjection that STT also reads as a digit ("oh"
+        # = 0) made a correct PIN "01234" (live 2026-10-09). Retry without it; a mid-PIN "oh" (as in
+        # "one oh two three") is untouched.
+        rest = _LEADING_INTERJECTION.sub("", spoken_or_digits or "", count=1)
+        return rest != spoken_or_digits and bool(self._pin) and parse_pin(rest) == self._pin

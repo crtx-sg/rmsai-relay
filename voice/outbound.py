@@ -176,9 +176,15 @@ def get_caller(name: str = "simulated", config: Config = DEFAULT, **kwargs) -> C
 
 
 def place_with_retries(
-    caller: Caller, number: str, config: Config = DEFAULT, *, sleep_fn=time.sleep
+    caller: Caller, number: str, config: Config = DEFAULT, *, sleep_fn=time.sleep,
+    before_retry=None,
 ) -> tuple[CallOutcome, int]:
-    """Place the call with the §6.1 retry policy. Returns (final_outcome, attempts)."""
+    """Place the call with the §6.1 retry policy. Returns (final_outcome, attempts).
+
+    `before_retry()` runs before every re-dial. The live path uses it to re-dispatch the agent: after
+    an unanswered attempt the room closes and the agent leaves, so a retry answered without it is
+    silence (seen 2026-10-09: the Critical VF alert's retry). Best-effort; errors are logged.
+    """
     if not is_valid_number(number):
         return CallOutcome.INVALID, 0  # fail fast, no retry
 
@@ -193,6 +199,12 @@ def place_with_retries(
         # NO_ANSWER / BUSY -> retry after the delay (unless this was the last attempt)
         if attempt < config.outbound_max_retries:
             sleep_fn(config.outbound_retry_delay_s)
+            if before_retry is not None:
+                try:
+                    before_retry()
+                except Exception as exc:  # noqa: BLE001 - the re-dial still goes ahead
+                    print(f"[outbound] before-retry hook failed: {type(exc).__name__}: {exc}",
+                          flush=True)
     return CallOutcome.NO_ANSWER, attempts  # exhausted -> notify_failed
 
 

@@ -332,3 +332,28 @@ def test_text_notify_delivery_failure(env):
     )
     assert result.outcome == "failed" and result.status == "notify_failed"
     assert _status(driver, ev.window.event_id) == "notify_failed"
+
+
+def test_place_with_retries_runs_the_hook_before_each_redial():
+    from voice.outbound import CallOutcome, place_with_retries
+
+    class _Caller:
+        def __init__(self, outcomes):
+            self.outcomes = list(outcomes)
+
+        def place_call(self, number):
+            return self.outcomes.pop(0)
+
+    hooks = []
+    cfg = replace(DEFAULT, outbound_max_retries=2, outbound_retry_delay_s=0)
+    outcome, attempts = place_with_retries(
+        _Caller([CallOutcome.NO_ANSWER, CallOutcome.NO_ANSWER, CallOutcome.ANSWERED]),
+        "+15551234567", cfg, sleep_fn=lambda _s: None, before_retry=lambda: hooks.append(1))
+    assert (outcome, attempts) == (CallOutcome.ANSWERED, 3) and hooks == [1, 1]  # not before #1
+
+    def _boom():
+        raise RuntimeError("dispatch down")
+
+    outcome, _ = place_with_retries(_Caller([CallOutcome.NO_ANSWER, CallOutcome.ANSWERED]),
+                                    "+15551234567", cfg, sleep_fn=lambda _s: None, before_retry=_boom)
+    assert outcome == CallOutcome.ANSWERED  # a failed hook never blocks the re-dial

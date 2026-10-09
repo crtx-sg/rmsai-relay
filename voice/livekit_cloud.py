@@ -92,6 +92,48 @@ async def _room_has_agent_or_pending(lk, api, room: str) -> bool:  # pragma: no 
         return False
 
 
+def call_still_up(participant_kinds) -> bool:
+    """True while a phone (SIP) participant is still in the room. Kinds are `ParticipantInfo.Kind`."""
+    from livekit.protocol.models import ParticipantInfo  # noqa: PLC0415
+
+    return ParticipantInfo.Kind.SIP in set(participant_kinds)
+
+
+def wait_until_call_ends(
+    room: str, *, config: Config = DEFAULT, max_s: float | None = None, poll_s: float = 2.0,
+) -> float:  # pragma: no cover - needs a live LiveKit server
+    """Block until the phone participant has left `room` (or the room is gone). Returns seconds.
+
+    Capped at `max_s` (default: `sip_max_call_duration_s`, LiveKit's own hard stop for the call),
+    so a stuck room can never wedge the consumer.
+    """
+    import asyncio  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from livekit import api  # noqa: PLC0415
+
+    cap = max_s if max_s is not None else float(config.sip_max_call_duration_s or 600)
+    started = time.monotonic()
+
+    async def _go() -> None:
+        lk = api.LiveKitAPI(url=_http_url(config.livekit_url), api_key=config.livekit_api_key,
+                            api_secret=config.livekit_api_secret)
+        try:
+            while time.monotonic() - started < cap:
+                try:
+                    res = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
+                except Exception:  # noqa: BLE001 - room closed/not found: the call is over
+                    return
+                if not call_still_up(p.kind for p in res.participants):
+                    return
+                await asyncio.sleep(poll_s)
+        finally:
+            await lk.aclose()
+
+    asyncio.run(_go())
+    return time.monotonic() - started
+
+
 def create_agent_dispatch(
     room: str, *, config: Config = DEFAULT, agent_name: str | None = None, metadata: str = "",
 ) -> bool:  # pragma: no cover - needs the SDK + a live LiveKit server

@@ -127,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     caller_factory = None
     dispatch_fn = None
     alert_store = None
+    call_end_waiter = None
     if args.channel == "voice" and args.caller == "livekit":
         from voice.outbound_alert import OutboundAlertStore  # noqa: PLC0415
 
@@ -135,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
         # the room.
         alert_store = OutboundAlertStore.from_config(config)
         caller_factory, dispatch_fn = livekit_voice_wiring(config, args.transport)
+        if args.transport == "sip":
+            # One phone call at a time: the next alert waits for this one to be hung up.
+            from voice.livekit_cloud import wait_until_call_ends  # noqa: PLC0415
+
+            tel = config.telephony()
+            call_end_waiter = lambda room: wait_until_call_ends(room, config=tel)  # noqa: E731
         caller = None
     else:
         caller = SimulatedCaller([CallOutcome.ANSWERED] * max(args.count, 1))
@@ -205,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
                             caller_factory=caller_factory, dispatch_fn=dispatch_fn,
                             alert_store=alert_store,
                             inbox_publisher=inbox_publisher, token_store=token_store,
+                            call_end_waiter=call_end_waiter,
                         )
                         _report(result, samples=args.trend_samples)
                         if result.trace is not None:

@@ -154,3 +154,67 @@ def test_dispatch_failure_does_not_abort_the_call(patched):
                caller_factory=lambda room: object(), dispatch_fn=_boom,
                alert_store=_FakeAlertStore())
     assert res.persisted and res.called
+
+
+# --- demo run 2026-10-09 08:37: retries, overlap, dispatch latency ---------------------------------
+
+def test_retry_redispatches_the_agent(patched, monkeypatch):
+    # The VF alert's first attempt went unanswered, the room closed and the agent left; the retry
+    # was answered into an empty room (silence). A retry must request the agent again.
+    dispatched = []
+
+    def _voice_with_retry(ev, **kw):
+        kw["before_retry"]()  # what place_with_retries does before the re-dial
+        return OutboundResult(called=True, decision_reason="ok", outcome="answered", attempts=2,
+                              status="reported")
+
+    monkeypatch.setattr(bus_consumer, "run_outbound", _voice_with_retry)
+    res = _run(event_to_dict(_event(_Afib())), patched, channel="voice",
+               caller_factory=lambda room: object(), dispatch_fn=dispatched.append,
+               alert_store=_FakeAlertStore())
+    room = f"rmsai-outbound-{res.event_uuid}"
+    assert dispatched == [room, room]  # first attempt + the retry
+
+
+def test_next_event_waits_for_the_answered_call_to_end(patched):
+    waited = []
+    res = _run(event_to_dict(_event(_Afib())), patched, channel="voice",
+               caller_factory=lambda room: object(), dispatch_fn=lambda room: None,
+               alert_store=_FakeAlertStore(), call_end_waiter=lambda room: waited.append(room) or 42.0)
+    assert waited == [f"rmsai-outbound-{res.event_uuid}"]
+
+
+def test_unanswered_call_does_not_wait(patched, monkeypatch):
+    monkeypatch.setattr(bus_consumer, "run_outbound", lambda ev, **kw: OutboundResult(
+        called=True, decision_reason="ok", outcome="no_answer", attempts=3, status="notify_failed"))
+    waited = []
+    _run(event_to_dict(_event(_Afib())), patched, channel="voice",
+         caller_factory=lambda room: object(), dispatch_fn=lambda room: None,
+         alert_store=_FakeAlertStore(), call_end_waiter=waited.append)
+    assert waited == []
+
+
+def test_dispatch_does_not_delay_the_dial(patched, monkeypatch):
+    # The ~4s LiveKit Cloud dispatch runs alongside the dial instead of before it.
+    import threading
+    import time
+
+    gate = threading.Event()
+    order = []
+
+    def _slow_dispatch(room):
+        gate.wait(2)
+        order.append("dispatched")
+
+    def _voice(ev, **kw):
+        order.append("dialled")
+        gate.set()
+        return OutboundResult(called=True, decision_reason="ok", outcome="answered", attempts=1,
+                              status="reported")
+
+    monkeypatch.setattr(bus_consumer, "run_outbound", _voice)
+    t = time.monotonic()
+    _run(event_to_dict(_event(_Afib())), patched, channel="voice",
+         caller_factory=lambda room: object(), dispatch_fn=_slow_dispatch,
+         alert_store=_FakeAlertStore())
+    assert order == ["dialled", "dispatched"] and time.monotonic() - t < 1.5

@@ -12,6 +12,8 @@ consumer-group loop lives in `cli.consume`.
 
 from __future__ import annotations
 
+import threading
+
 from dataclasses import dataclass
 
 from common.bed_assignment import BedAssignmentStub
@@ -106,6 +108,7 @@ def process_bus_event(
     alert_store=None,
     inbox_publisher=None,
     token_store=None,
+    call_end_waiter=None,
 ) -> ConsumeResult:
     """Reconstruct, persist, and (if the gate clears) alert for one bus payload.
 
@@ -217,22 +220,43 @@ def process_bus_event(
             session_id=room, patient_ref=w.patient_ref, event_id=w.event_id,
             spoken_alert=spoken_report(event, bed=bed_label, config=config), bed=bed_label,
         ))
-        # Explicitly dispatch the agent into this room BEFORE placing the call, so the worker is
-        # present when the callee answers (SIP) or the clinician joins over WebRTC. Best-effort:
-        # a dispatch hiccup must not abort a persisted, gated event.
-        if dispatch_fn is not None:
+        # Dispatch the agent into this room — in the background, WHILE the call is dialled. The
+        # dispatch (duplicate-agent check + create on LiveKit Cloud) took ~4s and used to delay the
+        # dial; the agent joins in 1-4s while the phone rings for 10s+, and the worker's greeting
+        # gate waits for the answer anyway. Best-effort: a dispatch hiccup must not abort a
+        # persisted, gated event.
+        def _dispatch(why: str) -> None:
+            if dispatch_fn is None:
+                return
             try:
                 dispatch_fn(room)
             except Exception as exc:  # noqa: BLE001 - the call can still connect; only Q&A needs the agent
-                print(f"[consume] agent dispatch to {room} failed: "
+                print(f"[consume] agent dispatch ({why}) to {room} failed: "
                       f"{type(exc).__name__}: {exc}", flush=True)
-        print(f"[consume] alert staged in Redis; placing call -> worker will join room {room}",
-              flush=True)
+
+        dispatcher = threading.Thread(target=_dispatch, args=("first",), daemon=True)
+        dispatcher.start()
+        print(f"[consume] alert staged in Redis; placing call (agent dispatching in parallel) -> "
+              f"room {room}", flush=True)
         result = run_outbound(
             event, driver=driver, orchestrator=orchestrator, caller=caller_factory(room),
             utterances=utterances, config=config, bed=bed_label, live_audio=True,
             fallback_notifier=notifier,
+            # A retry needs the agent again: after an unanswered attempt the room closed and it left.
+            before_retry=lambda: _dispatch("retry"),
         )
+        dispatcher.join(timeout=10)
+        # One call at a time: wait for the clinician to hang up before the next event can dial.
+        # Moving on at "answered" rang the next alert into the call still in progress.
+        if call_end_waiter is not None and result.outcome == "answered":
+            print(f"[consume] call answered; waiting for it to end before the next event "
+                  f"(room {room})", flush=True)
+            try:
+                waited = call_end_waiter(room)
+                print(f"[consume] call in {room} ended after {waited:.0f}s", flush=True)
+            except Exception as exc:  # noqa: BLE001 - never wedge the consumer on a status probe
+                print(f"[consume] could not confirm call end in {room}: "
+                      f"{type(exc).__name__}: {exc}", flush=True)
     else:
         result = run_outbound(
             event, driver=driver, orchestrator=orchestrator, caller=caller,
