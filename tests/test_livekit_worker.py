@@ -338,3 +338,92 @@ def test_local_tts_capabilities():
     lt = LocalTTS(_WavTTS(), sample_rate=22050)
     assert lt.sample_rate == 22050
     assert lt.capabilities.streaming is False
+
+
+# --- greeting gate: wait for the callee to answer -------------------------------------------------
+
+from types import SimpleNamespace as _NS  # noqa: E402
+
+from voice.livekit_agent import TurnLatency, caller_ready, wait_for_caller  # noqa: E402
+
+_K = rtc.ParticipantKind
+
+
+def _sip(status):
+    return _NS(kind=_K.PARTICIPANT_KIND_SIP, attributes={"sip.callStatus": status})
+
+
+def test_caller_not_ready_while_the_phone_rings():
+    # The SIP participant joins at dial time; greeting then would play into a ringing phone.
+    assert not caller_ready([])
+    assert not caller_ready([_NS(kind=_K.PARTICIPANT_KIND_AGENT, attributes={})])
+    assert not caller_ready([_sip("dialing")])
+    assert not caller_ready([_sip("ringing")])
+    assert caller_ready([_sip("active")])
+
+
+def test_webrtc_caller_is_ready_on_arrival():
+    assert caller_ready([_NS(kind=_K.PARTICIPANT_KIND_STANDARD, attributes={})])
+
+
+def test_wait_for_caller_returns_when_answered_and_times_out_otherwise():
+    callee = _sip("ringing")
+    room = _NS(remote_participants={"sip": callee})
+    now = [0.0]
+
+    async def _sleep(s):
+        now[0] += s
+        if now[0] >= 1.0:
+            callee.attributes["sip.callStatus"] = "active"  # answered after ~1s
+
+    assert asyncio.run(wait_for_caller(room, 5.0, clock=lambda: now[0], sleep=_sleep))
+    assert 1.0 <= now[0] < 1.5
+
+    never = _NS(remote_participants={"sip": _sip("ringing")})
+    t = [0.0]
+
+    async def _tick(s):
+        t[0] += s
+
+    assert not asyncio.run(wait_for_caller(never, 2.0, clock=lambda: t[0], sleep=_tick))
+
+
+# --- per-turn latency line ------------------------------------------------------------------------
+
+class EOUMetrics(_NS):
+    pass
+
+
+class TTSMetrics(_NS):
+    pass
+
+
+def test_turn_latency_joins_eou_handler_and_tts():
+    lines: list[str] = []
+    lat = TurnLatency(emit=lines.append)
+    lat.on_metrics(TTSMetrics(speech_id="greet", ttfb=0.3))  # greeting: no user turn -> no line
+    lat.on_metrics(EOUMetrics(speech_id="s1", end_of_utterance_delay=1.0, transcription_delay=0.8,
+                              on_user_turn_completed_delay=0.01))
+    lat.handler_done(2.5)
+    line = lat.on_metrics(TTSMetrics(speech_id="s1", ttfb=0.4))
+    assert lines == [line]
+    assert "eou=1.00s (stt=0.80s)" in line and "handler=2.50s" in line and "tts_ttfb=0.40s" in line
+    assert "first audio ~3.91s" in line
+
+
+def test_endpointing_delay_is_configurable(monkeypatch):
+    from common.config import Config
+
+    monkeypatch.setenv("VOICE_ENDPOINTING_MIN_DELAY_S", "1.2")
+    assert Config.from_env().voice_endpointing_min_delay_s == 1.2
+    monkeypatch.delenv("VOICE_ENDPOINTING_MIN_DELAY_S")
+    assert Config.from_env().voice_endpointing_min_delay_s == 0.9
+
+
+def test_turn_latency_reports_an_interrupted_reply_without_a_total():
+    lat = TurnLatency(emit=lambda _l: None)
+    lat.on_metrics(EOUMetrics(speech_id="s2", end_of_utterance_delay=1.5, transcription_delay=1.5,
+                              on_user_turn_completed_delay=0.0))
+    lat.handler_done(1.9)
+    line = lat.on_metrics(TTSMetrics(speech_id="s2", ttfb=-1.0, cancelled=True))
+    assert "tts=cancelled" in line and "-> first audio" not in line

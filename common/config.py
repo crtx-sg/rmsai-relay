@@ -273,6 +273,10 @@ class Config:
     # after each wake word so follow-ups don't repeat it. Text-chat turns are never gated.
     audio_wake_word: str = "hey vios"
     audio_wake_window_s: float = 30.0
+    # Silence (seconds) after speech before a phone/WebRTC audio turn is closed and answered. The
+    # SDK default (0.5s) split natural questions mid-sentence ("Which bed has the" / "severe
+    # alarm"). Push-to-talk (inbox) turns are closed by the button and ignore this.
+    voice_endpointing_min_delay_s: float = 0.9
     # Require the wake word to open a follow-up audio turn (post-alert Q&A on SIP/playground). On by
     # default; set false to answer every authenticated audio turn (like push-to-talk) — the escape
     # hatch when STT mishears the out-of-vocab brand word. The companion app already bypasses this
@@ -414,6 +418,7 @@ class Config:
                                          or H["sip_inbound_allowed_numbers"]),
             audio_wake_word=os.environ.get("AUDIO_WAKE_WORD", "hey vios"),
             audio_wake_window_s=_f("AUDIO_WAKE_WINDOW_S", 30.0),
+            voice_endpointing_min_delay_s=_f("VOICE_ENDPOINTING_MIN_DELAY_S", 0.9),
             audio_wake_required=_b("AUDIO_WAKE_REQUIRED", True),
             inbox_speak_on_select=_b("INBOX_SPEAK_ON_SELECT", True),
             episodic_recall=_b("EPISODIC_RECALL", False),

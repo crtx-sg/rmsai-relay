@@ -82,6 +82,97 @@ def build_session(
     )
 
 
+# --- greeting gate: speak only once the phone call is answered ----------------------------------
+
+# LiveKit sets `sip.callStatus` on a SIP participant: dialing -> ringing -> active (answered).
+# The participant joins the room at *dial* time, so an agent that greets as soon as someone is
+# present plays its greeting into a ringing phone. Seen live: greeting at 06:48:45, answer ~06:49:19.
+SIP_CALL_STATUS = "sip.callStatus"
+_SIP_PENDING = ("dialing", "ringing")
+
+
+def _is_kind(participant, name: str) -> bool:
+    kind = getattr(participant, "kind", None)
+    try:
+        from livekit import rtc as _rtc  # noqa: PLC0415
+
+        return kind == getattr(_rtc.ParticipantKind, name)
+    except Exception:  # noqa: BLE001 - tests use plain stand-ins
+        return kind == name
+
+
+def caller_ready(participants) -> bool:
+    """True when a caller is present and no SIP leg is still dialing/ringing.
+
+    WebRTC callers (no SIP participant) count as ready on arrival. Agents are ignored.
+    """
+    callers = [p for p in participants if not _is_kind(p, "PARTICIPANT_KIND_AGENT")]
+    if not callers:
+        return False
+    return not any(
+        _is_kind(p, "PARTICIPANT_KIND_SIP")
+        and (getattr(p, "attributes", {}) or {}).get(SIP_CALL_STATUS) in _SIP_PENDING
+        for p in callers
+    )
+
+
+async def wait_for_caller(room, timeout_s: float, *, poll_s: float = 0.2,
+                          clock=time.monotonic, sleep=asyncio.sleep) -> bool:
+    """Wait until `caller_ready(room.remote_participants)`; False if `timeout_s` passes first."""
+    deadline = clock() + timeout_s
+    while not caller_ready(list(room.remote_participants.values())):
+        if clock() >= deadline:
+            return False
+        await sleep(poll_s)
+    return True
+
+
+# --- per-turn latency -----------------------------------------------------------------------------
+
+class TurnLatency:
+    """Joins the SDK's per-turn metrics with our handler time into one `[latency]` line per turn.
+
+    End of speech -> first agent audio ~= end_of_utterance_delay (endpointing + STT) +
+    on_user_turn_completed_delay (wake gate) + handler (KB/LLM) + TTS time-to-first-byte.
+    Metrics are matched by `speech_id`; the handler time is the most recent `handler_done()`.
+    Duck-typed on the metric class name so it can be driven offline.
+    """
+
+    def __init__(self, emit=print) -> None:
+        self._emit = emit
+        self._eou: dict[str, object] = {}
+        self._handler_s: float | None = None
+
+    def handler_done(self, seconds: float) -> None:
+        self._handler_s = seconds
+
+    def on_metrics(self, metrics) -> str | None:
+        kind = type(metrics).__name__
+        speech_id = getattr(metrics, "speech_id", None)
+        if kind == "EOUMetrics" and speech_id:
+            self._eou[speech_id] = metrics
+            return None
+        if kind != "TTSMetrics" or speech_id not in self._eou:
+            return None  # e.g. the greeting (no user turn) or a metric we don't report
+        eou = self._eou.pop(speech_id)
+        eou_s = float(getattr(eou, "end_of_utterance_delay", 0.0) or 0.0)
+        stt_s = float(getattr(eou, "transcription_delay", 0.0) or 0.0)
+        gate_s = float(getattr(eou, "on_user_turn_completed_delay", 0.0) or 0.0)
+        handler_s = self._handler_s if self._handler_s is not None else 0.0
+        ttfb_s = float(getattr(metrics, "ttfb", 0.0) or 0.0)
+        self._handler_s = None
+        head = (f"[latency] eou={eou_s:.2f}s (stt={stt_s:.2f}s) gate={gate_s:.2f}s "
+                f"handler={handler_s:.2f}s ")
+        if getattr(metrics, "cancelled", False) or ttfb_s < 0:
+            # The reply was interrupted before any audio (the SDK reports ttfb=-1): no total.
+            line = head + "tts=cancelled (interrupted before first audio)"
+        else:
+            line = (head + f"tts_ttfb={ttfb_s:.2f}s "
+                    f"-> first audio ~{eou_s + gate_s + handler_s + ttfb_s:.2f}s after speech end")
+        self._emit(line)
+        return line
+
+
 def last_user_text(chat_ctx) -> str:
     """Return the most recent user utterance from a LiveKit `ChatContext` ('' if none)."""
     for item in reversed(getattr(chat_ctx, "items", [])):
@@ -264,7 +355,7 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
 
         def __init__(
             self, handler: Handler, session_id: str, greeting: str | None,
-            *, push_to_talk: bool = False,
+            *, push_to_talk: bool = False, greeting_gate=None, latency: "TurnLatency | None" = None,
         ) -> None:
             super().__init__(instructions="")  # unused: llm_node is overridden
             self._handler = handler
@@ -272,11 +363,23 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             self._greeting = greeting
             self._push_to_talk = push_to_talk  # in-app chat: app controls the mic, so no wake gate
             self._awake_until = 0.0  # monotonic deadline; audio Q&A is open until then
+            self._greeting_gate = greeting_gate  # async () -> bool: caller present and answered
+            self._latency = latency
 
         async def on_enter(self) -> None:
-            if self._greeting:
-                print(f"[worker] speaking greeting: {self._greeting!r}", flush=True)
-                self.session.say(self._greeting)
+            if not self._greeting:
+                return
+            if self._greeting_gate is not None:
+                started = time.monotonic()
+                answered = await self._greeting_gate()
+                waited = time.monotonic() - started
+                if not answered:
+                    print(f"[worker] no answered caller after {waited:.1f}s; greeting skipped",
+                          flush=True)
+                    return
+                print(f"[worker] caller answered after {waited:.1f}s", flush=True)
+            print(f"[worker] speaking greeting: {self._greeting!r}", flush=True)
+            self.session.say(self._greeting)
 
         async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
             """Wake-word gate for follow-up audio (raise StopResponse to drop a turn silently)."""
@@ -303,9 +406,12 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             text = last_user_text(chat_ctx)
             print(f"[worker] heard: {text!r}", flush=True)
             loop = asyncio.get_running_loop()
+            started = time.monotonic()
             reply = await loop.run_in_executor(
                 None, partial(self._handler.respond, text, session_id=self._session_id)
             )
+            if self._latency is not None:
+                self._latency.handler_done(time.monotonic() - started)
             print(f"[worker] reply: {reply!r}", flush=True)
             yield reply
 
@@ -541,9 +647,12 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         # spoken question produces NOTHING in the worker log). `/ptt-end` commits the turn instead.
         turn_handling=TurnHandlingOptions(
             preemptive_generation={"enabled": False},
-            **({"turn_detection": "manual"} if is_inbox else {}),
+            **({"turn_detection": "manual"} if is_inbox else
+               {"endpointing": {"min_delay": config.voice_endpointing_min_delay_s}}),
         ),
     )
+    latency = TurnLatency(emit=lambda line: print(line, flush=True))
+    session.on("metrics_collected", lambda ev: latency.on_metrics(getattr(ev, "metrics", None)))
     # Log every finalized transcript: the one place that proves STT actually ran (and what it heard)
     # when a voice turn produces no answer. Text-chat turns don't pass through STT, so this is
     # audio-only. Pseudonymous by construction; synthetic speech only (hard rules #5/#6).
@@ -680,8 +789,14 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         print(f"[worker] lk.chat handler NOT registered ({exc}); falling back to RoomIO's", flush=True)
 
     await session.start(
-        agent=HandlerAgent(handler, session_id=ctx.room.name, greeting=greeting,
-                           push_to_talk=is_inbox),
+        agent=HandlerAgent(
+            handler, session_id=ctx.room.name, greeting=greeting, push_to_talk=is_inbox,
+            # Phone/WebRTC rooms: hold the greeting until the callee has actually answered (the SIP
+            # participant joins while still ringing). Bounded by the ringing timeout.
+            greeting_gate=None if is_inbox else partial(
+                wait_for_caller, ctx.room, config.sip_ringing_timeout_s + 10.0),
+            latency=latency,
+        ),
         room=ctx.room,
         room_input_options=build_room_input_options(_text_only_reply, is_inbox=is_inbox),
     )
