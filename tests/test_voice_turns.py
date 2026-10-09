@@ -227,3 +227,35 @@ def test_call_is_up_while_a_sip_participant_remains():
 
     K = ParticipantInfo.Kind
     assert call_still_up([K.AGENT, K.SIP]) and not call_still_up([K.AGENT]) and not call_still_up([])
+
+
+# --- every call authenticates from scratch (live 2026-10-09 09:14) ---------------------------------
+
+class _StoredWorking(_Working):
+    """Session state that outlives a call, like the Redis-backed WorkingMemory (no TTL)."""
+
+    def clear(self, _sid):
+        self.state = NS(authenticated=False, patient_ref=None)
+
+
+def test_new_call_on_a_reused_room_requires_the_pin(tmp_path):
+    # The previous call on rmsai-outbound-<event> left the session authenticated. Re-ingesting the
+    # same event reused the room, and "one two three four" went to the KB instead of the PIN check.
+    orch = _Orch()
+    working = _StoredWorking(authenticated=True)
+    h = OrchestratorHandler(orch, working, auth_gate=PinAuthGate(NS(inbound_auth_pin="1234")),
+                            audit=AuditLog(tmp_path / "a.jsonl"))
+    h.begin_session("rmsai-outbound-91f65594")
+    out = h.respond("One, two, three, four", session_id="rmsai-outbound-91f65594", spoken=True)
+    assert "authenticated" in out and orch.calls == []  # the PIN path, not the KB
+    assert working.state.authenticated
+
+
+def test_without_the_pin_a_reused_room_shares_nothing(tmp_path):
+    orch = _Orch()
+    h = OrchestratorHandler(orch, _StoredWorking(authenticated=True),
+                            auth_gate=PinAuthGate(NS(inbound_auth_pin="1234")),
+                            audit=AuditLog(tmp_path / "a.jsonl"))
+    h.begin_session("room")
+    out = h.respond("what is the latest alarm", session_id="room", spoken=True)
+    assert "authenticate" in out and orch.calls == []

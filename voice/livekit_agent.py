@@ -644,6 +644,10 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
             alert_store is not None and _has_alert(alert_store, ctx.room.name)
         ) else "INBOUND (KB query)"
         handler, greeting, cleanup = resolve_handler(ctx.room.name, alert_store, mode=mode)
+        # Every call authenticates from scratch (see OrchestratorHandler.begin_session).
+        if hasattr(handler, "begin_session"):
+            handler.begin_session(ctx.room.name)
+            print(f"[worker] new call session for {ctx.room.name!r}: PIN required", flush=True)
     if cleanup is not None:
         async def _shutdown() -> None:
             cleanup()

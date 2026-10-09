@@ -79,6 +79,17 @@ class OrchestratorHandler(Handler):
     def greeting(self) -> str:
         return f"Remote clinical line. {_PROMPT_PIN}"
 
+    def begin_session(self, session_id: str) -> None:
+        """Start a call unauthenticated, with no history. Called once per call job.
+
+        Session state lives in Redis keyed by room, with no expiry, and an outbound room is named
+        after the event (`rmsai-outbound-<event_id>`): re-ingesting the same event reuses it. A
+        new call then inherited `authenticated=True` from the previous one — the PIN was never
+        checked ("one two three four" went to the KB) — live 2026-10-09 09:14.
+        """
+        self.working.clear(session_id)
+        self._attempts.pop(session_id, None)
+
     def is_authenticated(self, session_id: str) -> bool:
         """Whether this session passed the PIN gate — i.e. is in the post-alert Q&A phase.
 
