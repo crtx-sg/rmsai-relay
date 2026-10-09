@@ -14,12 +14,18 @@ import time
 from pathlib import Path
 from typing import Any
 
+DEFAULT_AUDIT_LOG_PATH = "data/audit.jsonl"
+
 
 class AuditLog:
     """Thread-naive append-only writer. One JSON object per line."""
 
-    def __init__(self, path: str | os.PathLike = "data/audit.jsonl") -> None:
-        self.path = Path(path)
+    def __init__(self, path: str | os.PathLike | None = None) -> None:
+        # No explicit path: AUDIT_LOG_PATH (read now, not at import), else the POC default. Callers
+        # that build `AuditLog()` bare then follow the same setting as `Config.audit_log_path`,
+        # and the test suite can redirect every one of them (conftest.py).
+        self.path = Path(path if path is not None
+                         else os.environ.get("AUDIT_LOG_PATH") or DEFAULT_AUDIT_LOG_PATH)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def write(

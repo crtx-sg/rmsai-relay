@@ -9,7 +9,32 @@ import os
 
 os.environ.setdefault("RMSAI_NO_DOTENV", "1")
 
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+# Every audit write in the suite goes to a throwaway file. Set at import, before any test module
+# imports `common.config`, so `DEFAULT.audit_log_path` and bare `AuditLog()` both pick it up and a
+# test can never append to the developer's real `data/audit.jsonl`.
+os.environ["AUDIT_LOG_PATH"] = str(Path(tempfile.mkdtemp(prefix="rmsai-audit-")) / "audit.jsonl")
+
 import pytest  # noqa: E402
+
+_REAL_AUDIT_LOG = Path(__file__).resolve().parent / "data" / "audit.jsonl"
+
+
+def _size(path: Path) -> int:
+    return path.stat().st_size if path.exists() else 0
+
+
+@pytest.fixture(autouse=True)
+def _real_audit_log_untouched():
+    """Fail the test that writes to the real audit log (a leak past AUDIT_LOG_PATH)."""
+    before = _size(_REAL_AUDIT_LOG)
+    yield
+    after = _size(_REAL_AUDIT_LOG)
+    assert after == before, (
+        f"test wrote {after - before} bytes to {_REAL_AUDIT_LOG}; audit writes must go to "
+        "AUDIT_LOG_PATH or an explicit tmp path")
 
 # Module fixtures that connect to the LIVE Neo4j when it is reachable and `reset_all()` it. Any test
 # using one is `infra`, so `pytest -m "not infra"` (the "offline" run) can never wipe a running

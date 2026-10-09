@@ -32,3 +32,17 @@ def test_appends_not_overwrites(tmp_path):
     AuditLog(path).write(actor="a", action="x", subject="PT1", outcome="ok")
     AuditLog(path).write(actor="b", action="y", subject="PT2", outcome="ok")
     assert len(AuditLog(path).read_all()) == 2
+
+
+def test_bare_auditlog_follows_audit_log_path(tmp_path, monkeypatch):
+    target = tmp_path / "elsewhere" / "audit.jsonl"
+    monkeypatch.setenv("AUDIT_LOG_PATH", str(target))
+    AuditLog().write(actor="a", action="x", subject="PT1", outcome="ok")
+    assert target.exists() and len(AuditLog(target).read_all()) == 1
+
+
+def test_bare_auditlog_defaults_without_env(monkeypatch):
+    from common.audit import DEFAULT_AUDIT_LOG_PATH
+
+    monkeypatch.delenv("AUDIT_LOG_PATH", raising=False)
+    assert str(AuditLog().path) == DEFAULT_AUDIT_LOG_PATH
