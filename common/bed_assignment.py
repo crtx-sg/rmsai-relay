@@ -21,6 +21,8 @@ class BedAssignmentStub:
     _assignments: dict[str, tuple[str, str]] = field(default_factory=dict)
     # ordered list of occupied bed keys per unit, to find the next free bed
     _unit_occupancy: dict[str, set[str]] = field(default_factory=dict)
+    #: True once the occupancy has been loaded from the persisted graph (patient_bootstrap).
+    seeded: bool = False
 
     def assign(self, patient_id: str) -> tuple[str, str]:
         """Return the patient's current (unit, bed), assigning one on first call."""
@@ -44,6 +46,11 @@ class BedAssignmentStub:
             if f"{unit}-Bed{i:02d}" not in occupied:
                 return i
         raise RuntimeError(f"{unit} unexpectedly full")  # pragma: no cover
+
+    def claim(self, patient_id: str, unit: str, bed: str) -> None:
+        """Record an assignment made elsewhere (e.g. read back from the graph)."""
+        self._assignments[patient_id] = (unit, bed)
+        self._unit_occupancy.setdefault(unit, set()).add(bed)
 
     def current(self, patient_id: str) -> tuple[str, str] | None:
         return self._assignments.get(patient_id)

@@ -34,14 +34,22 @@ _NUM = r"(?:" + "|".join(sorted({*_ONES, *_TEENS}, key=len, reverse=True)) + r")
 # rebuilt label isn't doubled.
 # "bin" is how STT hears "bed" on a phone line ("acknowledge the alarms with bin three"); it only
 # counts when a bed number follows.
+# "bed number two" / "bed no. two": the number word may be introduced (live call 2026-10-09:
+# "What is the event on bed number two?" missed the graph and the LLM answered from history).
+_BED_NO = r"(?:(?:number|no\.?|num|#)\s*)?"
 _BED_SPOKEN = re.compile(
-    rf"\b(?:bed\s+)?(?:unit\s+({_NUM})\s+)?(?:bed|bin)\s+((?:{_NUM})(?:\s+{_NUM})*)\b",
+    rf"\b(?:bed\s+)?(?:unit\s+({_NUM})\s+)?(?:bed|bin)\s+{_BED_NO}((?:{_NUM})(?:\s+{_NUM})*)\b",
     re.IGNORECASE)
 # Typed bed shorthand: "Bed01", "bed 1", "bed01" (digit label, no unit prefix) -> canonical
 # "bed Unit1-Bed01" (default single POC unit, 2-digit label), so it matches the graph Bed node the
 # same way the app's "Unit1 / Bed01" worklist label reads. The negative lookbehind keeps it from
 # firing on the "Bed" inside an already-canonical "Unit1-Bed01" label (that "Bed" follows a "-").
-_BED_TYPED = re.compile(r"(?<![-\w])(?:bed|bin)\s*0*(\d{1,2})\b", re.IGNORECASE)
+_BED_TYPED = re.compile(r"(?<![-\w])(?:bed|bin)\s*(?:(?:number|no\.?|num|#)\s*)?0*(\d{1,2})\b",
+                        re.IGNORECASE)
+# A spoken patient pseudonym: "P T nine nine eight two two four" (after acronym collapse, "PT nine
+# nine …") or "PT 998224" -> "PT998224", the form the graph and the de-identifier use.
+_PT_SPOKEN = re.compile(rf"\bPT\s+((?:{_NUM})(?:\s+{_NUM})+)\b", re.IGNORECASE)
+_PT_SPACED = re.compile(r"\bPT\s+(\d{3,})\b", re.IGNORECASE)
 # A spoken count before hours/minutes ("twenty four hours", "thirty minutes") -> additive digits.
 _TIME_SPOKEN = re.compile(
     rf"\b((?:(?:{'|'.join(_TENS)})\s+)?(?:{_NUM})|(?:{'|'.join(_TENS)}))\s+(hours?|minutes?|mins?)\b",
@@ -123,4 +131,6 @@ def normalize_spoken_query(query: str) -> str:
     q = _BED_SPOKEN.sub(_bed_sub, q)          # spoken words -> "bed Unit1-Bed01"
     q = _BED_TYPED.sub(_bed_typed_sub, q)     # typed shorthand "Bed01" -> "bed Unit1-Bed01"
     q = _TIME_SPOKEN.sub(_time_sub, q)
+    q = _PT_SPOKEN.sub(lambda m: "PT" + _digits(m.group(1)), q)
+    q = _PT_SPACED.sub(lambda m: "PT" + m.group(1), q)
     return q

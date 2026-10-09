@@ -92,11 +92,11 @@ def test_alarm_counts_name_the_leaders():
         "2 other beds have fewer.")
 
 
-def test_other_lists_are_cut_to_three():
-    rows = [{"patient": f"PT{i}", "event": "PVC", "ts": None} for i in range(5)]
-    out = _spoken_summary(rows, "events_for_patient")
+def test_non_event_lists_are_cut_to_three():
+    # Event lists are summarised by type (never truncated, see below); other lists read three.
+    rows = [{"patient": f"PT{i}", "action": "repeat ECG", "due": None} for i in range(5)]
+    out = _spoken_summary(rows, "outstanding_action_items")
     assert out.startswith("5 records.") and "And 2 more; ask for details." in out
-    assert out.count("PVC") == 3
 
 
 # --- 3. fillers -----------------------------------------------------------------------------------
@@ -259,3 +259,67 @@ def test_without_the_pin_a_reused_room_shares_nothing(tmp_path):
     h.begin_session("room")
     out = h.respond("what is the latest alarm", session_id="room", spoken=True)
     assert "authenticate" in out and orch.calls == []
+
+
+# --- named beds / patients reach the graph; event lists are never truncated -----------------------
+
+from kb.graph.lookup import match_intent  # noqa: E402
+
+_NOW = 1_000_000.0
+
+
+@pytest.mark.parametrize("q, expected", [
+    ("What is the event on bed number two?", ("event_status_on_bed", {"bed": "Unit1-Bed02"})),
+    ("Elaborate the event on bed number one", ("event_status_on_bed", {"bed": "Unit1-Bed01"})),
+    ("tell me about bed no. 3", ("event_status_on_bed", {"bed": "Unit1-Bed03"})),
+    ("events for PT998224", ("events_for_patient", {"patient_id": "PT998224"})),
+    ("list events for patient P T nine nine eight two two four",
+     ("events_for_patient", {"patient_id": "PT998224"})),
+    ("which bed is PT998224 on", ("patient_bed", {"patient_id": "PT998224"})),
+    ("what are the vitals for PT998224", ("vitals_at_patient_last_event", {"patient_id": "PT998224"})),
+])
+def test_named_targets_route_to_the_graph(q, expected):
+    assert match_intent(q, now=_NOW) == expected
+
+
+def test_bed_event_summary_lists_every_rhythm():
+    rows = [{"patient": "PT998224", "bed": "Unit1-Bed02", "reported_event": e, "status": s, "ts": i}
+            for i, (e, s) in enumerate([("VENTRICULAR_TACHYCARDIA", "reported"),
+                                        ("VENTRICULAR_TACHYCARDIA", "reported"),
+                                        ("VENTRICULAR_FIBRILLATION", "reported"),
+                                        ("ATRIAL_FIBRILLATION", "acknowledged")])]
+    assert _spoken_summary(rows, "event_status_on_bed") == (
+        "Bed 2, patient PT998224: 4 events — ventricular tachycardia twice, ventricular "
+        "fibrillation, atrial fibrillation. 3 unacknowledged.")
+
+
+# --- beds persist across consumer restarts --------------------------------------------------------
+
+from common.bed_assignment import BedAssignmentStub  # noqa: E402
+from orchestrator.patient_bootstrap import ensure_patient  # noqa: E402
+
+
+class _BedGraph:
+    def __init__(self, assigned, patients):
+        self.assigned, self.patients = assigned, patients
+
+    def run_read(self, cypher, **params):
+        if "ASSIGNED_TO" in cypher:
+            return [{"id": p, "bed": b, "unit": b.split("-")[0]} for p, b in self.assigned.items()]
+        return [{"id": params["id"]}] if params.get("id") in self.patients else []
+
+
+def test_known_patient_keeps_the_persisted_bed_after_a_restart():
+    graph = _BedGraph({"PT998224": "Unit1-Bed02", "PT942338": "Unit1-Bed01"},
+                      patients={"PT998224", "PT942338"})
+    beds = BedAssignmentStub()  # a fresh consumer: empty in-memory stub
+    assert ensure_patient(graph, beds, "PT998224") == ("Unit1", "Unit1-Bed02")
+
+
+def test_new_patient_gets_a_bed_the_graph_shows_free(monkeypatch):
+    import orchestrator.patient_bootstrap as pb
+
+    monkeypatch.setattr(pb, "ingest_patient_record", lambda *a, **k: None)
+    graph = _BedGraph({"PT998224": "Unit1-Bed02", "PT942338": "Unit1-Bed01"},
+                      patients={"PT998224", "PT942338"})
+    assert ensure_patient(graph, BedAssignmentStub(), "PT111111") == ("Unit1", "Unit1-Bed03")

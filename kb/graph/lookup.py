@@ -57,6 +57,8 @@ _ALARM_COUNTS = re.compile(
 _ALARM_WORD = re.compile(r"\b(alarms?|alerts?|events?)\b", re.IGNORECASE)
 _MOST_SEVERE = re.compile(r"\b(?:most|highest)\s+(?:severe|critical|serious|urgent|priority)\b",
                           re.IGNORECASE)
+_NAMED_PATIENT = re.compile(r"\bPT\d{3,}\b", re.IGNORECASE)
+_WHERE = re.compile(r"\b(which|what) bed\b|\bwhere\b|\bbed (?:is|does)\b", re.IGNORECASE)
 # "this/current/same patient" — scopes a query to the session's patient (outbound call).
 _THIS_PATIENT = re.compile(r"\b(this|current|same) patient(?:'s|s)?\b", re.IGNORECASE)
 
@@ -78,6 +80,13 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     q = query.lower()
     bed = m.group(1) if (m := _BED.search(query)) else None
     etype = event_type_from_text(q)
+    # A patient the clinician names ("events for PT998224") scopes the patient intents below, over
+    # the session's patient. It comes from the clinician's words, never from a model.
+    named = m.group(0).upper() if (m := _NAMED_PATIENT.search(query)) else None
+    if named:
+        if _WHERE.search(q):
+            return "patient_bed", {"patient_id": named}
+        patient_ref = named
 
     # T9 — ECG strips. Typed ("last AFib event"), else this patient's latest, else the global latest.
     if "ecg" in q or "strip" in q:
@@ -183,6 +192,14 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         m = re.search(r"(?:of|with|for)\s+(.+?)\s*\??$", query, re.IGNORECASE)
         if m:
             return "comorbidity_neighborhood", {"condition_id": condition_id(m.group(1))}
+
+    # Fallbacks for an explicit target the rules above did not cover: a named bed or patient is
+    # answered from the graph, never by the LLM from conversation history (which, live, turned a
+    # worklist summary's "9 Critical" into "bed 2 has … 9 Critical events" and dropped its VF).
+    if bed_label:
+        return "event_status_on_bed", {"bed": bed_label}
+    if named:
+        return "events_for_patient", {"patient_id": named}
 
     return None
 

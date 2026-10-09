@@ -377,9 +377,43 @@ def _spoken_summary(rows: list[dict], name: str | None) -> str:
         if rest:
             text += f" {rest} other {'bed has' if rest == 1 else 'beds have'} fewer."
         return text
+    if any(r.get("event") or r.get("reported_event") or r.get("event_type") for r in rows):
+        return _spoken_event_summary(rows)
     shown = [_row_to_sentence(r) for r in rows[:3]]
     more = f" And {n - 3} more; ask for details." if n > 3 else ""
     return f"{n} records. " + " ".join(f"{s.rstrip('.')}." for s in shown) + more
+
+
+def _spoken_event_summary(rows: list[dict]) -> str:
+    """Every event type, counted — never truncated (a bed's VF was dropped by "first three").
+
+    'Bed 2, patient PT998224: 4 events — ventricular tachycardia twice, ventricular fibrillation,
+    atrial fibrillation. 4 unacknowledged.'
+    """
+    def _event(r):
+        return r.get("event") or r.get("reported_event") or r.get("event_type")
+
+    who = []
+    beds = {r.get("bed") for r in rows if r.get("bed")}
+    patients = {r.get("patient") for r in rows if r.get("patient")}
+    if len(beds) == 1:
+        who.append(_spoken_bed(next(iter(beds))).capitalize())
+    if len(patients) == 1:
+        who.append(f"patient {next(iter(patients))}")
+    counts: dict[str, int] = {}
+    for r in rows:  # newest first, as the templates return them
+        name = _spoken_event(_event(r))
+        counts[name] = counts.get(name, 0) + 1
+    kinds = ", ".join(f"{name}{_times(c)}" for name, c in counts.items())
+    head = f"{', '.join(who)}: " if who else ""
+    text = f"{head}{len(rows)} events — {kinds}."
+    if any("status" in r for r in rows):
+        pending = sum(1 for r in rows if str(r.get("status", "reported")) not in ("acknowledged",
+                                                                                "resolved"))
+        text += f" {pending} unacknowledged." if pending else " All acknowledged."
+    if len(beds) > 1 and len(patients) == 1:
+        text += f" Beds: {', '.join(_spoken_bed(b) for b in sorted(beds))}."
+    return text
 
 
 def _answer_operational(rows: list[dict] | None, name: str | None = None) -> str:

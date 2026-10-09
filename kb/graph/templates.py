@@ -159,8 +159,16 @@ TEMPLATES: dict[str, str] = {
         OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)-[:IN_UNIT]->(u:Unit)
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
                e.event_type AS event, e.criticality AS criticality,
-               e.is_false_positive AS false_positive, e.timestamp AS ts
+               e.is_false_positive AS false_positive,
+               coalesce(e.status, 'reported') AS status, e.timestamp AS ts
         ORDER BY e.timestamp DESC
+    """,
+    # Where a named patient is: "which bed is PT998224 on?"
+    "patient_bed": """
+        MATCH (p:Patient {id: $patient_id})-[r:ASSIGNED_TO]->(b:Bed)
+        WHERE coalesce(r.current, true)
+        OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
+        RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit
     """,
     # T6 — Outstanding action items across all patients
     "outstanding_action_items": """
