@@ -213,6 +213,10 @@ services:
       # keeps 8081. Only one of them should be registered under the same LIVEKIT_AGENT_NAME at a
       # time anyway, or LiveKit will split dispatches between them.
       LIVEKIT_WORKER_HTTP_PORT: "${LIVEKIT_WORKER_HTTP_PORT:-8091}"
+      # Load BGE (and local Whisper, if STT_BACKEND=whisper) from hf_cache only: the online
+      # HuggingFace check cost seconds per call and failed outright on a network blip. Set
+      # WORKER_HF_OFFLINE=0 for the first run on a fresh hf_cache volume.
+      HF_HUB_OFFLINE: "${WORKER_HF_OFFLINE:-1}"
     depends_on:
       redis:
         condition: service_healthy
@@ -249,6 +253,7 @@ services:
       # Health port: must differ from the app worker's (8091 in Docker, 8081 on the host) under
       # host networking.
       LIVEKIT_SIP_WORKER_HTTP_PORT: "${LIVEKIT_SIP_WORKER_HTTP_PORT:-8082}"
+      HF_HUB_OFFLINE: "${WORKER_HF_OFFLINE:-1}"   # see voice-worker
     depends_on:
       redis:
         condition: service_healthy

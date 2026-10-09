@@ -141,11 +141,22 @@ def deidentify(deidentifier: Deidentifier, text: str) -> str:
         raise DeidError(f"de-identification failed: {exc}") from exc
 
 
+_PRESIDIO: "PresidioDeidentifier | None" = None
+
+
+def _presidio() -> "PresidioDeidentifier":
+    """The process-wide Presidio de-identifier: building one loads spaCy (~2s); it is stateless."""
+    global _PRESIDIO
+    if _PRESIDIO is None:
+        _PRESIDIO = PresidioDeidentifier()
+    return _PRESIDIO
+
+
 def get_deidentifier(name: str = "auto", names: set[str] | None = None) -> Deidentifier:
     """'auto' tries Presidio then falls back to regex; 'regex'/'presidio' force one."""
     if name in ("presidio", "auto"):
         try:
-            return PresidioDeidentifier()
+            return _presidio()
         except Exception:  # noqa: BLE001 - presidio/spacy model unavailable
             if name == "presidio":
                 raise

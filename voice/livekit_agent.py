@@ -467,8 +467,10 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
     HandlerAgent = make_agent_class(config.audio_wake_word, config.audio_wake_window_s,
                                     config.audio_wake_required)
 
-    stt_adapter = build_stt(config)
-    tts_adapter = build_tts(config)
+    # Built once per process by _prewarm when it could; else built here (cold path).
+    warmed = ctx.proc.userdata or {}
+    stt_adapter = warmed.get("stt") or build_stt(config)
+    tts_adapter = warmed.get("tts") or build_tts(config)
     sample_rate = getattr(tts_adapter, "sample_rate", _FALLBACK_SAMPLE_RATE)
 
     loop = asyncio.get_running_loop()
@@ -698,10 +700,30 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
 def _prewarm(proc) -> None:  # pragma: no cover - needs the silero plugin + a worker process
     quiet_noisy_loggers()  # quiet the noisy libs in each warmed job process too
     proc.userdata["vad"] = silero.VAD.load()
+    # Load what every job needs while the process is idle, not after the call is answered: the BGE
+    # embedder (shared via get_embedder's cache by the retriever and episodic memory), the
+    # de-identifier (shared via get_deidentifier's cache), and the STT/TTS adapters (reused by
+    # _entrypoint). Cold, this was ~20s between dispatch and the greeting. Best-effort: anything
+    # that fails here is simply built on the job's cold path instead. Fits PREWARM_TIMEOUT_S.
+    from common.deid import get_deidentifier  # noqa: PLC0415
+    from kb.vector.embeddings import get_embedder  # noqa: PLC0415
+
+    for key, load in (
+        ("embedder", lambda: get_embedder(DEFAULT.embedder)),
+        ("deid", lambda: get_deidentifier(DEFAULT.deid_backend)),
+        ("stt", lambda: build_stt(DEFAULT)),
+        ("tts", lambda: build_tts(DEFAULT)),
+    ):
+        try:
+            started = time.monotonic()
+            proc.userdata[key] = load()
+            print(f"[worker] prewarm: {key} ready in {time.monotonic() - started:.1f}s", flush=True)
+        except Exception as exc:  # noqa: BLE001 - cold path still works
+            print(f"[worker] prewarm: {key} skipped ({type(exc).__name__}: {exc})", flush=True)
     # Warm the Ollama model into memory so the first clinician turn doesn't pay a cold load.
-    # MUST be non-blocking: prewarm runs inside LiveKit's ~10s process-init budget, and a cold
-    # model load (~11s) would blow it and get the job killed (SIGUSR1). Warm in a daemon thread so
-    # prewarm returns immediately and the model loads alongside the call.
+    # Non-blocking: prewarm runs inside the process-init budget (PREWARM_TIMEOUT_S), which the
+    # model loads above already use most of, and the Ollama daemon warms independently of this
+    # process anyway. A daemon thread lets prewarm return while the model loads.
     if DEFAULT.llm_provider == "ollama":
         import threading  # noqa: PLC0415
 
@@ -717,6 +739,14 @@ def _prewarm(proc) -> None:  # pragma: no cover - needs the silero plugin + a wo
 
 
 WORKER_ROLES = ("app", "phone")
+
+# Process-init budget for _prewarm (SDK default 10s). Loading BGE + Presidio + speech adapters
+# takes ~15-20s cold on CPU; exceeding the budget gets the process killed before it serves a job.
+PREWARM_TIMEOUT_S = 90.0
+# Warm processes kept ready. Each holds its own copy of the models (~1 GB with BGE + Presidio),
+# and the SDK's production default is 4. One serves the POC's one-call-at-a-time load; a second
+# concurrent call takes the cold path while a replacement warms.
+IDLE_PROCESSES = 1
 
 
 def worker_config(role: str, config: Config = DEFAULT) -> Config:
@@ -773,6 +803,8 @@ def build_worker_options(config: Config | None = None):
         # livekit-agents' health-check HTTP server. Configurable so a containerized worker on host
         # networking can coexist with one running on the host (both would bind 8081 otherwise).
         port=config.livekit_worker_http_port,
+        initialize_process_timeout=PREWARM_TIMEOUT_S,
+        num_idle_processes=IDLE_PROCESSES,
     )
 
 

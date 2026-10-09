@@ -57,6 +57,14 @@ def test_build_worker_options_maps_config():
     assert callable(opts.entrypoint_fnc)
 
 
+def test_worker_gives_prewarm_time_and_keeps_one_warm_process():
+    # Prewarm loads BGE + Presidio + speech adapters (~15-20s cold); the SDK's 10s default budget
+    # would kill the process. One idle process: each holds its own model copies (~1 GB).
+    opts = build_worker_options(_CONFIGURED)
+    assert opts.initialize_process_timeout >= 60
+    assert opts.num_idle_processes == 1
+
+
 def test_worker_uses_named_explicit_dispatch():
     # A named agent => EXPLICIT dispatch only (no auto-join). Rooms must request it via
     # create_agent_dispatch (gateway/consumer/token CLI). An empty name would revert to fragile

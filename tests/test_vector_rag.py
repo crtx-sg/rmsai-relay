@@ -123,3 +123,36 @@ def test_ask_uses_llm_when_provided(retriever):
     ans = answer("how do I rate control atrial fibrillation", retriever, llm=_EchoLLM())
     assert ans.answer.startswith("GROUNDED:")
     assert ans.citations
+
+
+def test_bge_is_loaded_once_per_process(monkeypatch):
+    # The retriever, episodic memory and the worker's prewarm all ask for BGE; each used to reload
+    # the weights (~6-13s). They must share one instance, keyed by model id.
+    import kb.vector.embeddings as emb
+
+    loads: list[str] = []
+
+    class _FakeBGE:
+        def __init__(self, model: str) -> None:
+            loads.append(model)
+            self.name, self.dim = model, 3
+
+    monkeypatch.setattr(emb, "BGEEmbedder", _FakeBGE)
+    monkeypatch.setattr(emb, "_BGE_CACHE", {})
+    a, b = emb.get_embedder("bge"), emb.get_embedder("auto")
+    assert a is b and loads == ["BAAI/bge-small-en-v1.5"]
+    assert emb.get_embedder("bge", model="other/model") is not a
+    assert loads == ["BAAI/bge-small-en-v1.5", "other/model"]
+
+
+def test_failed_bge_load_is_not_cached(monkeypatch):
+    import kb.vector.embeddings as emb
+
+    class _Broken:
+        def __init__(self, model: str) -> None:
+            raise OSError("offline and not cached")
+
+    monkeypatch.setattr(emb, "BGEEmbedder", _Broken)
+    monkeypatch.setattr(emb, "_BGE_CACHE", {})
+    assert emb.get_embedder("auto").name.startswith("hashing")  # falls back
+    assert emb._BGE_CACHE == {}                                   # and will retry BGE next time

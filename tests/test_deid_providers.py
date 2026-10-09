@@ -96,3 +96,22 @@ def test_wrapper_fails_closed_blocks_model_call():
     with pytest.raises(DeidError):
         llm.generate("anything with PHI")
     assert inner.prompts == []  # model never called
+
+
+def test_presidio_engine_is_built_once(monkeypatch):
+    # TTS and the LLM wrapper both ask for the de-identifier; building Presidio loads spaCy (~2s).
+    import common.deid as deid
+
+    builds: list[int] = []
+
+    class _FakePresidio(deid.Deidentifier):
+        def __init__(self) -> None:
+            builds.append(1)
+
+        def deidentify(self, text: str) -> str:
+            return text
+
+    monkeypatch.setattr(deid, "PresidioDeidentifier", _FakePresidio)
+    monkeypatch.setattr(deid, "_PRESIDIO", None)
+    assert deid.get_deidentifier("presidio") is deid.get_deidentifier("auto")
+    assert builds == [1]

@@ -65,11 +65,28 @@ class BGEEmbedder:
         return self._model.encode(texts, normalize_embeddings=True).tolist()
 
 
+# One loaded BGE model per process and model id. Several components ask for an embedder in the
+# same process (vector retriever, episodic memory, the worker's prewarm); each `BGEEmbedder()`
+# used to load the weights again (~6-13s apiece on CPU). The model is read-only after load.
+_BGE_CACHE: dict[str, BGEEmbedder] = {}
+
+
+def _bge(model: str | None = None) -> BGEEmbedder:
+    key = model or "BAAI/bge-small-en-v1.5"
+    if key not in _BGE_CACHE:
+        _BGE_CACHE[key] = BGEEmbedder(key)
+    return _BGE_CACHE[key]
+
+
 def get_embedder(name: str = "auto", **kwargs) -> Embedder:
-    """Return an embedder. 'auto' tries BGE then falls back to hashing; 'bge'/'hashing' force one."""
+    """Return an embedder. 'auto' tries BGE then falls back to hashing; 'bge'/'hashing' force one.
+
+    BGE instances are shared per process (see `_BGE_CACHE`); a failed load is not cached, so a
+    later call retries it.
+    """
     if name in ("bge", "auto"):
         try:
-            return BGEEmbedder(**kwargs)
+            return _bge(**kwargs)
         except Exception:  # noqa: BLE001 - sentence-transformers missing or model download blocked
             if name == "bge":
                 raise
