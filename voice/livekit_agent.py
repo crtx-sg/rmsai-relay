@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from functools import partial
 
@@ -116,15 +117,61 @@ def caller_ready(participants) -> bool:
     )
 
 
-async def wait_for_caller(room, timeout_s: float, *, poll_s: float = 0.2,
+def describe_callers(participants) -> str:
+    """'SIP(sip.callStatus=ringing), STANDARD' — what the gate saw, for the log (no identities)."""
+    out = []
+    for p in participants:
+        kind = getattr(p, "kind", None)
+        try:
+            from livekit import rtc as _rtc  # noqa: PLC0415
+
+            name = _rtc.ParticipantKind.Name(kind).removeprefix("PARTICIPANT_KIND_")
+        except Exception:  # noqa: BLE001 - plain stand-ins in tests
+            name = str(kind)
+        status = (getattr(p, "attributes", {}) or {}).get(SIP_CALL_STATUS)
+        out.append(f"{name}({SIP_CALL_STATUS}={status})" if status else name)
+    return ", ".join(out) or "nobody"
+
+
+async def wait_for_caller(room, timeout_s: float, *, heard=None, poll_s: float = 0.2,
                           clock=time.monotonic, sleep=asyncio.sleep) -> bool:
-    """Wait until `caller_ready(room.remote_participants)`; False if `timeout_s` passes first."""
+    """Wait until `caller_ready(room.remote_participants)`; False if `timeout_s` passes first.
+
+    `heard` (an `asyncio.Event`, set when the caller is heard speaking) also releases the wait:
+    someone talking has answered. Live 2026-10-09 the callStatus never read `active` on one call
+    although the caller was talking and entered the PIN, so the greeting was skipped.
+    """
     deadline = clock() + timeout_s
     while not caller_ready(list(room.remote_participants.values())):
+        if heard is not None and heard.is_set():
+            print(f"[worker] caller heard before the call read as answered "
+                  f"({describe_callers(room.remote_participants.values())})", flush=True)
+            return True
         if clock() >= deadline:
+            print(f"[worker] gate timed out; participants: "
+                  f"{describe_callers(room.remote_participants.values())}", flush=True)
             return False
         await sleep(poll_s)
     return True
+
+
+# --- barge-in: the caller saying "ok" stops the agent and it listens -----------------------------
+
+# Phone/WebRTC interruption policy. SDK defaults let a long answer run on over "ok": a <0.5s
+# utterance is ignored, and an interruption with no transcript within 2.0s is treated as noise and
+# the speech RESUMES — our non-streaming STT takes ~1.7-2.6s, so "ok" was routinely too late.
+BARGE_IN = {
+    "enabled": True,
+    "mode": "vad",                      # any speech interrupts; no backchannel suppression
+    "min_duration": 0.3,                # a short "ok" is enough
+    "false_interruption_timeout": 4.0,  # wait for the transcript before resuming (noise/cough)
+}
+_BARGE_IN_WORD = re.compile(r"^\W*(?:ok(?:ay)?|stop|wait|hold on)\W*$", re.IGNORECASE)
+
+
+def is_barge_in(text: str) -> bool:
+    """A transcript that means "stop talking and listen" (kept short: it is acted on mid-speech)."""
+    return bool(_BARGE_IN_WORD.match(text or ""))
 
 
 # --- per-turn latency -----------------------------------------------------------------------------
@@ -408,7 +455,8 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             loop = asyncio.get_running_loop()
             started = time.monotonic()
             reply = await loop.run_in_executor(
-                None, partial(self._handler.respond, text, session_id=self._session_id)
+                None, partial(self._handler.respond, text, session_id=self._session_id,
+                              spoken=True)  # audio turn: short spoken answers, fillers ignored
             )
             if self._latency is not None:
                 self._latency.handler_done(time.monotonic() - started)
@@ -647,12 +695,30 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         # spoken question produces NOTHING in the worker log). `/ptt-end` commits the turn instead.
         turn_handling=TurnHandlingOptions(
             preemptive_generation={"enabled": False},
-            **({"turn_detection": "manual"} if is_inbox else
-               {"endpointing": {"min_delay": config.voice_endpointing_min_delay_s}}),
+            **({"turn_detection": "manual"} if is_inbox else {
+                "endpointing": {"min_delay": config.voice_endpointing_min_delay_s},
+                "interruption": BARGE_IN,
+            }),
         ),
     )
     latency = TurnLatency(emit=lambda line: print(line, flush=True))
     session.on("metrics_collected", lambda ev: latency.on_metrics(getattr(ev, "metrics", None)))
+    # The caller speaking proves the call is answered (fallback for the greeting gate).
+    caller_heard = asyncio.Event()
+    session.on("user_state_changed",
+               lambda ev: caller_heard.set() if getattr(ev, "new_state", None) == "speaking" else None)
+    session.on("user_input_transcribed", lambda _ev: caller_heard.set())
+
+    def _barge_in(ev) -> None:
+        """Backup to the VAD interruption: if "ok" is transcribed while the agent is still talking
+        (e.g. it resumed after a false-interruption timeout), stop it. The handler then gives "ok"
+        no reply (voice.handlers.is_filler), so the agent simply listens."""
+        if is_barge_in(getattr(ev, "transcript", "")) and session.agent_state == "speaking":
+            print("[worker] barge-in: caller said "
+                  f"{getattr(ev, 'transcript', '')!r}; stopping speech", flush=True)
+            session.interrupt()
+
+    session.on("user_input_transcribed", _barge_in)
     # Log every finalized transcript: the one place that proves STT actually ran (and what it heard)
     # when a voice turn produces no answer. Text-chat turns don't pass through STT, so this is
     # audio-only. Pseudonymous by construction; synthetic speech only (hard rules #5/#6).
@@ -693,6 +759,10 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         """
         try:
             if action == "start":
+                # Pressing talk while the agent is speaking is a barge-in: stop and listen.
+                if session.agent_state == "speaking":
+                    session.interrupt()
+                    print("[worker] ptt: barge-in, agent speech stopped", flush=True)
                 _link_audio(participant)
                 session.input.set_audio_enabled(True)
                 session.clear_user_turn()
@@ -794,7 +864,8 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
             # Phone/WebRTC rooms: hold the greeting until the callee has actually answered (the SIP
             # participant joins while still ringing). Bounded by the ringing timeout.
             greeting_gate=None if is_inbox else partial(
-                wait_for_caller, ctx.room, config.sip_ringing_timeout_s + 10.0),
+                wait_for_caller, ctx.room, config.sip_ringing_timeout_s + 10.0,
+                heard=caller_heard),
             latency=latency,
         ),
         room=ctx.room,
