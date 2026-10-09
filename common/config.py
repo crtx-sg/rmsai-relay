@@ -102,6 +102,10 @@ class Config:
     # persisted) or re-based as a vitals-driven alert naming the vital, with the rhythm marked
     # unconfirmed. See common.criticality.alert_basis.
     outbound_min_arrhythmia_confidence: float = 0.60
+    # Whether a *vitals-driven* alert (rhythm below the confidence gate, vitals warrant it) places a
+    # phone call. Off: it is still persisted and pushed to the companion-app worklist, but only
+    # confident rhythm findings ring the clinician (6 of 8 calls in the 2026-10-09 demo were these).
+    outbound_call_vitals_alerts: bool = False
     outbound_max_retries: int = 2
     outbound_retry_delay_s: int = 30
 
@@ -344,6 +348,8 @@ class Config:
                                                     H["outbound_min_criticality"]),
             outbound_min_arrhythmia_confidence=_f("OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE",
                                                   H["outbound_min_arrhythmia_confidence"]),
+            outbound_call_vitals_alerts=_b("OUTBOUND_CALL_VITALS_ALERTS",
+                                           H["outbound_call_vitals_alerts"]),
             outbound_max_retries=_i("OUTBOUND_MAX_RETRIES", H["outbound_max_retries"]),
             outbound_retry_delay_s=_i("OUTBOUND_RETRY_DELAY_S", H["outbound_retry_delay_s"]),
             dispatch_mode=os.environ.get("DISPATCH_MODE", H["dispatch_mode"]),

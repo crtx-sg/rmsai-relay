@@ -30,6 +30,8 @@ outbound:
   from: ""                            # OUTBOUND_FROM  the carrier caller ID / SMS sender, E.164, quoted
   min_criticality: High               # OUTBOUND_MIN_CRITICALITY  Low | Medium | High | Critical
   min_arrhythmia_confidence: 0.60     # OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE  below this a rhythm is never asserted
+  call_vitals_alerts: false           # OUTBOUND_CALL_VITALS_ALERTS  phone a VITALS-driven alert (rhythm below
+                                      #   min_arrhythmia_confidence, vitals warrant it)? false = worklist only
   max_retries: 2                      # OUTBOUND_MAX_RETRIES  re-dials of an unanswered call
   retry_delay_s: 30                   # OUTBOUND_RETRY_DELAY_S
   inbound_allowed_numbers: []         # SIP_INBOUND_ALLOWED_NUMBERS  who may dial IN; empty = call_number only

@@ -38,6 +38,8 @@ SETTINGS: dict[str, tuple[str, str, str]] = {
     "outbound_min_criticality": ("outbound", "min_criticality", "OUTBOUND_MIN_CRITICALITY"),
     "outbound_min_arrhythmia_confidence":
         ("outbound", "min_arrhythmia_confidence", "OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE"),
+    "outbound_call_vitals_alerts":
+        ("outbound", "call_vitals_alerts", "OUTBOUND_CALL_VITALS_ALERTS"),
     "outbound_max_retries": ("outbound", "max_retries", "OUTBOUND_MAX_RETRIES"),
     "outbound_retry_delay_s": ("outbound", "retry_delay_s", "OUTBOUND_RETRY_DELAY_S"),
     "sip_inbound_allowed_numbers":

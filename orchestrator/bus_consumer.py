@@ -188,8 +188,15 @@ def process_bus_event(
                   f"{type(exc).__name__}: {exc}{hint}", flush=True)
         _record_delivery(driver, w.event_id, delivered_app=app_dispatched)
 
-    # Call surface: unchanged per-event SIP/voice (or text) alert. Skipped for app-only mode.
-    if not _mode_includes(mode, "call"):
+    # Call surface: unchanged per-event SIP/voice (or text) alert. Skipped for app-only mode, and
+    # for a vitals-driven alert unless the hospital opts in: the rhythm is below the confidence gate,
+    # so it is reported on the worklist but does not ring the clinician.
+    vitals_app_only = reason.startswith("vitals_alert") and not config.outbound_call_vitals_alerts
+    if vitals_app_only:
+        print(f"[consume] no call: vitals-driven alert ({event.event_type} "
+              f"{event.confidence:.0%} < {config.outbound_min_arrhythmia_confidence:.0%}) is "
+              f"reported to the app only (outbound.call_vitals_alerts=false)", flush=True)
+    if not _mode_includes(mode, "call") or vitals_app_only:
         return ConsumeResult(
             event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
             bed=bed_label, persisted=True, called=False, decision_reason=reason,

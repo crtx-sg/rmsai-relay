@@ -97,12 +97,22 @@ class _WeakAfib(ECGModel):
 
 
 def test_uncertain_rhythm_on_a_deteriorating_patient_alerts_on_the_vitals(patched, capsys):
-    # HR 145 -> high MEWS. The rhythm can't carry the alert at 40%, so the vitals do: the clinician
-    # is still reached, and the console says the alert was re-based rather than asserted.
+    # HR 145 -> high MEWS. The rhythm can't carry the alert at 40%, so the vitals do: the alert is
+    # re-based rather than asserted. By default (outbound.call_vitals_alerts=false) it is reported
+    # to the app but does NOT ring the clinician — only confident rhythm findings place calls.
     res = _run(event_to_dict(_event(_WeakAfib())), patched, channel="voice")
-    assert res.called and res.decision_reason.startswith("vitals_alert")
+    assert not res.called and res.decision_reason.startswith("vitals_alert")
+    assert not patched["voice"]
     out = capsys.readouterr().out
     assert "VITALS-DRIVEN ALERT" in out and "rhythm flagged unconfirmed" in out
+    assert "reported to the app only" in out
+
+
+def test_vitals_alert_calls_when_the_hospital_opts_in(patched):
+    cfg = replace(_CFG, outbound_call_vitals_alerts=True)
+    res = _run(event_to_dict(_event(_WeakAfib())), patched, channel="voice", config=cfg)
+    assert res.called and res.decision_reason.startswith("vitals_alert")
+    assert patched["voice"] == ["ICU/3"]
 
 
 def test_false_positive_overridden_by_vitals_calls(patched):

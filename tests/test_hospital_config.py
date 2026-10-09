@@ -99,3 +99,12 @@ def test_missing_setting_in_default_is_reported(tmp_path):
     (tmp_path / "default.yaml").write_text("escalation: {}\noutbound: {}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="missing escalation.normal_event"):
         load_hospital_config("", tmp_path)
+
+
+def test_vitals_alerts_do_not_call_by_default(monkeypatch):
+    from common.config import Config
+
+    monkeypatch.delenv("OUTBOUND_CALL_VITALS_ALERTS", raising=False)
+    assert Config.from_env().outbound_call_vitals_alerts is False
+    monkeypatch.setenv("OUTBOUND_CALL_VITALS_ALERTS", "true")
+    assert Config.from_env().outbound_call_vitals_alerts is True
