@@ -46,8 +46,19 @@ _LIVE_GRAPH_FIXTURES = {
 }
 
 
+# The `infra` marker alone did not protect the demo graph: a run without `-m "not infra"` (e.g.
+# `pytest tests -k call`, which selects test_authenticated_caller_gets_grounded_answer) wiped every
+# patient, bed and event. These tests now also require an explicit opt-in.
+_ALLOW_LIVE_GRAPH_RESET = "RMSAI_ALLOW_LIVE_GRAPH_RESET"
+
+
 def pytest_collection_modifyitems(config, items):
+    allow_reset = os.environ.get(_ALLOW_LIVE_GRAPH_RESET) == "1"
     for item in items:
         fixture = _LIVE_GRAPH_FIXTURES.get(item.path.name)
         if fixture and fixture in item.fixturenames:
             item.add_marker(pytest.mark.infra)
+            if not allow_reset:
+                item.add_marker(pytest.mark.skip(
+                    reason=f"wipes the LIVE Neo4j graph (reset_all); set {_ALLOW_LIVE_GRAPH_RESET}=1 "
+                           "to run it against a graph you can lose"))
