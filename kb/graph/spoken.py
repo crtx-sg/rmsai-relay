@@ -19,7 +19,9 @@ import re
 _LETTER_TOKEN = re.compile(r"^([A-Za-z])([.,!?;:]*)$")
 
 _ONES = {"zero": 0, "oh": 0, "o": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-         "six": 6, "seven": 7, "eight": 8, "nine": 9}
+         "six": 6, "seven": 7, "eight": 8, "nine": 9,
+         # STT mishearings seen on live calls ("on bed tree"); only read after "bed"/"bin".
+         "tree": 3}
 _TEENS = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
           "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19}
 _TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
@@ -30,13 +32,16 @@ _NUM = r"(?:" + "|".join(sorted({*_ONES, *_TEENS}, key=len, reverse=True)) + r")
 # "unit one bed oh one" / "bed one" / "bed unit one bed oh one" -> a bed label. Number words after
 # unit/bed become digits; an optional leading "bed" (from "...on bed unit one...") is absorbed so the
 # rebuilt label isn't doubled.
+# "bin" is how STT hears "bed" on a phone line ("acknowledge the alarms with bin three"); it only
+# counts when a bed number follows.
 _BED_SPOKEN = re.compile(
-    rf"\b(?:bed\s+)?(?:unit\s+({_NUM})\s+)?bed\s+((?:{_NUM})(?:\s+{_NUM})*)\b", re.IGNORECASE)
+    rf"\b(?:bed\s+)?(?:unit\s+({_NUM})\s+)?(?:bed|bin)\s+((?:{_NUM})(?:\s+{_NUM})*)\b",
+    re.IGNORECASE)
 # Typed bed shorthand: "Bed01", "bed 1", "bed01" (digit label, no unit prefix) -> canonical
 # "bed Unit1-Bed01" (default single POC unit, 2-digit label), so it matches the graph Bed node the
 # same way the app's "Unit1 / Bed01" worklist label reads. The negative lookbehind keeps it from
 # firing on the "Bed" inside an already-canonical "Unit1-Bed01" label (that "Bed" follows a "-").
-_BED_TYPED = re.compile(r"(?<![-\w])bed\s*0*(\d{1,2})\b", re.IGNORECASE)
+_BED_TYPED = re.compile(r"(?<![-\w])(?:bed|bin)\s*0*(\d{1,2})\b", re.IGNORECASE)
 # A spoken count before hours/minutes ("twenty four hours", "thirty minutes") -> additive digits.
 _TIME_SPOKEN = re.compile(
     rf"\b((?:(?:{'|'.join(_TENS)})\s+)?(?:{_NUM})|(?:{'|'.join(_TENS)}))\s+(hours?|minutes?|mins?)\b",

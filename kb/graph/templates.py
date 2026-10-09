@@ -9,7 +9,38 @@ from __future__ import annotations
 
 from .driver import GraphDriver, assert_read_only
 
+#: Criticality tiers that make an unacknowledged event part of the worklist ("High and above").
+WORKLIST_LEVELS = ["High", "Critical"]
+#: Lifecycle statuses that take an event OFF the worklist (kb/graph/events.py: reported /
+#: acknowledged / notify_failed / resolved). Anything else, including no status, is pending.
+CLOSED_STATUSES = ["acknowledged", "resolved"]
+
 TEMPLATES: dict[str, str] = {
+    # Worklist — every unacknowledged event at WORKLIST_LEVELS, newest first. `$since` = 0 means
+    # "no time window"; a question naming hours ("in the last 6 hours") narrows it.
+    "worklist": """
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        WHERE e.criticality IN $levels AND NOT coalesce(e.status, 'reported') IN $closed
+              AND e.timestamp >= $since
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
+        RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
+               e.event_type AS event, e.criticality AS criticality,
+               coalesce(e.status, 'reported') AS status, e.timestamp AS ts
+        ORDER BY e.timestamp DESC
+    """,
+    # Alarm counts per patient + bed, most first: "which patient has the most alarms?"
+    "alarm_counts": """
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        WITH p, b, count(e) AS alarms,
+             sum(CASE WHEN coalesce(e.status, 'reported') IN $closed THEN 0 ELSE 1 END)
+                 AS unacknowledged,
+             sum(CASE WHEN e.criticality IN $levels THEN 1 ELSE 0 END) AS high_or_critical
+        RETURN p.pseudonym AS patient, b.label AS bed, alarms, unacknowledged, high_or_critical
+        ORDER BY alarms DESC, unacknowledged DESC
+        LIMIT 10
+    """,
     # T1 — Critical events in last N hours, by patient/bed/unit. "Critical" here means the
     # call-worthy events (criticality High or Critical, matching OUTBOUND_MIN_CRITICALITY's default),
     # i.e. the ones that warranted an alert — not strictly the 'Critical' tier, which would exclude
@@ -258,8 +289,16 @@ for _name, _cypher in TEMPLATES.items():
     assert_read_only(_cypher)
 
 
+# Parameters a template gets unless the caller supplies them (e.g. the LLM router picks
+# "worklist" with no params: no time window, the standard tiers/statuses).
+TEMPLATE_DEFAULTS: dict[str, dict] = {
+    "worklist": {"since": 0, "levels": WORKLIST_LEVELS, "closed": CLOSED_STATUSES},
+    "alarm_counts": {"levels": WORKLIST_LEVELS, "closed": CLOSED_STATUSES},
+}
+
+
 def run_template(driver: GraphDriver, name: str, **params) -> list[dict]:
     """Run a named operational template with parameters (read-only)."""
     if name not in TEMPLATES:
         raise KeyError(f"unknown template: {name!r}")
-    return driver.run_read(TEMPLATES[name], **params)
+    return driver.run_read(TEMPLATES[name], **{**TEMPLATE_DEFAULTS.get(name, {}), **params})

@@ -208,6 +208,20 @@ class DeidentifyingLLM(LLMProvider):
     def generate(self, prompt: str, **kwargs) -> str:
         return self.inner.generate(deidentify(self.deidentifier, prompt), **kwargs)
 
+    def deidentify_parts(self, parts: list[tuple[str, bool]]) -> str:
+        """Join `(text, sensitive)` parts, de-identifying only the sensitive ones (fail closed).
+
+        Non-sensitive parts are fixed text the relay controls (instructions, headings, citation
+        markers) and policy/SOP document passages, which carry no patient data. Scrubbing those
+        corrupted them: `[P1]` became `<US_DRIVER_LICENSE>`, `critical_alarm_sop.md` became `<URL>`.
+        Anything that can hold PHI (the question, history, patient reports, graph facts) is
+        `sensitive=True` and goes through the de-identifier exactly as before.
+        """
+        return "".join(deidentify(self.deidentifier, t) if sensitive else t for t, sensitive in parts)
+
+    def generate_parts(self, parts: list[tuple[str, bool]], **kwargs) -> str:
+        return self.inner.generate(self.deidentify_parts(parts), **kwargs)
+
     def generate_stream(self, prompt: str, **kwargs):
         # De-identify the whole prompt up front (fail closed) before any token is generated.
         yield from self.inner.generate_stream(deidentify(self.deidentifier, prompt), **kwargs)

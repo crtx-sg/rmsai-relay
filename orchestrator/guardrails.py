@@ -65,6 +65,63 @@ def foreign_patient_refs(answer: str, context: str, session_patient: str | None 
     return sorted({m.upper() for m in _PATIENT_REF.findall(answer)} - allowed)
 
 
+#: What the clinician hears instead of an answer that names a patient, bed, ward or event id that is
+#: neither in the context the model was given nor in the clinician's own words.
+UNGROUNDED_ANSWER = "I don't have that patient information."
+
+# Identifiers a small model invents when it has no patient data ("Patient ID 1234", "Bed 11",
+# "Ward 4 Bay 1", a mangled event uuid). Each must be traceable to the prompt (context, history or
+# the question itself), or the answer is replaced.
+_PATIENT_ID = re.compile(r"\bpatient\s*(?:id|number|no\.?|#)\s*[:#]?\s*([A-Za-z0-9][\w-]*)",
+                         re.IGNORECASE)
+_BED_LABEL = re.compile(r"\b[A-Za-z]+\d*-Bed(\d+)\b", re.IGNORECASE)
+_BED_WORD = re.compile(r"\bbeds?\s+(?:no\.?\s*|number\s+|#\s*)?(\d+|[a-z]+)\b", re.IGNORECASE)
+_PLACE = re.compile(r"\b(ward|bay|room|unit)\s*(\d+|[A-Z]\b)", re.IGNORECASE)
+_HEX_ID = re.compile(r"\b[0-9a-f]{6,}(?:-[0-9a-f]{3,})+\b", re.IGNORECASE)
+# A citation marker used as a person ("Patient [P2] is in bed 1"): passages are not patients.
+_CITED_AS_PATIENT = re.compile(r"\bpatients?\s*(?:id\s*)?[:#]?\s*\[([PR]\d+)\]", re.IGNORECASE)
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                 "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+
+
+def _bed_numbers(text: str) -> set[int]:
+    nums = {int(n) for n in _BED_LABEL.findall(text)}
+    for tok in _BED_WORD.findall(text):
+        tok = tok.lower()
+        if tok.isdigit():
+            nums.add(int(tok))
+        elif tok in _NUMBER_WORDS:
+            nums.add(_NUMBER_WORDS[tok])
+    return nums
+
+
+def ungrounded_identifiers(answer: str, context: str, session_patient: str | None = None) -> list[str]:
+    """Identifiers in a model answer that the model was never given. Empty list = grounded.
+
+    `context` is everything the model saw (instructions, history, retrieved blocks, the question), so
+    a bed or patient the clinician named is allowed. Checks patient pseudonyms (`PT…`), "patient ID
+    <x>", bed labels/numbers, ward/bay/room/unit numbers, and uuid-like event ids.
+    """
+    found = set(foreign_patient_refs(answer, context, session_patient))
+    ctx = context.lower()
+    ctx_compact = re.sub(r"\s+", "", ctx)
+    for pid in _PATIENT_ID.findall(answer):
+        if pid.lower() not in ctx and pid.upper() != (session_patient or "").upper():
+            found.add(f"patient id {pid}")
+    allowed_beds = _bed_numbers(context)
+    for n in sorted(_bed_numbers(answer) - allowed_beds):
+        found.add(f"bed {n}")
+    for kind, num in _PLACE.findall(answer):
+        if f"{kind}{num}".lower() not in ctx_compact:
+            found.add(f"{kind.lower()} {num}")
+    for marker in _CITED_AS_PATIENT.findall(answer):
+        found.add(f"patient [{marker}]")
+    for hex_id in _HEX_ID.findall(answer):
+        if hex_id.lower() not in ctx:
+            found.add(hex_id)
+    return sorted(found)
+
+
 def check_input(text: str) -> InputDecision:
     """Refuse unsafe inputs before retrieval/model. Returns allowed=False + a refusal message."""
     if _INJECTION.search(text):

@@ -24,6 +24,8 @@ import json
 import re
 
 from common.event_types import CLASS_NAMES
+from kb.graph.lookup import _DEFINITIONAL
+from kb.graph.spoken import normalize_spoken_query
 
 #: Routable templates: name -> (what it answers, the parameter the model must supply or None).
 #: Deliberately a subset of `TEMPLATES` — every entry here is one a clinician asks in free text and
@@ -47,6 +49,9 @@ CATALOGUE: dict[str, tuple[str, str | None]] = {
     "trend_last_event_of_type": ("HR/BP trend for the last event of a rhythm type", "event_type"),
     "patients_with_event_type": ("every patient who had a given rhythm type", "event_type"),
     "outstanding_action_items": ("open action items across the unit", None),
+    "worklist": ("the worklist: unacknowledged High/Critical events (pending alarms)", None),
+    "alarm_counts": ("alarm counts per patient and bed, most first (who has the most alarms)",
+                     None),
     "cohort_patterns": ("demographic / co-morbidity patterns vs event type", None),
 }
 
@@ -148,7 +153,8 @@ def parse_choice(raw: str) -> tuple[str, dict] | None:
 
 
 def resolve(choice: tuple[str, dict] | None, *, patient_ref: str | None = None,
-            event_ref: str | None = None, now: float) -> tuple[str, dict] | None:
+            event_ref: str | None = None, now: float,
+            query: str | None = None) -> tuple[str, dict] | None:
     """Validate a model's choice into `(template, params)` the graph can actually run, or None.
 
     This is the layer that makes the router safe: an unknown template name, a rhythm outside the
@@ -171,7 +177,13 @@ def resolve(choice: tuple[str, dict] | None, *, patient_ref: str | None = None,
         return (name, {"event_uuid": event_ref}) if event_ref else None
     if needs == "bed":
         bed = str(params.get("bed", "")).strip()
-        return (name, {"bed": bed}) if _BED.fullmatch(bed) else None
+        if not _BED.fullmatch(bed):
+            return None
+        # The bed is an identity, so it must come from the clinician, not the model: seen live,
+        # "what is the protocol for treating VF?" was routed to a bed the model made up.
+        if query is not None and bed.lower() not in normalize_spoken_query(query).lower():
+            return None
+        return name, {"bed": bed}
     if needs == "event_type":
         etype = str(params.get("event_type", "")).strip().upper().replace(" ", "_")
         return (name, {"event_type": etype}) if etype in CLASS_NAMES else None
@@ -196,9 +208,12 @@ def route(query: str, llm, *, patient_ref: str | None = None, event_ref: str | N
     """
     if not looks_operational(query):
         return None
+    if _DEFINITIONAL.search(query) and not _BED.search(normalize_spoken_query(query)):
+        return None  # "what is the protocol for treating VF?" is a document question
     try:
         raw = llm.generate(build_prompt(query, has_patient=bool(patient_ref),
                                         has_event=bool(event_ref)))
     except Exception:  # noqa: BLE001 - routing is an optimisation; never break the turn
         return None
-    return resolve(parse_choice(raw), patient_ref=patient_ref, event_ref=event_ref, now=now)
+    return resolve(parse_choice(raw), patient_ref=patient_ref, event_ref=event_ref, now=now,
+                   query=query)

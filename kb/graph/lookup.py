@@ -45,6 +45,18 @@ _DEFINITIONAL = re.compile(
     r"formula|criteria|protocol|guideline|escalat\w*|threshold|when should)\b",
     re.IGNORECASE,
 )
+# The worklist: pending (unacknowledged) High/Critical events. "work list" is how STT splits it.
+_WORKLIST = re.compile(
+    r"\b(work\s*-?\s*list|pending (?:alarms?|events?|alerts?)|un-?acknowledged|"
+    r"outstanding (?:alarms?|events?|alerts?)|open (?:alarms?|alerts?))\b", re.IGNORECASE)
+# Ranking / counting alarms across patients or beds.
+_ALARM_COUNTS = re.compile(
+    r"\b(?:most|highest(?: number of)?|how many|number of|count of|fewest|least)\b.*"
+    r"\b(?:alarms?|alerts?|events?)\b|\b(?:alarms?|alerts?|events?)\b.*\b(?:per|by|for each)\s+"
+    r"(?:bed|patient)\b", re.IGNORECASE)
+_ALARM_WORD = re.compile(r"\b(alarms?|alerts?|events?)\b", re.IGNORECASE)
+_MOST_SEVERE = re.compile(r"\b(?:most|highest)\s+(?:severe|critical|serious|urgent|priority)\b",
+                          re.IGNORECASE)
 # "this/current/same patient" — scopes a query to the session's patient (outbound call).
 _THIS_PATIENT = re.compile(r"\b(this|current|same) patient(?:'s|s)?\b", re.IGNORECASE)
 
@@ -142,6 +154,25 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # T4 — event analysis report(s) for a bed (the noun "report"/"analysis").
     if _REPORT.search(q) and bed:
         return "reports_for_bed", {"bed": bed}
+
+    # The generic _BED capture takes any word after "bed" ("which bed HAS the…"); the rules below
+    # only trust a real label (normalize_spoken_query turns "bed three" into "Unit1-Bed03").
+    bed_label = bed if bed and any(ch.isdigit() for ch in bed) else None
+
+    # Worklist — pending High/Critical events ("what's in my work list?", "unacknowledged alarms",
+    # "which bed has the most severe alarm?"). Before T6 so "outstanding alarms" is the worklist,
+    # not action items. Hours narrow it.
+    if _WORKLIST.search(q) or (_MOST_SEVERE.search(q) and not bed_label):
+        hours = int(m.group(1)) if (m := _HOURS.search(q)) else None
+        return "worklist", {"since": now - hours * 3600 if hours else 0}
+
+    # Alarm counts — "which patient has the most alarms?", "how many alarms per bed?".
+    if _ALARM_COUNTS.search(q) and not bed_label:
+        return "alarm_counts", {}
+
+    # Alarms/events on a named bed ("what are the alarms in bed three?").
+    if bed_label and _ALARM_WORD.search(q):
+        return "event_status_on_bed", {"bed": bed_label}
 
     # T6 — outstanding action items across patients.
     if "action item" in q or "outstanding" in q:

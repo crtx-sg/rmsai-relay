@@ -15,6 +15,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from functools import partial
 
 from common.config import DEFAULT
 from common.providers import DeidentifyingLLM
@@ -31,7 +32,7 @@ from kb.vector.answer import _best_overlap
 from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
 
-from .guardrails import UNCONFIRMED_PATIENT, Guardrails, foreign_patient_refs
+from .guardrails import UNGROUNDED_ANSWER, Guardrails, ungrounded_identifiers
 
 _MIN_OVERLAP = 0.18
 
@@ -89,7 +90,22 @@ _REPEAT = re.compile(
     re.IGNORECASE,
 )
 _NOTHING_TO_REPEAT = "There is nothing to repeat yet."
+# Closing pleasantries: answered directly, never searched in the KB (which declined "thank you").
+# A whole utterance made only of courtesy phrases ("okay, thank you", "that's all, bye").
+_COURTESY = re.compile(
+    r"^\W*(?:(?:ok(?:ay)?|great|cheers|thanks?(?: you)?(?: (?:very|so) much)?|thank you|"
+    r"(?:good)?bye(?: bye)?|that'?s (?:all|it)|that is all|nothing else|i'?m done)\W*)+$",
+    re.IGNORECASE)
+_FAREWELL = re.compile(r"\b(?:(?:good)?bye|that'?s (?:all|it)|that is all|nothing else|i'?m done)\b",
+                       re.IGNORECASE)
+_THANKS = re.compile(r"\b(?:thanks?|thank you|cheers)\b", re.IGNORECASE)
+_YOU_ARE_WELCOME = "You're welcome."
+_GOODBYE_REPLY = "Goodbye."
 _LLM_FALLBACK = "I'm having trouble generating a response right now; please try again."
+# De-id placeholders the scrubbers emit (<PERSON>, <NAME>, <PHONE>, <US_DRIVER_LICENSE>, ...).
+_PLACEHOLDER = re.compile(r"<[A-Z][A-Z_]{2,}>")
+_PLACEHOLDER_ANSWER = ("I can't repeat identifying details from that question. "
+                       "Please refer to the patient by ID or bed.")
 _log = get_redacting_logger("rmsai.orchestrator")
 _MAX_HISTORY = 6
 
@@ -118,12 +134,44 @@ class TurnResult:
     trace: list[dict] = field(default_factory=list)
 
 
-def _render_blocks(result) -> tuple[str, list[str]]:
-    passages = "\n\n".join(f"[P{i + 1}] ({p.source}) {p.text}" for i, p in enumerate(result.passages))
-    rels = "\n".join(f"[R{i + 1}] ({r.source}) {r.fact}" for i, r in enumerate(result.relationships))
-    text = f"## Retrieved passages\n{passages or '(none)'}\n\n## Known relationships\n{rels or '(none)'}"
+def _is_patient_passage(source: str) -> bool:
+    """Vector passages that come from a patient's event report (`report:<uuid>#…`), not a document.
+
+    `cli.consume` archives event-report narratives into the same collection as the SOPs, so a
+    retrieved passage may carry patient data: those stay de-identified.
+    """
+    return source.startswith("report:")
+
+
+def _render_block_parts(result) -> tuple[list[tuple[str, bool]], list[str]]:
+    """The retrieved blocks as `(text, sensitive)` prompt parts, plus citations.
+
+    Same text as before, split so only PHI-capable content is de-identified: patient-report
+    passages and graph facts are sensitive; SOP/policy passages and the markers are not.
+    """
+    parts: list[tuple[str, bool]] = [("## Retrieved passages\n", False)]
+    if not result.passages:
+        parts.append(("(none)", False))
+    for i, p in enumerate(result.passages):
+        if i:
+            parts.append(("\n\n", False))
+        parts.append((f"[P{i + 1}] ({p.source}) ", False))
+        parts.append((p.text, _is_patient_passage(p.source)))
+    parts.append(("\n\n## Known relationships\n", False))
+    if not result.relationships:
+        parts.append(("(none)", False))
+    for i, r in enumerate(result.relationships):
+        if i:
+            parts.append(("\n", False))
+        parts.append((f"[R{i + 1}] ({r.source}) ", False))
+        parts.append((r.fact, True))
     cites = [p.source for p in result.passages] + [r.source for r in result.relationships]
-    return text, cites
+    return parts, cites
+
+
+def _render_blocks(result) -> tuple[str, list[str]]:
+    parts, cites = _render_block_parts(result)
+    return "".join(t for t, _ in parts), cites
 
 
 _TS_KEYS = {"ts", "timestamp", "due", "due_at", "generated_at"}
@@ -273,7 +321,14 @@ def _describe_context(shared: dict) -> str:
     return ", ".join(f"{_label(k)} {_fmt_value(k, shared[k])}" for k in _CONTEXT_KEYS if k in shared)
 
 
-def _answer_operational(rows: list[dict] | None) -> str:
+# What an empty result means, per template, instead of a bare "No matching records."
+_EMPTY_ANSWERS = {
+    "worklist": "Your worklist is clear: no unacknowledged High or Critical events.",
+    "alarm_counts": "There are no alarms on record.",
+}
+
+
+def _answer_operational(rows: list[dict] | None, name: str | None = None) -> str:
     """Deterministic, readable answer for a structured graph result (no LLM).
 
     Operational queries return exact rows, so we render them directly — accurate every time, no model
@@ -284,7 +339,7 @@ def _answer_operational(rows: list[dict] | None) -> str:
     """
     rows = [{k: v for k, v in r.items() if v is not None} for r in (rows or [])]
     if not rows:
-        return "No matching records."
+        return _EMPTY_ANSWERS.get(name or "", "No matching records.")
     if len(rows) == 1:
         return _row_to_sentence(rows[0])
     # Context fields (patient/bed/unit) identical across every row are hoisted into the header.
@@ -338,14 +393,34 @@ class Orchestrator:
         # LLM fallback routing for operational questions the regexes miss (kb/graph/llm_router.py).
         self.llm_router = DEFAULT.kb_llm_router if llm_router is None else llm_router
 
-    def _generate(self, prompt: str) -> tuple[str, bool]:
-        """Generate with one retry on transient failure; return (text, failed). Never raises."""
+    def _model_input(self, parts: list[tuple[str, bool]]) -> str:
+        """What the model received (de-identified), for the audit; '' if de-id fails here."""
+        try:
+            if hasattr(self.llm, "deidentify_parts"):
+                return self.llm.deidentify_parts(parts)
+            return self.llm.deidentifier.deidentify("".join(t for t, _ in parts))
+        except Exception:  # noqa: BLE001 - audit text only; the answer path already failed closed
+            return ""
+
+    def _generate(self, prompt: "str | list[tuple[str, bool]]") -> tuple[str, bool]:
+        """Generate with one retry on transient failure; return (text, failed). Never raises.
+
+        `prompt` is plain text (fully de-identified) or `(text, sensitive)` parts (only the
+        sensitive parts de-identified) when the LLM supports it.
+        """
         from common.deid import DeidError  # noqa: PLC0415
 
+        if isinstance(prompt, list):
+            if hasattr(self.llm, "generate_parts"):
+                call = partial(self.llm.generate_parts, prompt)
+            else:
+                call = partial(self.llm.generate, "".join(t for t, _ in prompt))
+        else:
+            call = partial(self.llm.generate, prompt)
         attempts = self.llm_retries + 1
         for attempt in range(1, attempts + 1):
             try:
-                return self.llm.generate(prompt), False
+                return call(), False
             except DeidError:
                 return "I couldn't safely process that request.", True  # fail closed
             except Exception as exc:  # noqa: BLE001 - timeout/rate-limit/unreachable -> retry then fall back
@@ -389,6 +464,20 @@ class Orchestrator:
                 )
             return TurnResult(answer=answer_text, mode="repeat", trace=tracer.as_dicts())
 
+        # --- courtesy: "thank you" / "goodbye" -> a short reply, no KB/LLM ---
+        courtesy = None
+        if _COURTESY.match(user_text):  # "ok"/"great" alone are not pleasantries: they fall through
+            if _FAREWELL.search(user_text):
+                courtesy = _GOODBYE_REPLY
+            elif _THANKS.search(user_text):
+                courtesy = _YOU_ARE_WELCOME
+        if courtesy:
+            with tracer.span("courtesy"):
+                self.working.append_turn(
+                    session_id, ChatTurn(role="assistant", text=courtesy, timestamp=now + 0.001)
+                )
+            return TurnResult(answer=courtesy, mode="courtesy", trace=tracer.as_dicts())
+
         # --- intent: operational template vs hybrid KB ---
         operational_rows: list[dict] | None = None
         with tracer.span("retrieve") as sp:
@@ -413,7 +502,8 @@ class Orchestrator:
             else:
                 mode = "hybrid"
                 result = self.hybrid.retrieve(user_text, mode="hybrid")
-                kb_context, citations = _render_blocks(result)
+                kb_parts, citations = _render_block_parts(result)
+                kb_context = "".join(t for t, _ in kb_parts)
                 overlap = _best_overlap(user_text, result.passages) if result.passages else 0.0
                 top_score = result.passages[0].score if result.passages else 0.0
                 # Two independent ways a passage can vouch for itself: it *means* the same thing
@@ -445,7 +535,7 @@ class Orchestrator:
             # Structured graph result -> deterministic, crisp answer. No LLM is called, so NO prompt
             # is built: conversation history and recalled past interactions never touch an operational
             # answer. (They are only useful for free-text follow-ups, below.)
-            answer_text = _answer_operational(operational_rows)
+            answer_text = _answer_operational(operational_rows, name)
             model_input = self.llm.deidentifier.deidentify(kb_context)  # the rows that informed it
         else:
             # Free-text/hybrid: the LLM needs conversation history (multi-turn follow-ups). Built ONLY
@@ -453,24 +543,39 @@ class Orchestrator:
             # only when `episodic_recall` is on (off by default: grounded in live KB + this chat only).
             with tracer.span("build_context"):
                 history = "\n".join(f"{t.role}: {t.text}" for t in state.turns[-_MAX_HISTORY:])
-                blocks = [_ANSWER_INSTRUCTIONS, f"## Conversation so far\n{history}"]
+                # (text, sensitive): only parts that can carry PHI are de-identified (see
+                # DeidentifyingLLM.deidentify_parts); the joined text is unchanged from before.
+                parts: list[tuple[str, bool]] = [
+                    (_ANSWER_INSTRUCTIONS, False), ("\n\n## Conversation so far\n", False),
+                    (history, True),
+                ]
                 if self.episodic_recall:
                     episodes = self.episodic.recall(user_text, k=3, patient_ref=state.patient_ref)
                     episodic_ctx = "\n".join(f"- {e.text}" for e in episodes) or "(none)"
-                    blocks.append(f"## Relevant past interactions\n{episodic_ctx}")
-                blocks.append(f"{kb_context}\n\nQuestion: {user_text}\nAnswer:")
-                prompt = "\n\n".join(blocks)
+                    parts += [("\n\n## Relevant past interactions\n", False), (episodic_ctx, True)]
+                parts += [("\n\n", False), *kb_parts, ("\n\nQuestion: ", False),
+                          (user_text, True), ("\nAnswer:", False)]
+                prompt = "".join(t for t, _ in parts)
             with tracer.span("generate") as sp:
-                answer_text, failed = self._generate(prompt)  # de-id'd + retried inside
+                answer_text, failed = self._generate(parts)  # de-id'd + retried inside
                 sp.attributes["llm_failed"] = failed
-                # Output guardrail: a patient the model was never given is invented or misattributed.
-                foreign = foreign_patient_refs(answer_text, prompt, state.patient_ref)
+                # Output guardrail: a patient/bed/ward/event the model was never given is invented
+                # or misattributed — on a clinical relay worse than no answer. Seen live: "Patient
+                # ID 1234, bed Bayside 3" with an empty patient graph.
+                foreign = ungrounded_identifiers(answer_text, prompt, state.patient_ref)
                 if foreign:
-                    print(f"[orchestrator] blocked answer naming patient(s) not in context: "
+                    print(f"[orchestrator] blocked answer naming identifier(s) not in context: "
                           f"{', '.join(foreign)}", flush=True)
                     sp.attributes["blocked_patient_refs"] = foreign
-                    answer_text = UNCONFIRMED_PATIENT
-            model_input = self.llm.deidentifier.deidentify(prompt)
+                    answer_text = UNGROUNDED_ANSWER
+                # A de-id placeholder in the answer means the model echoed a scrubbed span
+                # ("<PERSON> is not associated…"); reading it aloud is meaningless and confusing.
+                if not foreign and _PLACEHOLDER.search(answer_text):
+                    print(f"[orchestrator] replaced answer echoing a de-id placeholder: "
+                          f"{_PLACEHOLDER.findall(answer_text)}", flush=True)
+                    sp.attributes["placeholder_echo"] = True
+                    answer_text = _PLACEHOLDER_ANSWER
+            model_input = self._model_input(parts)
 
         with tracer.span("persist"):
             self.working.append_turn(

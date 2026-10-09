@@ -18,7 +18,7 @@ from common.deid import RegexDeidentifier
 from common.providers import DeidentifyingLLM
 from common.schemas import ChatTurn
 from kb.graph.lookup import match_intent
-from orchestrator.guardrails import UNCONFIRMED_PATIENT, foreign_patient_refs
+from orchestrator.guardrails import UNGROUNDED_ANSWER, foreign_patient_refs
 from orchestrator.orchestrator import _ANSWER_INSTRUCTIONS, Orchestrator, _answer_operational
 
 NOW = 1_000_000.0
@@ -144,8 +144,8 @@ def _turn(answer):
 
 def test_answer_naming_an_unknown_patient_is_replaced(capsys):
     r = _turn("The patient PT4543 has a MEWS score of 0 (Low).")
-    assert r.answer == UNCONFIRMED_PATIENT
-    assert "blocked answer naming patient(s) not in context: PT4543" in capsys.readouterr().out
+    assert r.answer == UNGROUNDED_ANSWER
+    assert "blocked answer naming identifier(s) not in context: PT4543" in capsys.readouterr().out
     assert any(span.get("blocked_patient_refs") == ["PT4543"] for span in r.trace)
 
 
