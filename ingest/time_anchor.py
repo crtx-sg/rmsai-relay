@@ -7,7 +7,8 @@ last N hours" never matches. `rebase_to_now` shifts every timestamp of one recor
 amount, so the last event lands at `now` and all spacing (between events, and within each vital's
 history, which MEWS trends use) is exactly as recorded.
 
-The original time is not lost: `cli.ingest` reports it as `source_ts` in its output and audit entry.
+`cli.ingest` anchors per patient (`rebase_by_patient`), so several recordings of one patient keep
+their real spacing. The original time is not lost: `cli.ingest` reports it as `source_ts` in its output and audit entry.
 """
 
 from __future__ import annotations
@@ -26,6 +27,18 @@ def _shift_window(w: SignalWindow, delta: float) -> SignalWindow:
         "vitals_history": {k: [s.model_copy(update={"timestamp": s.timestamp + delta}) for s in h]
                            for k, h in w.vitals_history.items()},
     })
+
+
+def rebase_by_patient(windows: list[SignalWindow], now: float) -> list[SignalWindow]:
+    """Shift each PATIENT's windows (across all their recordings) so their latest event is `now`.
+
+    Per-file anchoring put two recordings of one patient (e.g. INCART I04 and I05, one subject)
+    both at "now", erasing the week between them; per patient, that gap is kept. Order unchanged.
+    """
+    latest: dict[str, float] = {}
+    for w in windows:
+        latest[w.patient_ref] = max(latest.get(w.patient_ref, w.event_timestamp), w.event_timestamp)
+    return [_shift_window(w, now - latest[w.patient_ref]) for w in windows]
 
 
 def rebase_to_now(windows: list[SignalWindow], now: float) -> list[SignalWindow]:

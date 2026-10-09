@@ -30,7 +30,7 @@ from inference.pipeline import process_window
 from inference.serialize import event_summary_line, event_to_dict
 from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
-from ingest.time_anchor import ANCHORS, rebase_to_now
+from ingest.time_anchor import ANCHORS, rebase_by_patient
 
 
 def publish_to_bus(redis_url: str, stream: str, payload: dict) -> str:
@@ -67,8 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--strict-units", action="store_true", help="Fail if waveform_units absent.")
     parser.add_argument("--time-anchor", choices=ANCHORS, default=None,
-                        help="source = HDF5 event times; now = shift each recording so its last "
-                             "event is the ingest time (default INGEST_TIME_ANCHOR, else source).")
+                        help="source = HDF5 event times; now = shift each patient's events so their "
+                             "latest is the ingest time (default INGEST_TIME_ANCHOR, else source).")
     parser.add_argument("--show-report", action="store_true", help="Print markdown report (stdout).")
     parser.add_argument("--explain", action="store_true",
                         help="Add `why` to each line: the headline of why the event is (or isn't) "
@@ -103,10 +103,10 @@ def main(argv: list[str] | None = None) -> int:
     now = time.time()
 
     def _windows():
-        for f in files:
-            source = list(read_hdf5_file(f, strict_units=args.strict_units))
-            shifted = rebase_to_now(source, now) if anchor == "now" else source
-            yield from zip(source, shifted)
+        # Per-patient anchoring needs every recording first: a patient may span several files.
+        source = [w for f in files for w in read_hdf5_file(f, strict_units=args.strict_units)]
+        shifted = rebase_by_patient(source, now) if anchor == "now" else source
+        yield from zip(source, shifted)
 
     for source_window, window in _windows():
         source_ts = source_window.event_timestamp

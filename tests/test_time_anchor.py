@@ -45,3 +45,18 @@ def test_source_anchor_is_the_default():
     from common.config import DEFAULT
 
     assert DEFAULT.ingest_time_anchor == "source"
+
+
+def test_per_patient_anchor_keeps_the_gap_between_recordings():
+    from ingest.time_anchor import rebase_by_patient
+
+    w = list(read_hdf5_file(_FIXTURE))[0]
+    week = 7 * 86400
+    older = w.model_copy(update={"patient_ref": "PT9", "event_timestamp": 1000.0, "start_timestamp": 994.0})
+    newer = w.model_copy(update={"patient_ref": "PT9", "event_timestamp": 1000.0 + week,
+                                 "start_timestamp": 994.0 + week})
+    other = w.model_copy(update={"patient_ref": "PT8", "event_timestamp": 50.0, "start_timestamp": 44.0})
+    out = rebase_by_patient([older, other, newer], NOW)   # e.g. INCART I04 + I05, one subject
+    assert out[2].event_timestamp == NOW and out[0].event_timestamp == NOW - week
+    assert out[1].event_timestamp == NOW                    # each patient anchored on its own
+    assert [x.patient_ref for x in out] == ["PT9", "PT8", "PT9"]

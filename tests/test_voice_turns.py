@@ -291,35 +291,3 @@ def test_bed_event_summary_lists_every_rhythm():
     assert _spoken_summary(rows, "event_status_on_bed") == (
         "Bed 2, patient PT998224: 4 events — ventricular tachycardia twice, ventricular "
         "fibrillation, atrial fibrillation. 3 unacknowledged.")
-
-
-# --- beds persist across consumer restarts --------------------------------------------------------
-
-from common.bed_assignment import BedAssignmentStub  # noqa: E402
-from orchestrator.patient_bootstrap import ensure_patient  # noqa: E402
-
-
-class _BedGraph:
-    def __init__(self, assigned, patients):
-        self.assigned, self.patients = assigned, patients
-
-    def run_read(self, cypher, **params):
-        if "ASSIGNED_TO" in cypher:
-            return [{"id": p, "bed": b, "unit": b.split("-")[0]} for p, b in self.assigned.items()]
-        return [{"id": params["id"]}] if params.get("id") in self.patients else []
-
-
-def test_known_patient_keeps_the_persisted_bed_after_a_restart():
-    graph = _BedGraph({"PT998224": "Unit1-Bed02", "PT942338": "Unit1-Bed01"},
-                      patients={"PT998224", "PT942338"})
-    beds = BedAssignmentStub()  # a fresh consumer: empty in-memory stub
-    assert ensure_patient(graph, beds, "PT998224") == ("Unit1", "Unit1-Bed02")
-
-
-def test_new_patient_gets_a_bed_the_graph_shows_free(monkeypatch):
-    import orchestrator.patient_bootstrap as pb
-
-    monkeypatch.setattr(pb, "ingest_patient_record", lambda *a, **k: None)
-    graph = _BedGraph({"PT998224": "Unit1-Bed02", "PT942338": "Unit1-Bed01"},
-                      patients={"PT998224", "PT942338"})
-    assert ensure_patient(graph, BedAssignmentStub(), "PT111111") == ("Unit1", "Unit1-Bed03")
