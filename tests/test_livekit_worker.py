@@ -173,7 +173,7 @@ class _FakeAuthHandler:
     def is_authenticated(self, session_id: str) -> bool:
         return self._authed
 
-    def respond(self, text, *, session_id):
+    def respond(self, text, *, session_id, spoken=False):
         return f"echo:{text}"
 
 

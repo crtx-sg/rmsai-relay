@@ -328,6 +328,60 @@ _EMPTY_ANSWERS = {
 }
 
 
+def _spoken_bed(label) -> str:
+    """'Unit1-Bed05' -> 'bed 5' (the POC has one unit; the unit is in the full text answer)."""
+    m = re.search(r"Bed0*(\d+)$", str(label or ""))
+    return f"bed {m.group(1)}" if m else (f"bed {label}" if label else "an unknown bed")
+
+
+def _spoken_event(event) -> str:
+    """'VENTRICULAR_TACHYCARDIA' -> 'ventricular tachycardia'; short codes (SVT, PVC) stay as-is."""
+    text = str(event or "an event").replace("_", " ")
+    return text if len(text) <= 4 else text.lower()
+
+
+def _times(n: int) -> str:
+    return "" if n == 1 else " twice" if n == 2 else f" {n} times"
+
+
+def _spoken_summary(rows: list[dict], name: str | None) -> str:
+    """A short spoken answer for a multi-row graph result (phone/voice turns only).
+
+    Read aloud, the full list (8 records, each with a timestamp) ran for half a minute; the caller
+    talked over it and re-asked. Text chat keeps the full `_answer_operational` list.
+    """
+    rows = [{k: v for k, v in r.items() if v is not None} for r in rows]
+    n = len(rows)
+    if name == "worklist":
+        parts = [f"{n} unacknowledged events."]
+        for level in ("Critical", "High"):
+            tier = [r for r in rows if r.get("criticality") == level]
+            if not tier:
+                continue
+            counts: dict[tuple, int] = {}
+            for r in tier:  # rows arrive most recent first; keep that order
+                key = (_spoken_bed(r.get("bed")), _spoken_event(r.get("event")))
+                counts[key] = counts.get(key, 0) + 1
+            items = [f"{bed} {event}{_times(c)}" for (bed, event), c in counts.items()]
+            parts.append(f"{len(tier)} {level}: {', '.join(items)}.")
+        parts.append("Ask about a bed for details.")
+        return " ".join(parts)
+    if name == "alarm_counts":
+        top = rows[0].get("alarms", 0)
+        leaders = [r for r in rows if r.get("alarms") == top]
+        who = [f"{_spoken_bed(r.get('bed'))}, patient {r.get('patient')}" for r in leaders]
+        listed = who[0] if len(who) == 1 else ", ".join(who[:-1]) + " and " + who[-1]
+        each = " each" if len(leaders) > 1 else ""
+        text = f"Most alarms: {top}{each}, on {listed}."
+        rest = n - len(leaders)
+        if rest:
+            text += f" {rest} other {'bed has' if rest == 1 else 'beds have'} fewer."
+        return text
+    shown = [_row_to_sentence(r) for r in rows[:3]]
+    more = f" And {n - 3} more; ask for details." if n > 3 else ""
+    return f"{n} records. " + " ".join(f"{s.rstrip('.')}." for s in shown) + more
+
+
 def _answer_operational(rows: list[dict] | None, name: str | None = None) -> str:
     """Deterministic, readable answer for a structured graph result (no LLM).
 
@@ -430,8 +484,10 @@ class Orchestrator:
         return _LLM_FALLBACK, True
 
     def handle_turn(
-        self, session_id: str, user_text: str, *, patient_ref: str | None = None, now: float | None = None
+        self, session_id: str, user_text: str, *, patient_ref: str | None = None,
+        now: float | None = None, spoken: bool = False,
     ) -> TurnResult:
+        """One clinician turn. `spoken=True` (a voice turn) shortens multi-row graph answers."""
         now = now if now is not None else time.time()
         tracer = Tracer()
 
@@ -535,7 +591,9 @@ class Orchestrator:
             # Structured graph result -> deterministic, crisp answer. No LLM is called, so NO prompt
             # is built: conversation history and recalled past interactions never touch an operational
             # answer. (They are only useful for free-text follow-ups, below.)
-            answer_text = _answer_operational(operational_rows, name)
+            answer_text = (_spoken_summary(operational_rows, name)
+                           if spoken and operational_rows and len(operational_rows) > 1
+                           else _answer_operational(operational_rows, name))
             model_input = self.llm.deidentifier.deidentify(kb_context)  # the rows that informed it
         else:
             # Free-text/hybrid: the LLM needs conversation history (multi-turn follow-ups). Built ONLY

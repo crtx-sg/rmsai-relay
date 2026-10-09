@@ -66,7 +66,9 @@ TEMPLATES: dict[str, str] = {
     # T3 — Event status on a bed
     "event_status_on_bed": """
         MATCH (b:Bed {label: $bed})<-[:AT_BED]-(e:MonitoredEvent)
-        RETURN e.timestamp AS ts, e.event_type AS reported_event,
+        OPTIONAL MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.timestamp AS ts,
+               e.event_type AS reported_event,
                e.is_false_positive AS false_positive,
                e.ground_truth_condition AS actual_condition, e.status AS status
         ORDER BY e.timestamp DESC

@@ -8,6 +8,7 @@ is unchanged.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 
 from common.audit import AuditLog
@@ -18,17 +19,36 @@ from voice.outbound_alert import OutboundAlert
 
 class Handler(ABC):
     @abstractmethod
-    def respond(self, text: str, *, session_id: str) -> str: ...
+    def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str: ...
 
 
 class EchoHandler(Handler):
     """Returns what it heard (a parrot), proving STT -> handler -> TTS works end-to-end."""
 
-    def respond(self, text: str, *, session_id: str) -> str:
+    def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
         return text
 
 
 _PROMPT_PIN = "Please say or enter your four digit PIN to continue."
+
+# A whole utterance that is only backchannel ("yeah", "okay", "mm-hmm"). Excludes "yes"/"no" (they
+# can answer something) and thanks/bye (the orchestrator replies to those). Live call 2026-10-09:
+# "Yeah" and "Okay." spoken over a long answer each got "I don't have information on that…".
+_FILLER = re.compile(
+    r"^\W*(?:(?:ok(?:ay)?|yeah|yep|yup|uh[- ]?huh|mm+[- ]?h?mm+|mhm+|hmm+|right|all ?right|"
+    r"got it|sure|cool|fine|i see|oh|ah|um+|uh+|"
+    # barge-in words (voice.livekit_agent.is_barge_in): they stop the agent; nothing to answer
+    r"stop|wait|hold on)\W*)+$", re.IGNORECASE)
+
+
+def _voice(spoken: bool) -> dict:
+    """`handle_turn` kwargs: `spoken=True` only on voice turns, so text calls are unchanged."""
+    return {"spoken": True} if spoken else {}
+
+
+def is_filler(text: str) -> bool:
+    """True for a spoken backchannel that should get no reply (see `_FILLER`)."""
+    return bool(_FILLER.match(text or ""))
 _AUTH_OK = "Thank you, you are authenticated. How can I help?"
 _LOCKED = "I could not verify your PIN. Ending the call for safety."
 
@@ -67,11 +87,15 @@ class OrchestratorHandler(Handler):
         """
         return self.working.get_or_create(session_id).authenticated
 
-    def respond(self, text: str, *, session_id: str) -> str:
+    def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
         state = self.working.get_or_create(session_id)
 
         if state.authenticated:
-            return self._authenticated_turn(session_id, text)
+            return self._authenticated_turn(session_id, text, spoken=spoken)
+
+        # A spoken "yeah"/"okay" before the PIN is not an attempt and needs no prompt.
+        if spoken and is_filler(text):
+            return ""
 
         # --- not yet authenticated: PIN gate ---
         if self.auth_gate.verify(text):
@@ -97,9 +121,14 @@ class OrchestratorHandler(Handler):
         """First message spoken right after the PIN is accepted. Overridable (see OutboundHandler)."""
         return _AUTH_OK
 
-    def _authenticated_turn(self, session_id: str, text: str) -> str:
+    def _authenticated_turn(self, session_id: str, text: str, *, spoken: bool = False) -> str:
         """Handle one post-auth turn. Overridable; default routes to the grounded orchestrator."""
-        result = self.orchestrator.handle_turn(session_id, text)
+        if spoken and is_filler(text):
+            # Backchannel while listening ("yeah", "okay"): answering it ("I don't have information
+            # on that…") talked over the caller. Say nothing; no PHI query, so no audit entry.
+            print(f"[voice] ignoring filler {text!r}", flush=True)
+            return ""
+        result = self.orchestrator.handle_turn(session_id, text, **_voice(spoken))
         self.audit.write(
             actor=f"caller:{session_id}", action="phi_voice_query",
             subject=self.working.get_or_create(session_id).patient_ref or session_id,
@@ -133,7 +162,7 @@ class OutboundHandler(OrchestratorHandler):
               f"(event {self.alert.event_id})", flush=True)
         return self.alert.spoken_alert
 
-    def _authenticated_turn(self, session_id: str, text: str) -> str:
+    def _authenticated_turn(self, session_id: str, text: str, *, spoken: bool = False) -> str:
         if parse_ack(text) == "yes":
             if self.driver is not None:
                 from kb.graph.events import set_event_status  # noqa: PLC0415
@@ -144,7 +173,7 @@ class OutboundHandler(OrchestratorHandler):
             print(f"[voice] acknowledgment received -> MonitoredEvent {self.alert.event_id} "
                   f"status=acknowledged (Neo4j updated)", flush=True)
             return _ACK_CONFIRMED
-        return super()._authenticated_turn(session_id, text)
+        return super()._authenticated_turn(session_id, text, spoken=spoken)
 
 
 _SELECT_PROMPT = "Select an event from the worklist first, then ask about that patient."
@@ -227,7 +256,7 @@ class InboxHandler(OrchestratorHandler):
         except Exception:  # noqa: BLE001 - a graph hiccup must not break selection/speech
             return None
 
-    def respond(self, text: str, *, session_id: str) -> str:
+    def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
         stripped = (text or "").strip()
         # Selection control message (only the lk.chat text path reliably reaches the agent worker,
         # so the app scopes the conversation by sending "/select <event_id>" here). No chat reply.
@@ -244,7 +273,9 @@ class InboxHandler(OrchestratorHandler):
                 self._on_show(event_id, kind)
             except Exception as exc:  # noqa: BLE001 - rendering is best-effort; still answer
                 print(f"[worker] inbox on_show failed: {exc}", flush=True)
-        result = self.orchestrator.handle_turn(session_id, text)
+        if spoken and is_filler(text):
+            return ""
+        result = self.orchestrator.handle_turn(session_id, text, **_voice(spoken))
         self.audit.write(actor=f"app:{session_id}", action="phi_voice_query",
                          subject=patient_ref, outcome="declined" if result.declined else "answered")
         return result.answer
