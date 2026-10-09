@@ -120,6 +120,11 @@ def place_predefined_call(
     call_id = call_id or uuid.uuid4().hex[:12]
     room = call_room_name(call_id, config)
     caller = caller or get_caller("simulated", config)
+    if hasattr(caller, "room"):
+        # Dial into the room the agent is dispatched to. A caller built without a room (cli.call's
+        # `get_caller("livekit", tel)`) defaults to LIVEKIT_SIP_ROOM, which put the callee in one
+        # room and the agent in another: answered call, agent never hears or speaks.
+        caller.room = room
     audit = audit or AuditLog(config.audit_log_path)
 
     if dispatcher is not None:

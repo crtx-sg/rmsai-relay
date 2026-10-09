@@ -87,6 +87,26 @@ def test_agent_is_dispatched_into_the_room_that_is_dialled(tmp_path):
     assert outcome == CallOutcome.ANSWERED and attempts == 1
 
 
+def test_call_is_dialled_into_the_dispatched_room(tmp_path):
+    # Regression: cli.call builds LiveKitCaller without a room, so it dialled LIVEKIT_SIP_ROOM while
+    # the agent was dispatched to rmsai-call-<id>. The phone rang and answered into an empty room.
+    from voice.outbound import LiveKitCaller
+
+    class _RecordingCaller(LiveKitCaller):
+        def place_call(self, number: str) -> CallOutcome:
+            self.dialled_room = self.room
+            return CallOutcome.ANSWERED
+
+    caller = _RecordingCaller(replace(_CFG, livekit_sip_room="rmsai-outbound"))
+    dispatched: list[str] = []
+    room, outcome, _ = place_predefined_call(
+        config=_CFG, caller=caller, dispatcher=dispatched.append,
+        audit=AuditLog(str(tmp_path / "audit.jsonl")), sleep_fn=lambda _s: None,
+    )
+    assert outcome == CallOutcome.ANSWERED
+    assert caller.dialled_room == room == dispatched[0]
+
+
 def test_dispatch_failure_does_not_swallow_the_call(tmp_path):
     def _boom(_room):
         raise RuntimeError("livekit unreachable")
