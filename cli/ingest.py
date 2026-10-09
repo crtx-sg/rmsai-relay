@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from inference.pipeline import process_window
 from inference.serialize import event_summary_line, event_to_dict
 from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
+from ingest.time_anchor import ANCHORS, rebase_to_now
 
 
 def publish_to_bus(redis_url: str, stream: str, payload: dict) -> str:
@@ -64,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
              "Defaults to ECG_CHECKPOINTS; with neither, the deterministic stub is used.",
     )
     parser.add_argument("--strict-units", action="store_true", help="Fail if waveform_units absent.")
+    parser.add_argument("--time-anchor", choices=ANCHORS, default=None,
+                        help="source = HDF5 event times; now = shift each recording so its last "
+                             "event is the ingest time (default INGEST_TIME_ANCHOR, else source).")
     parser.add_argument("--show-report", action="store_true", help="Print markdown report (stdout).")
     parser.add_argument("--explain", action="store_true",
                         help="Add `why` to each line: the headline of why the event is (or isn't) "
@@ -92,7 +97,19 @@ def main(argv: list[str] | None = None) -> int:
     gate_config = replace(DEFAULT, outbound_enabled=True)
     n = 0
     records: list[EvalRecord] = []
-    for window in (w for f in files for w in read_hdf5_file(f, strict_units=args.strict_units)):
+    anchor = args.time_anchor or DEFAULT.ingest_time_anchor
+    if anchor not in ANCHORS:
+        parser.error(f"INGEST_TIME_ANCHOR must be one of {', '.join(ANCHORS)}, got {anchor!r}")
+    now = time.time()
+
+    def _windows():
+        for f in files:
+            source = list(read_hdf5_file(f, strict_units=args.strict_units))
+            shifted = rebase_to_now(source, now) if anchor == "now" else source
+            yield from zip(source, shifted)
+
+    for source_window, window in _windows():
+        source_ts = source_window.event_timestamp
         event = process_window(window, model, vitals)
         # Render the ECG strip here, while the raw samples are in hand (the bus drops them); the path
         # rides along in the payload and is persisted as MonitoredEvent.ecg_plot_ref downstream.
@@ -106,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         records.append(EvalRecord(event.event_type, truth, event.confidence, dispatched=would_alert))
         outcome = classify_outcome(event.event_type, truth, model_classes).code
         extra = {"outcome": outcome}
+        if anchor == "now":
+            extra["source_ts"] = source_ts  # the HDF5 event time, before re-anchoring
         if args.explain:
             from orchestrator.explain import explain_event  # noqa: PLC0415
 
@@ -117,7 +136,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.emit == "bus":
             msg_id = publish_to_bus(args.redis_url, args.stream, event_to_dict(event))
             audit.write(actor="cli.ingest", action="emit_event", subject=window.patient_ref,
-                        outcome="published", stream=args.stream, msg_id=msg_id)
+                        outcome="published", stream=args.stream, msg_id=msg_id,
+                        **({"source_ts": source_ts} if anchor == "now" else {}))
             print(json.dumps({"published": msg_id, **event_summary_line(event), **extra},
                              ensure_ascii=False))
         else:

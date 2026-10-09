@@ -312,6 +312,10 @@ class Config:
     # ECG strip plots — the producer renders an event's ECG lead to `{plot_dir}/{event_id}.png`
     # (gitignored) and stores the path in `MonitoredEvent.ecg_plot_ref`. Off keeps the pipeline lean.
     ecg_plot_enabled: bool = True
+    # Event times at ingest: "source" keeps the HDF5 timestamps (ecg_sigma's synthetic 2025 dates for
+    # MIT-BIH/INCART-style records, real 1995-96 dates for PTB-XL); "now" re-anchors each recording
+    # so its last event is the ingest time, keeping all spacing (ingest.time_anchor).
+    ingest_time_anchor: str = "source"
     plot_dir: str = "data/plots"
 
     @classmethod
@@ -432,6 +436,7 @@ class Config:
             report_dir=os.environ.get("REPORT_DIR", "data/reports"),
             ecg_checkpoints=_paths("ECG_CHECKPOINTS"),
             ecg_plot_enabled=_b("ECG_PLOT_ENABLED", True),
+            ingest_time_anchor=os.environ.get("INGEST_TIME_ANCHOR", "source").strip().lower(),
             plot_dir=os.environ.get("PLOT_DIR", "data/plots"),
         )
 
