@@ -109,7 +109,10 @@
     /* --- performance view --- */
     #perf-view { padding: 1rem; }
     #perf-filters { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
-    #perf-filters select, #perf-filters button { font-size: .85rem; padding: .25rem .5rem; }
+    #perf-filters select, #perf-filters button, #perf-filters input { font-size: .85rem; padding: .25rem .5rem; }
+    .badge.pending { background: #c0392b; color: #fff; }
+    .badge.withheld { background: transparent; border: 1px dashed currentColor; opacity: .7; }
+    .msg .open-events { display: block; margin-top: .3rem; font-size: .8rem; }
     .model-block { border: 1px solid #8884; border-radius: 6px; padding: .8rem 1rem; margin-bottom: 1rem; }
     .model-block h2 { font-size: .9rem; margin: 0 0 .2rem; }
     .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); gap: .5rem;
@@ -132,7 +135,7 @@
     <h1>rmsai worklist</h1>
     <nav id="tabs" class="hidden">
       <button data-tab="worklist" class="active">Worklist</button>
-      <button data-tab="perf">Model performance</button>
+      <button data-tab="perf">Events</button>
     </nav>
     <span id="room-label"></span>
     <button id="theme-btn" title="Switch background">◐ Theme</button>
@@ -180,21 +183,37 @@
     </section>
    </div>
    <div id="perf-view" class="hidden">
+     <!-- Event history: every persisted event (alerted or not). The same query answers voice/chat
+          event listings and `cli.events`, so a spoken list can be checked here row for row.
+          "Labelled only" adds the per-model performance summary over the listed events. -->
      <div id="perf-filters">
-       <label>Processed <select id="f-since">
+       <label>Status <select id="f-status">
+         <option value="any">any</option><option value="pending">pending (unacknowledged)</option>
+         <option value="acknowledged">acknowledged</option><option value="resolved">resolved</option>
+         <option value="withheld">withheld (not alerted)</option>
+       </select></label>
+       <label>Patient <input id="f-patient" size="9" placeholder="PT…" /></label>
+       <label>Bed <input id="f-bed" size="11" placeholder="Unit1-Bed02 / bed 2" /></label>
+       <label>Type <select id="f-type"><option value="">all</option></select></label>
+       <label>Criticality ≥ <select id="f-crit">
+         <option value="">any</option><option>Medium</option><option>High</option><option>Critical</option>
+       </select></label>
+       <label>Time <select id="f-since">
          <option value="">all time</option><option value="1h">last hour</option>
          <option value="24h">last 24 h</option><option value="7d">last 7 days</option>
        </select></label>
-       <label>Dataset <select id="f-dataset"><option value="">all</option></select></label>
-       <label>Model <select id="f-model"><option value="">all</option></select></label>
+       <label><input type="checkbox" id="f-labelled" /> Labelled only (model performance)</label>
+       <label class="perf-only hidden">Dataset <select id="f-dataset"><option value="">all</option></select></label>
+       <label class="perf-only hidden">Model <select id="f-model"><option value="">all</option></select></label>
        <button id="f-refresh">Refresh</button>
+       <button id="f-clear">Clear</button>
        <span id="perf-status" class="meta"></span>
      </div>
      <div id="perf-models"></div>
-     <h2 style="font-size:.85rem;margin:.5rem 0">Labelled events (alerted or not)</h2>
+     <h2 id="perf-count" style="font-size:.85rem;margin:.5rem 0">Events</h2>
      <table id="perf-events">
-       <thead><tr><th>Processed</th><th>Patient</th><th>Outcome</th><th>Predicted</th><th>Truth</th>
-         <th>Alert</th><th>Source</th><th>Why</th></tr></thead>
+       <thead><tr><th>Time</th><th>Patient</th><th>Bed</th><th>Event</th><th>Criticality</th>
+         <th>Status</th><th>Alert</th><th>Delivered</th><th>Truth</th><th>Source</th><th>Why</th><th></th></tr></thead>
        <tbody></tbody>
      </table>
      <section id="perf-detail" class="hidden"></section>

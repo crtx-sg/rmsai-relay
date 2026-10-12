@@ -1,8 +1,8 @@
 // rmsai companion app — per-hospital worklist (Phase 9, Step 2).
 //
-// Flow: PIN -> POST /session -> join the LiveKit inbox room (rmsai-inbox-<hospital_id>) -> maintain
-// a live worklist from `event`/`status` data messages the orchestrator publishes. Live-push-only:
-// the list is built from messages received after connect (no backlog fetch in the POC).
+// Flow: PIN -> POST /session -> join the LiveKit inbox room (rmsai-inbox-<hospital_id>) -> backfill
+// the worklist with every pending event (POST /events status=pending: alerted, not acknowledged) ->
+// keep it live from the `event`/`status` data messages the orchestrator publishes.
 //
 // Artifact bytes never ride the data channel — messages carry only pseudonyms + scoped links.
 // Rendering artifacts inline (ECG strip / trend / report) and in-app chat come in later steps.
@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-10-05 agent-reselect-1";
+const APP_BUILD = "2026-10-12 events-tab-3";
 
 const LK = window.LivekitClient;
 
@@ -311,6 +311,7 @@ async function connect(sess) {
       const msg = JSON.parse(new TextDecoder().decode(payload));
       console.log("[worklist] data message:", msg);
       if (msg.type === "show") { viewArtifact(msg.kind, msg.url); return; }  // chat asked to see it
+      if (msg.type === "events_filter") { addEventsLink(msg.filter, msg.label); return; }
       applyMessage(state, msg);
       render();
       if (msg.type === "event") schedulePerfRefresh(); // live: the perf tab follows new events
@@ -337,6 +338,7 @@ async function connect(sess) {
   room.registerTextStreamHandler(CHAT_TOPIC, async (reader) => {
     try {
       addChatLine("assistant", await reader.readAll());
+      flushEventsLink(); // an event-list answer: its Events-tab link goes right under it
     } catch (e) {
       console.warn("chat: failed to read reply", e);
     }
@@ -347,6 +349,7 @@ async function connect(sess) {
     setStatus("live");
     await room.startAudio().catch(() => {}); // unlock autoplay within the connect gesture
     console.log("[worklist] connected to", session.room, "as", session.identity);
+    backfillWorklist();
   } catch (e) {
     // Surface the failure instead of leaving an empty worklist that looks like "no events".
     console.error("[worklist] connect failed", e);
@@ -354,6 +357,22 @@ async function connect(sess) {
     document.getElementById("login").classList.remove("hidden");
     document.getElementById("login-err").textContent =
       "Connected to the gateway but could not join the live room: " + ((e && e.message) || e);
+  }
+}
+
+// Pending events from before this login (or a page reload): the same rows the Events tab shows for
+// status=pending. Applied as `event` messages, so they render exactly like a live push; a live
+// message for the same event simply merges over it.
+async function backfillWorklist() {
+  try {
+    const res = await sessionPost("/events", { status: "pending" });
+    if (!res.ok) { console.warn("[worklist] backfill failed", res.status); return; }
+    const data = await res.json();
+    for (const e of data.events) applyMessage(state, { ...e, type: "event" });
+    render();
+    console.log(`[worklist] backfilled ${data.events.length} pending event(s)`);
+  } catch (e) {
+    console.warn("[worklist] backfill error", e);
   }
 }
 
@@ -497,7 +516,7 @@ function showTab(tab) {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   document.getElementById("wl-view").classList.toggle("hidden", tab !== "worklist");
   document.getElementById("perf-view").classList.toggle("hidden", tab !== "perf");
-  if (tab === "perf") loadPerf();
+  if (tab === "perf") { ensureTypeOptions(); loadPerf(); }
 }
 
 function perfVisible() { return !document.getElementById("perf-view").classList.contains("hidden"); }
@@ -508,26 +527,136 @@ function schedulePerfRefresh() {
   perfTimer = setTimeout(loadPerf, 1500); // a burst of events → one refresh
 }
 
+const EVENT_TYPES = ["NORMAL_SINUS", "SINUS_BRADYCARDIA", "SINUS_TACHYCARDIA", "ATRIAL_FIBRILLATION",
+  "ATRIAL_FLUTTER", "PAC", "SVT", "PVC", "VENTRICULAR_TACHYCARDIA", "VENTRICULAR_FIBRILLATION", "LBBB",
+  "RBBB", "AV_BLOCK_1", "AV_BLOCK_2_TYPE1", "AV_BLOCK_2_TYPE2", "ST_ELEVATION"];
+const FILTER_IDS = { status: "f-status", patient: "f-patient", bed: "f-bed", event_type: "f-type",
+  min_criticality: "f-crit", since: "f-since", dataset: "f-dataset", model: "f-model" };
+
+// Event-type choices, filled the first time the Events tab is shown (not at load).
+function ensureTypeOptions() {
+  const sel = document.getElementById("f-type");
+  if (sel.options.length > 1) return;
+  for (const t of EVENT_TYPES) sel.add(new Option(t.replace(/_/g, " ").toLowerCase(), t));
+}
+
+function eventsFilter() {
+  const v = (id) => document.getElementById(id).value.trim() || null;
+  const labelled = document.getElementById("f-labelled").checked;
+  return {
+    status: v("f-status") || "any", patient: v("f-patient"), bed: v("f-bed"),
+    event_type: v("f-type"), min_criticality: v("f-crit"), since: v("f-since"), labelled,
+    dataset: labelled ? v("f-dataset") : null, model: labelled ? v("f-model") : null,
+  };
+}
+
+// Put a filter (from a chat answer's link) into the controls. A `since` that isn't one of the preset
+// windows (the agent sends epoch seconds) gets its own option, labelled with the time it stands for.
+function setEventsFilter(f) {
+  ensureTypeOptions();
+  for (const [key, id] of Object.entries(FILTER_IDS)) {
+    const el = document.getElementById(id);
+    const val = f[key] == null ? "" : String(f[key]);
+    if (el.tagName === "SELECT" && val && ![...el.options].some((o) => o.value === val)) {
+      const label = key === "since" ? `since ${new Date(Number(val) * 1000).toLocaleString()}` : val;
+      el.add(new Option(label, val));
+    }
+    el.value = key === "status" ? (val || "any") : val;
+  }
+  document.getElementById("f-labelled").checked = !!f.labelled;
+}
+
 async function loadPerf() {
   if (!session) return;
   const status = document.getElementById("perf-status");
+  const labelled = document.getElementById("f-labelled").checked;
+  document.querySelectorAll(".perf-only").forEach((el) => el.classList.toggle("hidden", !labelled));
   status.textContent = "loading…";
-  const body = {
-    since: document.getElementById("f-since").value || null,
-    dataset: document.getElementById("f-dataset").value || null,
-    model: document.getElementById("f-model").value || null,
-  };
   try {
-    const res = await sessionPost("/metrics", body);
+    const res = await sessionPost("/events", eventsFilter());
     if (!res.ok) {
-      status.textContent = res.status === 401 ? "session expired" : `could not load (${res.status})`;
+      status.textContent = res.status === 401 ? "session expired"
+        : res.status === 400 ? `bad filter: ${(await res.json()).detail}` : `could not load (${res.status})`;
       return;
     }
-    renderPerf(await res.json());
+    renderEvents(await res.json(), labelled);
     status.textContent = `updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     status.textContent = "could not reach the gateway";
   }
+}
+
+function fmtDelivered(d) {
+  const parts = [];
+  if (d.app) parts.push("app");
+  if (d.call) parts.push(`call ${d.call}`);
+  if (d.sms) parts.push(String(d.sms).replace(/_/g, " "));
+  return parts.join(", ") || "–";
+}
+
+function fmtStatus(e) {
+  if (e.pending) return `<span class="badge pending">pending</span>`;
+  if (!e.alert) return `<span class="badge withheld" title="never alerted">withheld</span>`;
+  return `<span class="badge ${e.status === "acknowledged" ? "acknowledged" : "new"}">${esc(e.status)}</span>`;
+}
+
+function renderEvents(data, labelled) {
+  if (labelled) renderPerf({ models: data.models || [], events: data.events });
+  else document.getElementById("perf-models").innerHTML = "";
+  const f = data.filters || {};
+  const desc = Object.entries(f).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(" · ") || "no filter";
+  document.getElementById("perf-count").textContent =
+    `${data.total} event(s), ${data.pending} pending · ${desc}${data.truncated ? " · showing the newest only" : ""}`;
+  const tbody = document.querySelector("#perf-events tbody");
+  tbody.innerHTML = data.events.map((e) => `<tr data-event-id="${esc(e.event_id)}">
+    <td>${esc(fmtDateTime(e.ts))}</td><td>${esc(e.patient)}</td><td>${esc(e.bed || "")}</td>
+    <td>${esc(e.event_type)} <span class="sub">${pct(e.confidence)}${e.alert_basis === "vitals" ? " · vitals alert" : ""}</span>
+      <span class="sub">id ${esc(String(e.event_id).slice(0, 8))}</span></td>
+    <td class="crit crit-${esc(e.criticality)}">${esc(e.criticality)}</td>
+    <td>${fmtStatus(e)}</td>
+    <td>${e.alert ? "✓" : "✗"} <span class="sub">${esc(e.reason_code)}</span></td>
+    <td>${esc(fmtDelivered(e.delivered || {}))}</td>
+    <td>${e.truth ? `${esc(e.truth)} <span class="oc oc-${esc(e.outcome)}">${esc(fmtOutcome(e.outcome))}</span>` : "–"}</td>
+    <td>${esc(e.source_label)}</td><td><span class="why" title="${esc(e.why)}">${esc(e.why)}</span></td>
+    <td>${e.pending ? `<button data-ack="${esc(e.event_id)}">Acknowledge</button>` : ""}</td></tr>`).join("");
+}
+
+function fmtDateTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return isNaN(d) ? "" : d.toLocaleString();
+}
+
+// A chat answer that listed events: link it to the Events tab with the same filter, so the rows the
+// agent counted can be seen (and checked) one by one.
+// The link's data message usually beats the reply's text stream, so it is held until the reply
+// lands (placed under it), or shown on its own after a few seconds if no reply comes.
+let pendingEventsLink = null;
+
+function addEventsLink(filter, label) {
+  if (pendingEventsLink) clearTimeout(pendingEventsLink.timer);
+  pendingEventsLink = { filter, label, timer: setTimeout(flushEventsLink, 4000) };
+}
+
+function flushEventsLink() {
+  if (!pendingEventsLink) return;
+  const { filter, label, timer } = pendingEventsLink;
+  clearTimeout(timer);
+  pendingEventsLink = null;
+  appendEventsLink(filter, label);
+}
+
+function appendEventsLink(filter, label) {
+  const log = document.getElementById("chat-log");
+  const div = document.createElement("div");
+  div.className = "msg assistant";
+  const btn = document.createElement("button");
+  btn.className = "open-events";
+  btn.textContent = `📋 Open in Events tab: ${label || "this list"}`;
+  btn.addEventListener("click", () => { setEventsFilter(filter || {}); showTab("perf"); });
+  div.appendChild(btn);
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
 }
 
 function fillSelect(id, values) {
@@ -589,13 +718,6 @@ function renderPerf(data) {
   });
   document.getElementById("perf-models").innerHTML = blocks.join("") ||
     `<div class="meta">No labelled events yet. Production data has no ground truth; curate a labelled set with cli.real_samples.</div>`;
-  const tbody = document.querySelector("#perf-events tbody");
-  tbody.innerHTML = data.events.map((e) => `<tr data-event-id="${esc(e.event_id)}">
-    <td>${esc(fmtTime(e.processed_at))}</td><td>${esc(e.patient)}</td>
-    <td><span class="oc oc-${esc(e.outcome)}">${esc(fmtOutcome(e.outcome))}</span></td>
-    <td>${esc(e.predicted)} (${pct(e.confidence)})</td><td>${esc(e.truth)}</td>
-    <td>${e.alert ? "✓" : "✗"} <span class="sub">${esc(e.reason_code)}</span></td>
-    <td>${esc(e.source)}</td><td><span class="why" title="${esc(e.why)}">${esc(e.why)}</span></td></tr>`).join("");
 }
 
 // Scope the worker's conversation to an event. Sent as a control message on the chat text channel —
@@ -715,9 +837,14 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   if (tab) showTab(tab);
 });
 document.getElementById("f-refresh").addEventListener("click", loadPerf);
-["f-since", "f-dataset", "f-model"].forEach((id) =>
+document.getElementById("f-clear").addEventListener("click", () => { setEventsFilter({}); loadPerf(); });
+["f-status", "f-type", "f-crit", "f-since", "f-labelled", "f-dataset", "f-model"].forEach((id) =>
   document.getElementById(id).addEventListener("change", loadPerf));
-document.querySelector("#perf-events tbody").addEventListener("click", (e) => {
+["f-patient", "f-bed"].forEach((id) => document.getElementById(id).addEventListener("keydown",
+  (e) => { if (e.key === "Enter") loadPerf(); }));
+document.querySelector("#perf-events tbody").addEventListener("click", async (e) => {
+  const ackId = e.target.getAttribute && e.target.getAttribute("data-ack");
+  if (ackId) { await ackEvent(ackId); loadPerf(); return; }
   const tr = e.target.closest("tr");
   if (tr && tr.dataset.eventId) showEventInfo(tr.dataset.eventId, "perf-detail");
 });

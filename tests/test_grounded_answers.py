@@ -136,9 +136,9 @@ def test_courtesy_is_answered_without_the_kb(text, reply):
 # --- B. worklist questions ------------------------------------------------------------------------
 
 @pytest.mark.parametrize("q, name", [
-    ("How many events are there in my work list?", "worklist"),
-    ("What are the events in my worklist?", "worklist"),
-    ("Show the unacknowledged alarms", "worklist"),
+    ("How many events are there in my work list?", "event_history"),
+    ("What are the events in my worklist?", "event_history"),
+    ("Show the unacknowledged alarms", "event_history"),
     ("Which bed has the most severe alarm?", "worklist"),
     ("Which patient has the highest number of alarms?", "alarm_counts"),
     ("How many alarms per bed?", "alarm_counts"),
@@ -149,8 +149,8 @@ def test_worklist_questions_route_to_the_graph(q, name):
 
 def test_worklist_hours_narrow_the_window():
     assert match_intent("unacknowledged alarms in the last 6 hours", now=NOW) == (
-        "worklist", {"since": NOW - 6 * 3600})
-    assert match_intent("what's on my worklist", now=NOW) == ("worklist", {"since": 0})
+        "event_history", {"status": "pending", "since": NOW - 6 * 3600, "window_hours": 6})
+    assert match_intent("what's on my worklist", now=NOW) == ("event_history", {"status": "pending"})
 
 
 @pytest.mark.parametrize("q", [
@@ -158,7 +158,8 @@ def test_worklist_hours_narrow_the_window():
     "what is the alarm on bed tree", "alarms on bed 3",
 ])
 def test_spoken_bed_numbers_resolve_to_the_label(q):
-    assert match_intent(q, now=NOW) == ("event_status_on_bed", {"bed": "Unit1-Bed03"})
+    name, params = match_intent(q, now=NOW)
+    assert name == "event_history" and params["bed"] == "Unit1-Bed03"
 
 
 def test_worklist_template_gets_its_defaults():

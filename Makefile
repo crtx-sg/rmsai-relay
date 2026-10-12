@@ -11,7 +11,7 @@
 .DEFAULT_GOAL := setup
 .PHONY: setup setup-all external weights test lint \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps docker-shell \
-        stores-up stores-down stores-check phone-up phone-down phone-logs demo-up demo-check demo-down
+        stores-up stores-down stores-check phone-up phone-down phone-logs phone-transcript demo-up demo-phone-up demo-check demo-down
 
 COMPOSE := docker compose -f infra/docker-compose.yml
 # The backing services. These run in Docker even when the app runs on the host.
@@ -96,6 +96,16 @@ demo-up:
 	$(DOCKER_USER) $(COMPOSE) up -d --wait --wait-timeout 180
 	@./infra/demo-check.sh
 
+# demo-up plus real phone calls: also starts the telephony phone worker (rmsai-agent-phone) and runs
+# the consumer with `--transport sip`, so reportable events ring OUTBOUND_CALL_NUMBER instead of
+# staging a WebRTC room. Compose doesn't read the repo .env for CONSUME_ARGS, hence it is set here.
+# A later plain `make demo-up` recreates the consumer back on WebRTC.
+DEMO_PHONE_CONSUME_ARGS := --channel voice --caller livekit --transport sip
+demo-phone-up:
+	CONSUME_ARGS="$(DEMO_PHONE_CONSUME_ARGS)" $(DOCKER_USER) $(COMPOSE) --profile telephony \
+		up -d --wait --wait-timeout 180
+	@./infra/demo-check.sh
+
 # Read-only: is the running demo healthy and started in the right order? Exit 0 = ready.
 demo-check:
 	@./infra/demo-check.sh
@@ -118,6 +128,12 @@ phone-down:
 
 phone-logs:
 	$(COMPOSE) --profile telephony logs -f --tail=50 voice-worker-phone
+
+# The conversation only: STT transcripts, what the handler heard, the KB-grounded reply (logged
+# before TTS speaks it), the greeting, PIN and spoken event alert. New lines only; Ctrl-C to stop.
+phone-transcript:
+	@$(COMPOSE) --profile telephony logs -f --tail=0 --no-log-prefix voice-worker-phone 2>&1 \
+		| grep --line-buffered -E 'stt: ->|\[worker\] (heard|reply|speaking)|\[voice\]|graph query|declined'
 
 # Pick up source edits (no rebuild needed — the repo is bind-mounted).
 docker-restart:

@@ -497,8 +497,18 @@ def _build_inbox_room(ctx, config, loop):  # pragma: no cover - needs a live Liv
         )
         print(f"[worker] inbox show -> {kind} for event {event_id}", flush=True)
 
+    def _on_filter(history_filter: dict, label: str) -> None:
+        # The listing just answered in chat, as an Events-tab filter: the app shows a link that
+        # opens the same rows. Filter values are pseudonyms/beds/types only.
+        payload = json.dumps({"type": "events_filter", "filter": history_filter,
+                              "label": label}).encode("utf-8")
+        asyncio.run_coroutine_threadsafe(
+            ctx.room.local_participant.publish_data(payload, reliable=True), loop
+        )
+        print(f"[worker] inbox events_filter -> {history_filter}", flush=True)
+
     handler, greeting, cleanup = build_inbox_handler(
-        embedder=DEFAULT.embedder, llm=DEFAULT.llm_provider, on_show=_on_show
+        embedder=DEFAULT.embedder, llm=DEFAULT.llm_provider, on_show=_on_show, on_filter=_on_filter
     )
 
     # NOTE: in the agents worker only the lk.chat text path (text_input_cb) reliably delivers

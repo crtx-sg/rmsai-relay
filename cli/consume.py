@@ -32,7 +32,7 @@ from kb.vector.retriever import VectorRetriever
 from kb.vector.store import QdrantStore
 from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
-from orchestrator.bus_consumer import _mode_includes, process_bus_event
+from orchestrator.bus_consumer import _mode_includes, process_bus_event, run_queued_call
 from orchestrator.orchestrator import Orchestrator
 from voice.outbound import CallOutcome, SimulatedCaller, get_caller
 
@@ -128,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     dispatch_fn = None
     alert_store = None
     call_end_waiter = None
+    use_call_queue = False
     if args.channel == "voice" and args.caller == "livekit":
         from voice.outbound_alert import OutboundAlertStore  # noqa: PLC0415
 
@@ -142,6 +143,9 @@ def main(argv: list[str] | None = None) -> int:
 
             tel = config.telephony()
             call_end_waiter = lambda room: wait_until_call_ends(room, config=tel)  # noqa: E731
+            # ...but the app must not wait for it: events are pushed as they arrive and the calls
+            # queue (highest criticality first) for a single dispatcher thread.
+            use_call_queue = True
         caller = None
     else:
         caller = SimulatedCaller([CallOutcome.ANSWERED] * max(args.count, 1))
@@ -176,6 +180,22 @@ def main(argv: list[str] | None = None) -> int:
     client = redis.Redis.from_url(args.redis_url, socket_timeout=args.block_ms / 1000 + 5)
     _ensure_group(client, args.stream, args.group, args.redis_url)
     print(f"[consume] group={args.group} consumer={args.consumer} stream={args.stream}")
+
+    call_queue = dispatcher = None
+    if use_call_queue:
+        from orchestrator.call_queue import CallDispatcher, CallQueue  # noqa: PLC0415
+
+        call_queue = CallQueue(redis.Redis.from_url(args.redis_url))
+        recovered = call_queue.recover()
+        dispatcher = CallDispatcher(call_queue, lambda job: _report_call(run_queued_call(
+            job, driver=driver, orchestrator=orch, utterances=utterances, config=config,
+            notifier=notifier, caller_factory=caller_factory, dispatch_fn=dispatch_fn,
+            alert_store=alert_store, call_end_waiter=call_end_waiter,
+        )))
+        dispatcher.start()
+        print(f"[consume] call queue on (severity order, one call at a time); "
+              f"{call_queue.pending()} waiting" + (f", {recovered} recovered from an earlier run"
+                                                    if recovered else ""), flush=True)
 
     from orchestrator.event_log import PerfTracker  # noqa: PLC0415
 
@@ -212,8 +232,10 @@ def main(argv: list[str] | None = None) -> int:
                             caller_factory=caller_factory, dispatch_fn=dispatch_fn,
                             alert_store=alert_store,
                             inbox_publisher=inbox_publisher, token_store=token_store,
-                            call_end_waiter=call_end_waiter,
+                            call_end_waiter=call_end_waiter, call_queue=call_queue,
                         )
+                        if result.call_queued and dispatcher is not None:
+                            dispatcher.notify()
                         _report(result, samples=args.trend_samples)
                         if result.trace is not None:
                             tracker.add(result.trace)
@@ -234,9 +256,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.once and not empty_batch:
                 # drained this batch; loop once more to catch remaining backlog, else block returns []
                 continue
+        if dispatcher is not None and call_queue.pending():
+            # --once / --max-events: the queued calls are part of this run; place them first.
+            print(f"[consume] waiting for {call_queue.pending()} queued call(s) before exiting",
+                  flush=True)
+        if dispatcher is not None:
+            dispatcher.stop(drain=True)
+            dispatcher = None
     except KeyboardInterrupt:
         pass
     finally:
+        if dispatcher is not None:  # interrupted: unplaced calls stay queued for the next run
+            dispatcher.stop()
         tracker.flush(header="on exit")
         driver.close()
     print(f"[consume] processed {processed} message(s)")
@@ -279,6 +310,15 @@ def _print_webrtc_join(config, event_uuid: str) -> None:
     print(f"      Token: {token}")
 
 
+def _report_call(result) -> None:
+    """The dispatcher's line for one queued call (None = skipped, already logged)."""
+    if result is None:
+        return
+    ob = result.outbound
+    print(f"[call] {result.patient_ref}/{result.event_type} @ {result.bed} -> {ob.outcome} "
+          f"(attempts {ob.attempts}) status={ob.status}", flush=True)
+
+
 def _report(result, *, samples: bool = False) -> None:
     if result.trace is not None:
         from orchestrator.event_log import event_log_line  # noqa: PLC0415
@@ -286,9 +326,14 @@ def _report(result, *, samples: bool = False) -> None:
         ob = result.outbound
         print(event_log_line(
             result.trace, app=result.app_dispatched if result.trace["gate"] else None,
-            call=ob.outcome if ob is not None and ob.called else None,
+            call=(ob.outcome if ob is not None and ob.called
+                  else "queued" if result.call_queued else None),
             sms=ob.fallback if ob is not None else None, samples=samples), flush=True)
     tag = f"{result.patient_ref}/{result.event_type}"
+    if result.call_queued:
+        extra = " [app worklist pushed]" if result.app_dispatched else ""
+        print(f"[queued] {tag} @ {result.bed}: call {result.queue_depth} in queue{extra}")
+        return
     if not result.called:
         extra = " [app worklist pushed]" if result.app_dispatched else ""
         print(f"[skip] {tag} @ {result.bed}: {result.decision_reason}{extra}")

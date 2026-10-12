@@ -24,7 +24,7 @@ NOW = 1_000_000.0
         ("List positive patient events reported in the last 30 minutes",
          ("positive_events_since", {"since": NOW - 30 * 60})),
         ("What is the status of patient events reported on Bed Unit1-Bed01?",
-         ("event_status_on_bed", {"bed": "Unit1-Bed01"})),
+         ("event_history", {"status": "any", "bed": "Unit1-Bed01"})),
         ("Get the event analysis report for Bed Unit1-Bed01 in the unit",
          ("reports_for_bed", {"bed": "Unit1-Bed01"})),
         ("What were the vitals at the time of the event for the patient in Bed Unit1-Bed01?",
@@ -57,7 +57,7 @@ def test_operational_matrix_routes(query, expected):
         ("ECG strips for the last A V Block event",
          ("ecg_strips_last_event_of_type", {"event_type": "AV_BLOCK_1"})),
         ("what is the status of events on bed unit one bed oh one",
-         ("event_status_on_bed", {"bed": "Unit1-Bed01"})),
+         ("event_history", {"status": "any", "bed": "Unit1-Bed01"})),
         ("what were the vitals for the patient in bed one",
          ("vitals_for_bed_last_event", {"bed": "Unit1-Bed01"})),
         ("critical events in the last twenty four hours",
@@ -76,7 +76,7 @@ def test_spoken_queries_route_like_typed(spoken, expected):
 def test_typed_bed_shorthand_routes_to_bed_status(query):
     # A clinician typing the app's short "Bed01" (not the full "Unit1-Bed01") must still resolve to
     # the deterministic bed template — else it falls to the LLM and can drop events.
-    assert match_intent(query, now=NOW) == ("event_status_on_bed", {"bed": "Unit1-Bed01"})
+    assert match_intent(query, now=NOW) == ("event_history", {"status": "any", "bed": "Unit1-Bed01"})
 
 
 def test_pattern_wins_over_comorbidity_when_both_present():
@@ -107,10 +107,10 @@ def test_hr_trend_for_this_patient_routes():
 def test_this_patient_scopes_to_session_patient():
     # With a patient in session, "this patient" scopes critical/all events to that patient.
     assert match_intent("what are other critical events for this patient?", now=NOW,
-                        patient_ref="PT8620") == ("critical_events_for_patient",
-                                                  {"patient_id": "PT8620"})
+                        patient_ref="PT8620") == ("event_history", {"status": "any", "patient_id": "PT8620",
+                                                                  "min_criticality": "High"})
     assert match_intent("show this patient's events", now=NOW, patient_ref="PT8620") == (
-        "events_for_patient", {"patient_id": "PT8620"})
+        "event_history", {"status": "any", "patient_id": "PT8620"})
 
 
 def test_this_patient_without_session_falls_through_to_global():

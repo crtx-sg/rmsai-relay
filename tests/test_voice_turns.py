@@ -269,12 +269,12 @@ _NOW = 1_000_000.0
 
 
 @pytest.mark.parametrize("q, expected", [
-    ("What is the event on bed number two?", ("event_status_on_bed", {"bed": "Unit1-Bed02"})),
-    ("Elaborate the event on bed number one", ("event_status_on_bed", {"bed": "Unit1-Bed01"})),
-    ("tell me about bed no. 3", ("event_status_on_bed", {"bed": "Unit1-Bed03"})),
-    ("events for PT998224", ("events_for_patient", {"patient_id": "PT998224"})),
+    ("What is the event on bed number two?", ("event_history", {"status": "any", "bed": "Unit1-Bed02"})),
+    ("Elaborate the event on bed number one", ("event_history", {"status": "any", "bed": "Unit1-Bed01"})),
+    ("tell me about bed no. 3", ("event_history", {"status": "any", "bed": "Unit1-Bed03"})),
+    ("events for PT998224", ("event_history", {"status": "any", "patient_id": "PT998224"})),
     ("list events for patient P T nine nine eight two two four",
-     ("events_for_patient", {"patient_id": "PT998224"})),
+     ("event_history", {"status": "any", "patient_id": "PT998224"})),
     ("which bed is PT998224 on", ("patient_bed", {"patient_id": "PT998224"})),
     ("what are the vitals for PT998224", ("vitals_at_patient_last_event", {"patient_id": "PT998224"})),
 ])

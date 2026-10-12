@@ -1,5 +1,5 @@
 // Render the companion app's pure HTML builders against a stub DOM (no browser, no LiveKit).
-// Usage: node tests/js/render_smoke.js <app.js> <metrics.json> <info.json> <row.json>
+// Usage: node tests/js/render_smoke.js <app.js> <events.json> <info.json> <row.json>
 // Prints one JSON object of checks; tests/test_app_render.py asserts on it.
 const fs = require("fs"), vm = require("vm");
 const [appPath, metricsPath, infoPath, rowPath] = process.argv.slice(2);
@@ -22,7 +22,7 @@ const ctx = {
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(appPath, "utf8"), ctx);
 
-ctx.renderPerf(JSON.parse(fs.readFileSync(metricsPath)));
+ctx.renderEvents(JSON.parse(fs.readFileSync(metricsPath)), true);  // the Events tab, labelled mode
 const models = mk("perf-models").innerHTML;
 const rows = mk("#perf-events tbody").innerHTML;
 const info = ctx.renderInfo(JSON.parse(fs.readFileSync(infoPath)));

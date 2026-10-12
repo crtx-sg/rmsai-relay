@@ -15,9 +15,11 @@ from common.interfaces import LLMProvider
 from .driver import GraphDriver
 from .entities import condition_id
 from .spoken import normalize_spoken_query
-from .templates import run_template
+from .templates import EVENT_HISTORY, run_template
 
 _BED = re.compile(r"\bbed\s+([A-Za-z0-9_-]+)", re.IGNORECASE)
+# A full label typed as-is ("events on Unit1-Bed02"): no "bed " before it, so _BED misses it.
+_BED_LABEL = re.compile(r"\bUnit\d+-Bed\d+\b", re.IGNORECASE)
 _HOURS = re.compile(r"\b(\d+)\s*h(?:ours?)?\b", re.IGNORECASE)
 _MINUTES = re.compile(r"\b(\d+)\s*m(?:in(?:utes?)?)?\b", re.IGNORECASE)
 # Vitals question: any vital-sign term.
@@ -57,10 +59,68 @@ _ALARM_COUNTS = re.compile(
 _ALARM_WORD = re.compile(r"\b(alarms?|alerts?|events?)\b", re.IGNORECASE)
 _MOST_SEVERE = re.compile(r"\b(?:most|highest)\s+(?:severe|critical|serious|urgent|priority)\b",
                           re.IGNORECASE)
+# Event-history status words. `pending` is checked before `acknowledged` so "unacknowledged",
+# "un-acknowledged" and "not acknowledged" are pending, never acknowledged.
+_PENDING = re.compile(
+    r"\b(work\s*-?\s*list|pending|un-?acknowledged|un-?acked|not (?:yet )?(?:been )?acknowledged|"
+    r"outstanding (?:alarms?|events?|alerts?)|open (?:alarms?|alerts?|events?))\b", re.IGNORECASE)
+_ACKED = re.compile(r"\b(?:acknowledged|acked)\b", re.IGNORECASE)
+_WITHHELD = re.compile(r"\b(withheld|not alerted|suppressed)\b", re.IGNORECASE)
+_HISTORY_WORD = re.compile(r"\b(history|episodes?|past|prior|previous)\b", re.IGNORECASE)
+# A request to enumerate events ("list/show/say all…", "what are the…", "which…").
+_LIST_VERB = re.compile(
+    r"\b(list|show|say|tell|give|read|what (?:are|were)|which|any|all)\b", re.IGNORECASE)
+_EVENTS_PLURAL = re.compile(r"\b(events|alarms|alerts|episodes|event history)\b", re.IGNORECASE)
+_STRONG_LIST_VERB = re.compile(
+    r"\b(list|show|say|tell me|give me|read(?: out)?|all|which|any)\b", re.IGNORECASE)
+_CLINICAL_TOPIC = re.compile(
+    r"\b(signs?|symptoms?|causes?|treat\w*|manag\w*|risks?|limits?|settings?|fatigue)\b",
+    re.IGNORECASE)
+# A target the clinician named that no rule could resolve ("events for Mr Smith", "events in the
+# cardiac ward"). Listing everything instead would silently ignore it, so the agent declines.
+_UNRESOLVED_TARGET = re.compile(r"\b(patient|bed|unit|room|ward|mr|mrs|ms)\b", re.IGNORECASE)
 _NAMED_PATIENT = re.compile(r"\bPT\d{3,}\b", re.IGNORECASE)
 _WHERE = re.compile(r"\b(which|what) bed\b|\bwhere\b|\bbed (?:is|does)\b", re.IGNORECASE)
 # "this/current/same patient" — scopes a query to the session's patient (outbound call).
 _THIS_PATIENT = re.compile(r"\b(this|current|same) patient(?:'s|s)?\b", re.IGNORECASE)
+
+
+def history_status(q: str) -> str | None:
+    """The event-history status a question asks for, or None (any status)."""
+    if _WITHHELD.search(q):
+        return "withheld"
+    if _PENDING.search(q):
+        return "pending"
+    if _ACKED.search(q):
+        return "acknowledged"
+    return None
+
+
+def looks_like_event_listing(query: str) -> bool:
+    """A request to enumerate events/alarms. When no rule resolves one, the agent declines with a
+    hint rather than letting a model guess which events were meant."""
+    q = normalize_spoken_query(query or "")
+    if _DEFINITIONAL.search(q) or _CLINICAL_TOPIC.search(q):
+        return False  # "what are the alarm limits…", "signs of AFib episodes": document questions
+    return bool(_EVENTS_PLURAL.search(q)) and bool(
+        _STRONG_LIST_VERB.search(q) or history_status(q.lower()))
+
+
+def _history(*, now, status=None, patient=None, bed=None, etype=None, hours=None, critical=False):
+    """(EVENT_HISTORY, params). `window_hours` only labels the answer; `since` filters."""
+    params = {"status": status or "any"}
+    if patient:
+        params["patient_id"] = patient
+    if bed:
+        params["bed"] = bed
+    if etype:
+        params["event_type"] = etype
+    if hours:
+        params["since"] = now - hours * 3600
+        params["window_hours"] = hours
+    if critical:
+        params["min_criticality"] = "High"
+    return EVENT_HISTORY, params
 
 
 def match_intent(query: str, *, now: float, patient_ref: str | None = None,
@@ -78,7 +138,8 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     """
     query = normalize_spoken_query(query)
     q = query.lower()
-    bed = m.group(1) if (m := _BED.search(query)) else None
+    bed = (m.group(0) if (m := _BED_LABEL.search(query))
+           else m.group(1) if (m := _BED.search(query)) else None)
     etype = event_type_from_text(q)
     # A patient the clinician names ("events for PT998224") scopes the patient intents below, over
     # the session's patient. It comes from the clinician's words, never from a model.
@@ -127,16 +188,39 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         if patient_ref:
             return "vitals_at_patient_last_event", {"patient_id": patient_ref}
 
-    # "this/current patient" scoping (outbound call) — answer about the session's patient, not all.
-    if patient_ref and _THIS_PATIENT.search(q):
-        if "critical" in q and "event" in q:
-            return "critical_events_for_patient", {"patient_id": patient_ref}
-        # "events for this patient", "this patient's events", and history phrasings ("what is the
-        # history of this patient?", "past/prior events") — all resolve to the patient's event list.
-        # Routing these to the deterministic graph template keeps them off the free-text LLM path,
-        # where a small model can false-refuse a benign clinical question ("history … patient").
-        if "event" in q or "history" in q or "past" in q or "prior" in q:
-            return "events_for_patient", {"patient_id": patient_ref}
+    # The generic _BED capture takes any word after "bed" ("which bed HAS the…"); the rules below
+    # only trust a real label (normalize_spoken_query turns "bed three" into "Unit1-Bed03").
+    bed_label = bed if bed and any(ch.isdigit() for ch in bed) else None
+
+    # Event history — listings answered from `list_events`, the same rows the app's Events tab and
+    # `cli.events` show, with the one `pending` definition (alerted, not acknowledged/resolved).
+    # Status ("unacknowledged", "acknowledged", "withheld") and scope (patient / bed / event type)
+    # both come from the clinician's words.
+    status = history_status(q)
+    this_patient = patient_ref if _THIS_PATIENT.search(q) else None
+    scope_patient = named or this_patient
+    scoped = bool(scope_patient or bed_label or etype)
+    listing = bool(_ALARM_WORD.search(q) or _HISTORY_WORD.search(q) or _WORKLIST.search(q))
+    hours = int(m.group(1)) if (m := _HOURS.search(q)) else None
+    critical = "critical" in q
+    # "signs of AFib episodes", "how are alarms escalated": about the condition, not a listing.
+    topic = bool(_DEFINITIONAL.search(q) or _CLINICAL_TOPIC.search(q))
+    if topic:
+        status = None
+        listing = False
+    if status and (listing or status == "pending") and not _MOST_SEVERE.search(q) \
+            and not (_ALARM_COUNTS.search(q) and not scoped and not _WORKLIST.search(q)):
+        return _history(now=now, status=status, patient=scope_patient, bed=bed_label, etype=etype,
+                        hours=hours, critical=critical)
+    # "events for this patient", "this patient's history / past / prior events" (any status).
+    if this_patient and not topic and ("event" in q or _HISTORY_WORD.search(q)
+                                       or _ALARM_WORD.search(q)):
+        return _history(now=now, patient=this_patient, bed=bed_label, etype=etype, hours=hours,
+                        critical=critical)
+    # "all VT events", "how many AFib episodes on bed 2" — a typed listing.
+    if etype and listing:
+        return _history(now=now, patient=scope_patient, bed=bed_label, etype=etype, hours=hours,
+                        critical=critical)
 
     # T1 — critical events in the last N hours.
     if "critical" in q and "event" in q:
@@ -153,8 +237,8 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         return "cohort_patterns", {}
 
     # T3 — event status on a bed. (Before T4 so "events reported on bed" stays a status query.)
-    if ("status" in q or "what happened" in q) and bed:
-        return "event_status_on_bed", {"bed": bed}
+    if ("status" in q or "what happened" in q) and bed_label:
+        return _history(now=now, bed=bed_label, hours=hours)
 
     # T7 — care protocol for a bed's last event. (Before T4 for the same reason.)
     if "protocol" in q and bed:
@@ -164,13 +248,8 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     if _REPORT.search(q) and bed:
         return "reports_for_bed", {"bed": bed}
 
-    # The generic _BED capture takes any word after "bed" ("which bed HAS the…"); the rules below
-    # only trust a real label (normalize_spoken_query turns "bed three" into "Unit1-Bed03").
-    bed_label = bed if bed and any(ch.isdigit() for ch in bed) else None
-
-    # Worklist — pending High/Critical events ("what's in my work list?", "unacknowledged alarms",
-    # "which bed has the most severe alarm?"). Before T6 so "outstanding alarms" is the worklist,
-    # not action items. Hours narrow it.
+    # Worklist — "which bed has the most severe alarm?" (pending, most severe first). Unscoped
+    # "unacknowledged alarms" is the event-history rule above. Hours narrow it.
     if _WORKLIST.search(q) or (_MOST_SEVERE.search(q) and not bed_label):
         hours = int(m.group(1)) if (m := _HOURS.search(q)) else None
         return "worklist", {"since": now - hours * 3600 if hours else 0}
@@ -181,7 +260,7 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
 
     # Alarms/events on a named bed ("what are the alarms in bed three?").
     if bed_label and _ALARM_WORD.search(q):
-        return "event_status_on_bed", {"bed": bed_label}
+        return _history(now=now, bed=bed_label, hours=hours)
 
     # T6 — outstanding action items across patients.
     if "action item" in q or "outstanding" in q:
@@ -197,9 +276,13 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # answered from the graph, never by the LLM from conversation history (which, live, turned a
     # worklist summary's "9 Critical" into "bed 2 has … 9 Critical events" and dropped its VF).
     if bed_label:
-        return "event_status_on_bed", {"bed": bed_label}
+        return _history(now=now, bed=bed_label, hours=hours)
     if named:
-        return "events_for_patient", {"patient_id": named}
+        return _history(now=now, patient=named, hours=hours)
+    # An unscoped listing ("list all events", "show the alarms from the last 6 hours"), unless the
+    # question names a target no rule resolved — then None, and the agent declines with a hint.
+    if _EVENTS_PLURAL.search(q) and _STRONG_LIST_VERB.search(q) and not _UNRESOLVED_TARGET.search(q):
+        return _history(now=now, hours=hours, critical=critical)
 
     return None
 

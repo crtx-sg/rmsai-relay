@@ -309,9 +309,10 @@ reason (`below_threshold`, …).
   …; rhythm ventricular tachycardia unconfirmed (50% < 60%)"*), the data source (*INCART I05
   @263874 (test split)*) and, for labelled data, the outcome against the truth (*TP ✓*,
   *TP · wrong class*, *FP*, *FN*, *TN*). Selecting a row shows the full explanation and data source.
-- **Model performance tab:** sensitivity, specificity, PPV and NPV with 95 % intervals, the confusion
-  matrix, per-class precision/recall, and every labelled event *including those that weren't alerted*.
-  It refreshes as events arrive.
+- **Events tab, "Labelled only":** sensitivity, specificity, PPV and NPV with 95 % intervals, the
+  confusion matrix, per-class precision/recall, and every labelled event *including those that
+  weren't alerted*. It refreshes as events arrive. Without the checkbox the tab lists every stored
+  event, filtered by status, patient, bed, type, criticality or time.
 - **Trend evidence:** in a row's detail panel, each "rising/falling" vital expands to the readings it
   was computed from, with a mini chart.
 - **Theme:** the header's ☾ Dark / ☀ Light button switches a black or white background, and the

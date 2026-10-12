@@ -150,3 +150,8 @@ def event_criticality(event, config) -> Criticality:
 def at_least(level: str, threshold: str) -> bool:
     """True iff `level` is at or above `threshold` on the criticality scale."""
     return _RANK.get(level, -1) >= _RANK.get(threshold, len(_ORDER))
+
+
+def criticality_rank(level: str) -> int:
+    """Position of `level` on the scale (Low=0 … Critical=3); -1 for an unknown level."""
+    return _RANK.get(level, -1)

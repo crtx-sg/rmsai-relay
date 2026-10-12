@@ -29,6 +29,7 @@ from kb.graph.events import (
     get_event_artifacts,
     get_event_info,
     get_event_patient,
+    list_events,
     set_event_status,
 )
 from live.artifact_tokens import ARTIFACT_KINDS
@@ -80,6 +81,24 @@ class MetricsRequest(BaseModel):
     since: str | None = None  # 30m / 24h / 7d / ISO date / epoch (on processing time)
     model: str | None = None
     dataset: str | None = None
+
+
+class EventsRequest(BaseModel):
+    """`POST /events` body: the inbox session + the same filters as `cli.events` / voice listings.
+    `labelled` also returns the per-model performance summary over the listed events."""
+
+    session: str
+    patient: str | None = None
+    bed: str | None = None
+    unit: str | None = None
+    event_type: str | None = None
+    status: str = "any"  # any / pending / acknowledged / resolved / withheld
+    min_criticality: str | None = None
+    since: str | None = None  # 30m / 24h / 7d / ISO date / epoch (on event time)
+    labelled: bool = False
+    model: str | None = None
+    dataset: str | None = None
+    limit: int = 500
 
 
 class EventInfoRequest(BaseModel):
@@ -296,6 +315,47 @@ def create_app(
                     events=len(rows))
         return {**build_perf_view(rows),
                 "filters": {"since": req.since, "model": req.model, "dataset": req.dataset}}
+
+    @api.post("/events")
+    def events(req: EventsRequest) -> dict:
+        """Event history: every persisted event matching the filters (alerted or not), newest
+        first. The same query (`list_events`) backs `cli.events` and the voice/chat listings, so a
+        spoken answer can be checked here row for row. `status="pending"` is also how the worklist
+        backfills on login. Same fail-closed session gate as `/ack`. Pseudonyms only; read-only.
+        """
+        if not _session_ok(req.session):
+            audit.write(actor="app", action="view_events", subject="-", outcome="unauthorized")
+            raise HTTPException(status_code=401, detail="invalid session")
+        if driver is None:
+            raise HTTPException(status_code=503, detail="event store not configured")
+        from orchestrator.perf_view import build_events_view, build_perf_view, parse_since  # noqa: PLC0415
+
+        try:
+            since = parse_since(req.since)
+            limit = max(1, min(req.limit, 2000))
+            rows = list_events(
+                driver, patient=req.patient or None, bed=req.bed or None, unit=req.unit or None,
+                event_type=req.event_type or None, status=req.status,
+                min_criticality=req.min_criticality or None, since=since,
+                labelled_only=req.labelled, model_id=req.model or None,
+                dataset=req.dataset or None, limit=limit + 1,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        truncated = len(rows) > limit
+        rows = rows[:limit]
+        filters = {k: v for k, v in req.model_dump(exclude={"session", "limit"}).items()
+                   if v not in (None, "", False, "any")}
+        audit.write(actor="app", action="view_events", subject="-", outcome="served",
+                    events=len(rows), filters=",".join(sorted(filters)) or "none")
+        body = {
+            "events": build_events_view(rows, low_confidence_below=config.low_confidence_caveat),
+            "total": len(rows), "pending": sum(1 for r in rows if r["pending"]),
+            "truncated": truncated, "filters": filters,
+        }
+        if req.labelled:
+            body["models"] = build_perf_view(rows)["models"]
+        return body
 
     @api.post("/event-info")
     def event_info(req: EventInfoRequest) -> dict:

@@ -19,7 +19,7 @@ from inference.pipeline import process_window
 from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
 from orchestrator.explain import explain_event
-from orchestrator.perf_view import build_perf_view
+from orchestrator.perf_view import build_events_view, build_perf_view
 
 _ROOT = Path(__file__).resolve().parents[1]
 _FIXTURE = next((_ROOT / "data" / "fixtures").glob("*.h5"))
@@ -67,7 +67,11 @@ def rendered(tmp_path_factory):
                "confidence": 0.5, "why": "Shown because the vitals warrant it.",
                "source": "INCART I05 @263874 (test split)", "truth": VT, "outcome": "TP"}
     paths = []
-    for name, data in (("metrics", {**build_perf_view(rows), "filters": {}}), ("info", info),
+    for r in rows:
+        r.update(bed="Unit1-Bed02", pending=r["alert_gate"], artifact_kinds=["report"])
+    events = {"models": build_perf_view(rows)["models"], "events": build_events_view(rows),
+              "total": 3, "pending": 2, "truncated": False, "filters": {"labelled": True}}
+    for name, data in (("metrics", events), ("info", info),
                        ("row", row_msg)):
         p = tmp / f"{name}.json"
         p.write_text(json.dumps(data))
@@ -89,6 +93,13 @@ def test_performance_view(rendered):
     assert 'class="diag"' in m and 'class="off"' in m and 'table class="pc"' in m
     assert rendered["rows"].count("<tr ") == 3 and "oc-TP_WRONG_CLASS" in rendered["rows"]
     assert sorted(rendered["datasetOptions"]) == ["incart", "mitbih"]
+
+
+def test_events_rows_show_the_shared_status(rendered):
+    rows = rendered["rows"]
+    assert rows.count('badge pending') == 2 and rows.count('badge withheld') == 1  # e2 never alerted
+    assert rows.count('data-ack="') == 2  # pending rows can be acknowledged from the Events tab
+    assert "id e1" in rows and "Unit1-Bed02" in rows
 
 
 def test_detail_panel(rendered):

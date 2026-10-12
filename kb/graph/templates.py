@@ -12,7 +12,8 @@ from .driver import GraphDriver, assert_read_only
 #: Criticality tiers that make an unacknowledged event part of the worklist ("High and above").
 WORKLIST_LEVELS = ["High", "Critical"]
 #: Lifecycle statuses that take an event OFF the worklist (kb/graph/events.py: reported /
-#: acknowledged / notify_failed / resolved). Anything else, including no status, is pending.
+#: acknowledged / notify_failed / resolved). An ALERTED event with any other status is pending
+#: (`kb.graph.events.is_pending`); an event that was never alerted is withheld, not pending.
 CLOSED_STATUSES = ["acknowledged", "resolved"]
 
 TEMPLATES: dict[str, str] = {
@@ -21,7 +22,7 @@ TEMPLATES: dict[str, str] = {
     "worklist": """
         MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
         WHERE e.criticality IN $levels AND NOT coalesce(e.status, 'reported') IN $closed
-              AND e.timestamp >= $since
+              AND coalesce(e.alert_gate, false) AND e.timestamp >= $since
         OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
         OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
@@ -34,7 +35,8 @@ TEMPLATES: dict[str, str] = {
         MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
         OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
         WITH p, b, count(e) AS alarms,
-             sum(CASE WHEN coalesce(e.status, 'reported') IN $closed THEN 0 ELSE 1 END)
+             sum(CASE WHEN coalesce(e.alert_gate, false)
+                           AND NOT coalesce(e.status, 'reported') IN $closed THEN 1 ELSE 0 END)
                  AS unacknowledged,
              sum(CASE WHEN e.criticality IN $levels THEN 1 ELSE 0 END) AS high_or_critical
         RETURN p.pseudonym AS patient, b.label AS bed, alarms, unacknowledged, high_or_critical
@@ -307,8 +309,61 @@ TEMPLATE_DEFAULTS: dict[str, dict] = {
 }
 
 
+#: Not a Cypher string: backed by `kb.graph.events.list_events`, the same listing the app's Events
+#: tab and `cli.events` show, so a spoken event list can be checked against them row for row.
+#: Params: patient_id, bed, event_type, status (any/pending/acknowledged/resolved/withheld), since.
+EVENT_HISTORY = "event_history"
+
+
+def event_history_rows(driver: GraphDriver, *, patient_id=None, bed=None, event_type=None,
+                       status="any", since=None, min_criticality=None,
+                       window_hours=None) -> list[dict]:
+    """`list_events` rows in the compact shape the answer renderers read, newest first.
+    (`window_hours` only labels the answer; `since` is the filter.)"""
+    from .events import list_events  # noqa: PLC0415 - events imports this module
+
+    rows = list_events(driver, patient=patient_id, bed=bed, event_type=event_type,
+                       status=status, since=since or None, min_criticality=min_criticality)
+    return [{
+        "ts": r.get("timestamp"), "patient": r.get("patient"), "bed": r.get("bed"),
+        "event": r.get("event_type"), "confidence": r.get("confidence"),
+        "criticality": r.get("criticality"),
+        "status": ("pending" if r["pending"] else "withheld" if not r.get("alert_gate")
+                   else r.get("status") or "reported"),
+        "event_id": r.get("id"),
+    } for r in rows]
+
+
+_STATUS_WORDS = {"any": "events", "pending": "pending (unacknowledged) events",
+                 "acknowledged": "acknowledged events", "resolved": "resolved events",
+                 "withheld": "withheld (not alerted) events"}
+
+
+def describe_event_history(params: dict) -> str:
+    """The filter an event-history answer used, as words: 'pending (unacknowledged) events on bed
+    Unit1-Bed02 in the last 6 hours'. Every answer states it, so the clinician can apply the same
+    filter on the Events tab (or `cli.events`) and see the same rows."""
+    from .events import normalize_bed  # noqa: PLC0415
+
+    text = _STATUS_WORDS.get(params.get("status") or "any", "events")
+    if params.get("min_criticality"):
+        text = f"High or Critical {text}"
+    if params.get("event_type"):
+        text += f" of type {str(params['event_type']).replace('_', ' ').lower()}"
+    if params.get("patient_id"):
+        text += f" for patient {params['patient_id']}"
+    if params.get("bed"):
+        text += f" on bed {normalize_bed(params['bed'])}"
+    if params.get("window_hours"):
+        h = params["window_hours"]
+        text += f" in the last {h} hour{'s' if h != 1 else ''}"
+    return text
+
+
 def run_template(driver: GraphDriver, name: str, **params) -> list[dict]:
     """Run a named operational template with parameters (read-only)."""
+    if name == EVENT_HISTORY:
+        return event_history_rows(driver, **params)
     if name not in TEMPLATES:
         raise KeyError(f"unknown template: {name!r}")
     return driver.run_read(TEMPLATES[name], **{**TEMPLATE_DEFAULTS.get(name, {}), **params})

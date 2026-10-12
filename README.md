@@ -236,9 +236,11 @@ public phone network is in progress (see [Phone calls](#phone-calls-livekit-clou
 | T5 | SMS fallback on unanswered calls; working Twilio SMS (`--notifier twilio`) | ✅ |
 | T2b | Twilio trial bridge: inbound trunk + callee rule + TwiML Bin (`cli.sip_setup --twiml`) | ✅ code · 🔄 live call-in test |
 | T3b | Outbound phone alerts via the Twilio Calls API (Twilio trial only) | 🔜 deferred: SignalWire covers outbound |
-| C1–C2 | SignalWire carrier: `TELEPHONY_CARRIER`, native SIP trunk via `cli.sip_setup` (`--swml`) | ✅ code · 🔄 first live call (`603`, trial mode suspected) |
+| C1–C2 | SignalWire carrier: `TELEPHONY_CARRIER`, native SIP trunk via `cli.sip_setup` (`--swml`) | ✅ outbound verified live (2026-10-12) · 🔄 call-in |
+| — | Call queue: app gets every event at once, calls one at a time in severity order, skip-if-acked, restart-safe (`orchestrator/call_queue.py`, `make demo-phone-up`) | ✅ |
 | — | Phone worker registered on the wrong LiveKit (agents CLI env override) | ✅ fixed (`fe89028`) |
 | E1–E5 | Model performance & traceability: outcome + metrics, "why shown", provenance + model id, `[event]`/`[perf]` logs, `cli.model_perf`, app tab + detail panel | ✅ |
+| H1–H3 | Event history: one `pending` definition, `list_events` + `cli.events` (`--ask`), verifiable voice/chat listings that state their filter (or decline), app **Events** tab (`POST /events`, merges model performance), worklist backfill on login, chat → Events-tab link | ✅ |
 | E6 | Ask "why am I seeing this?" / "how is the model doing?" by chat or voice | 🔜 optional |
 | — | File-drop auto-publish watcher (inotify → `cli.ingest --emit bus`) | 🔜 planned |
 
@@ -288,6 +290,7 @@ text-to-Cypher is an allowlisted read-only fallback only):
 | 8 | Patterns: age/gender/co-morbidity/symptom → event type | graph (analytics) |
 | 9 | ECG strips for the last event (any type, a named type, or *this patient's*) | graph → PNG artifact |
 | 10 | HR & BP trend for last Tachycardia event; HR-history trend for *this patient's* event | graph → plot ref / HR series |
+| 11 | Event history: events by patient / bed / type / status (pending, acknowledged, withheld), optional last *N* h | graph (`list_events`, the Events tab's query) |
 
 ### Example questions the system answers
 
@@ -310,6 +313,21 @@ retriever:
 | "**How was HR trending** at the time of this patient's event?" | HR-history series persisted on the event (POC: HR; RR/SpO2/BP later) — answered as "HR trended from X to Y (rising)…" |
 | "What are the **other critical / all events for *this patient***?" | session-patient-scoped (outbound call) — filtered to the bound patient, not all |
 | "Show **all patients who have a specific event** (e.g. all AFib)." | graph traversal: `MonitoredEvent {event_type}` → `Patient` (+ optional bed/unit) |
+| "Say all **unacknowledged events in bed 2**" · "**acknowledged** events for this patient" · "all **VT events** in the last 6 hours" · "**withheld** events" | T11 event history: the same rows as the app's Events tab and `cli.events` |
+
+**Verifiable event listings.** Every event-history answer (T11) states the filter it used, e.g. "2
+pending (unacknowledged) events on bed Unit1-Bed02: …". A typed answer lists each event's time,
+confidence, criticality, status and short id. *Pending* has one meaning everywhere: **alerted**
+and not acknowledged or resolved. An event that was never alerted is *withheld*.
+
+To check a spoken list:
+- open the **Events** tab with the same filter (in the app chat, the "📋 Open in Events tab"
+  button under the answer does it), or run `cli.events` with the same flags;
+- run `cli.events --ask "<question>"` to see the exact query, its parameters, the rows and the
+  answer the agent gives.
+
+A listing whose target can't be resolved ("events for Mr Smith") is declined with a hint rather
+than guessed.
 
 > Operational items (1–6, 9, 10) are judged by **exact-row match**; hybrid/relationship items (7, 8)
 > by **groundedness + citations**. Out-of-corpus / unknown-bed / unknown-patient questions are
@@ -814,7 +832,10 @@ uv run pytest -q -m "not infra"
 | `make docker-restart` | restart the three app services to pick up source edits (no rebuild) |
 | `make docker-logs` / `make docker-ps` | tail the app services / show container state |
 | `make docker-shell` | interactive shell in the app image with the repo mounted |
+| `make demo-up` / `make demo-check` | bring up every default service in dependency order and health-check it (the consumer stages WebRTC rooms: **no phone rings**) / re-run only the check |
+| `make demo-phone-up` | `demo-up` plus real phone calls: also starts the phone worker and runs the consumer with `--transport sip`. A later plain `make demo-up` puts the consumer back on WebRTC |
 | `make phone-up` / `make phone-down` / `make phone-logs` | start / stop / tail the phone-call worker (`voice-worker-phone`, profile `telephony`) |
+| `make phone-transcript` | follow the phone worker's conversation only: STT transcript, what was heard, the graph query, the reply (before TTS), the PIN and the spoken alert |
 | `make test` / `make lint` | `uv run pytest -q` / `ruff check .` |
 
 ### Optional extras (à la carte, if you skipped `make setup-all`)
@@ -1087,10 +1108,11 @@ $RMSAI cli.graph ingest --patients PT1000 PT1001 PT1002
 
 ### 4. Drive the application
 
-**Open the app first.** Log in at `http://localhost:8080/` (PIN `INBOUND_AUTH_PIN`, default `1234`)
-*before* publishing. The worklist is live-push-only with no backlog fetch: the inbox room exists
-only while the app is connected, so an event pushed earlier never appears. The consumer then logs
-`inbox push failed … 503 … inbox room not open`. Republishing is safe; events are keyed by id.
+**Open the app** at `http://localhost:8080/` (PIN `INBOUND_AUTH_PIN`, default `1234`). On login
+the worklist loads every **pending** event from the graph, so events published while the app was
+closed still appear. A live push to a closed app still fails (the consumer logs `inbox push failed …
+503 … inbox room not open`), but that event shows up on the next login. Every stored event,
+including acknowledged and withheld ones, is in the **Events** tab.
 
 Publish classified events onto the bus; the running `consumer` container picks them up, persists to
 both stores, and dispatches per the criticality gate:
@@ -1217,6 +1239,16 @@ $RMSAI cli.graph lookup "critical events in the last 24 hours"
 #   -> {"mode": "template", "template": "critical_events_since", "rows": [...]}
 ```
 
+**Event history: what is actually stored, and what would the agent say?**
+
+```bash
+$RMSAI cli.events --bed "bed 2" --status pending       # the rows (also: --patient, --type, --since, --json)
+$RMSAI cli.events --ask "say all unacked events in bed 02"
+# [events] query      event_history {"status": "pending", "bed": "Unit1-Bed02"}
+# [events] rows       2
+# [events] answer     2 pending (unacknowledged) events on bed Unit1-Bed02: …
+```
+
 **Why did a question take that path?** Regex template vs LLM router vs document retrieval:
 
 ```bash
@@ -1264,7 +1296,7 @@ companion app `http://localhost:8080/`.
 | worker retry-loops on `:7880` | the LiveKit **server** isn't running, not a worker bug |
 | `collection … has vector dim 384, but embedder … 256` | `--embedder` doesn't match what built the collection |
 | `cli.kb_dump --list` returns `[]` | the graph was wiped (full pytest run / `cli.kb_eval`) — redo steps 3–4 |
-| worklist empty | most often: events were published **before** the app was logged in (live-push only; the consumer logs `inbox push failed … inbox room not open`) → log in, then republish. Also: `DISPATCH_MODE` without `app`, or a `[poison] … non-pseudonym patient ref` (curate real ECG with `cli.real_samples`) |
+| worklist empty | nothing is pending: every event was acknowledged or withheld (check the **Events** tab or `cli.events --status pending`). Also: `DISPATCH_MODE` without `app`, or a `[poison] … non-pseudonym patient ref` (curate real ECG with `cli.real_samples`) |
 | worklist empty, chat silent | worker not dispatched into the room → `cli.dispatch --all-inbox`; or a cached `app.js` (check the on-screen build tag) |
 | answer declines on an in-corpus question | relevance gate — the log names both signals and both thresholds |
 
@@ -1562,7 +1594,7 @@ falling (p<0.001), HR rising (p<0.001), SpO₂ falling (p=0.0091). Rhythm reads 
 | `cli.ingest --explain --metrics` | `outcome` + `why` per event; the full breakdown on stderr; `--trend-samples` adds the readings behind each trend |
 | consumer log (`make docker-logs`) | one `[event]` line per event (source · prediction vs truth → outcome · criticality · alert + delivery · why; with `--trend-samples` in `CONSUME_ARGS`, also the readings behind each trend); a `[perf]` summary every `--perf-every` labelled events (default 10) and on exit |
 | `cli.model_perf` | the summary on request, from the graph: `--since 30m\|24h\|7d`, `--model`, `--dataset`, `--events`, `--json` |
-| companion app | worklist rows show the why line, a source badge (demo data only) and the outcome; selecting a row shows the full explanation + data source, and each "rising/falling" vital expands to the readings it was computed from (with a mini chart); the **Model performance** tab shows tiles, confusion matrix, per-class table and *every* labelled event, alerted or not, live-refreshing as events arrive |
+| companion app | worklist rows show the why line, a source badge (demo data only) and the outcome; selecting a row shows the full explanation + data source, and each "rising/falling" vital expands to the readings it was computed from (with a mini chart); the **Events** tab lists every stored event (filters: status, patient, bed, type, criticality, time), and its **Labelled only** mode adds the tiles, confusion matrix and per-class table over the listed events, live-refreshing as events arrive |
 | graph | each `MonitoredEvent` stores `source_*`, `model_id`, `alert_gate` / `alert_reason_code`, `why` (+ `why_json`), `eval_outcome`, `delivered_app/call/sms`, `processed_at` |
 
 ```bash
@@ -1576,8 +1608,10 @@ $RMSAI cli.model_perf --since 1h --dataset mitbih
 - **Data source:** comes from the file. ecg_sigma recordings carry dataset, record, subject, the
   sample offset in the original recording, the labelling method/purity, and the package/split.
   Simulator and device files carry only their device id.
-- **Time filter:** `--since` and the dashboard's time filter use **when the relay processed** an event
-  (`processed_at`), not the recording time, which for public datasets can be decades old.
+- **Time filter:** `cli.model_perf --since` uses **when the relay processed** an event
+  (`processed_at`), not the recording time, which for public datasets can be decades old. The app's
+  Events tab and `cli.events --since` filter on the **event time** (re-anchored to the ingest time
+  for public datasets; see `cli.ingest`).
 - **Model mixing:** metrics are grouped **per model**; a summary mixing two models describes neither.
 - **Production data has no ground truth.** The performance view is for curated, labelled sets
   (`cli.real_samples`); on unlabelled data it says so.
@@ -1618,9 +1652,10 @@ Ringing a real phone always needs the setup below. Runbook: [`DEMO.md`](DEMO.md#
 
 ## Phone calls (LiveKit Cloud + SignalWire or Twilio)
 
-> **Status (2026-10-01):**
-> - **SignalWire:** fully configured; the first outbound test returned `603 Decline`, most likely
->   trial mode. Call-in not yet tested.
+> **Status (2026-10-12):**
+> - **SignalWire:** outbound verified end to end after the account left trial mode. The phone
+>   rang, the PIN was heard and accepted, and the agent answered (ElevenLabs STT/TTS). Event-driven
+>   calls run with `make demo-phone-up`. Call-in not yet tested.
 > - **Twilio trial bridge:** call-in set up; event-driven outbound not implemented.
 > - **SMS fallback:** works (Twilio).
 >
@@ -1651,9 +1686,14 @@ Cloud. `cli.sip_setup` creates the matching LiveKit objects:
 What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-split--phone-calls-on-a-second-livekit).
 
 **Outbound alert (`cli.consume --transport sip`; the same dial for `cli.call --caller livekit`):**
-1. The consumer gates the event (`should_call`), then **stages the spoken alert in Redis** under the
-   room name `rmsai-outbound-<event_id>` (TTL 15 min). `cli.call` uses `rmsai-call-<id>` and stages
-   nothing.
+0. The consumer gates the event (`should_call`), pushes it to the app worklist straight away, and
+   **queues the call** (Redis `rmsai:calls:*`, highest criticality first, then first-come). One
+   dispatcher places queued calls one at a time, each waiting for the previous hang-up. A queued
+   call is skipped if the event was acknowledged (e.g. in the app) while it waited, and an unfinished
+   call is re-queued after a consumer restart. Log lines: `[queued] … call N in queue`, `[calls]
+   dialling …` / `skip …`, `[call] … -> answered`.
+1. At dial time it **stages the spoken alert in Redis** under the room name
+   `rmsai-outbound-<event_id>` (TTL 15 min). `cli.call` uses `rmsai-call-<id>` and stages nothing.
 2. It **dispatches** `rmsai-agent-phone` into that room on the telephony LiveKit, before dialling, so
    the agent is waiting when the phone answers.
 3. It **dials**: `CreateSIPParticipant` on the telephony LiveKit with `LIVEKIT_SIP_TRUNK_ID`, the
@@ -1755,6 +1795,8 @@ carriers.
 
 | Symptom | Fix |
 |---|---|
+| Events alert in the app but **no phone rings**; the consumer log shows `call answered` plus a `[webrtc] join room` token | the consumer runs `--transport webrtc` (the `make demo-up` default; the "answer" is simulated). Use `make demo-phone-up` |
+| The call connects but the caller hears **silence**; the phone worker logs `ElevenLabs API error 401 … quota` | the ElevenLabs credits ran out (TTS and STT both fail). Top up, or switch `TTS_BACKEND`/`STT_BACKEND` to piper/whisper |
 | `SIP dial failed … 603: Decline`, no call in SignalWire's voice log | SignalWire refused the INVITE: trial mode, wrong Domain App credentials, or a blocked destination country. See [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md#troubleshooting) |
 | `make phone-logs`: `registered worker … "url": "ws://localhost:7880"` | phone worker on the wrong server (fixed in `fe89028`); update and `make phone-down phone-up` |
 | The Twilio number plays Twilio's greeting ("Thanks for calling…") | the number's "A call comes in" isn't the TwiML Bin, or wasn't saved |
@@ -2019,6 +2061,10 @@ never wake-word gated. Patient-scoped questions resolve "the event" to that pati
 `MonitoredEvent` (e.g. vitals → `T5`).
 
 ### 6. Real SIP phone call (outbound to a number)
+
+In Docker: `make demo-phone-up`, then publish events (`cli.ingest … --emit bus`). Every gated
+event appears in the app at once and the calls follow one by one, highest criticality first. Use
+`make phone-transcript` to watch each conversation. On the host:
 
 ```bash
 uv run python -m cli.consume --channel voice --caller livekit --transport sip --once \

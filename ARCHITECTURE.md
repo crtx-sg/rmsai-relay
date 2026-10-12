@@ -160,11 +160,35 @@ configured (`--notifier simulated|twilio`), the alert is texted instead
 `notify_failed`. SIP dials go to the telephony LiveKit (`Config.telephony()`; see *Telephony split*
 below). The event is **always persisted**; the gate governs the *dispatch* (worklist push and call).
 
+**Phone calls queue; the worklist doesn't wait.** On the SIP transport a call blocks until the
+clinician hangs up, so the consumer no longer places it inline. It pushes every gated event to the
+worklist as soon as it arrives, then queues the call (`orchestrator/call_queue.py`). The queue is a
+Redis sorted set `rmsai:calls:queue` plus a job hash `rmsai:calls:jobs`, ordered highest criticality
+first and first-come within a level. One `CallDispatcher` thread places the calls one at a time
+(`bus_consumer.run_queued_call`):
+- It skips an event that was acknowledged or resolved while it waited.
+- It stages the spoken alert at dial time, so a call that waited never finds it expired.
+- A job leaves the hash only when its call has finished, so a consumer restart re-queues an
+  unfinished call (`CallQueue.recover`).
+
+WebRTC and the text channel never block, so they dispatch inline as before.
+
+**One definition of "pending".** An event is *pending* when it was **alerted** (`alert_gate`) and is
+not acknowledged or resolved (`kb.graph.events.is_pending`). An event that was never alerted is
+*withheld*, not pending. `list_events` is the one query over every stored event, filtered by
+patient, bed, type, status, criticality and time. It backs:
+- the app's **Events** tab (`POST /events`);
+- the worklist backfill on login (`status=pending`);
+- `cli.events`;
+- the voice/chat event listings (Pipeline 2).
+
+So every surface shows the same rows.
+
 Each persisted event also records **why** it was or wasn't dispatched (`orchestrator/explain.py`:
 every rhythm/vitals/criticality trigger, one headline), its **data source** (`SignalWindow.provenance`),
 the **model** (`DeviceEvent.model_id`), what was **delivered**, and, for labelled data, the
 **outcome** against the ground truth (`inference/metrics.py`). These feed the consumer's `[event]` log
-line, `cli.model_perf` and the app's Model-performance tab. Ground truth stays evaluation-only; the
+line, `cli.model_perf` and the app's Events tab ("Labelled only" mode adds the per-model summary). Ground truth stays evaluation-only; the
 clinical condition link is always the prediction.
 
 ---
@@ -195,7 +219,9 @@ TwiML `<Dial><Sip>` bridge. Browser and inbox rooms stay on the local server. On
 flowchart TD
     Q["Clinician's question"] --> R{"match_intent<br/>regex hits?"}
     R -- yes --> T["Graph template<br/><code>run_template</code> → exact patient data"]
-    R -- no --> O{"looks operational?<br/>+ KB_LLM_ROUTER"}
+    R -- no --> EL{"an event listing<br/>with an unresolvable target?"}
+    EL -- yes --> DH["Decline with a hint<br/>(patient / bed / type / status)"]
+    EL -- no --> O{"looks operational?<br/>+ KB_LLM_ROUTER"}
     O -- "no (a documents question)" --> H["Hybrid retrieval"]
     O -- yes --> L["LLM picks a template<br/>from a fixed menu"]
     L -- "valid choice" --> T
@@ -206,7 +232,7 @@ flowchart TD
     T --> P["Deterministic answer<br/>(no LLM call at all)"]
 
     classDef nollm stroke-width:2px;
-    class T,P nollm;
+    class T,P,DH nollm;
 ```
 
    A **graph template** answers from Cypher with no model in the path — `_answer_operational`
@@ -215,6 +241,19 @@ flowchart TD
    someone anticipated; it picks a *name* from a fixed catalogue and never supplies a patient or
    event id (those come from session scope), so a hallucinated identity cannot reach a query.
    It is off by default (`KB_LLM_ROUTER`) — it costs one model call (~6s on `llama3.2:3b`, warm).
+
+   **Event listings are verifiable.** Questions that list events by patient ("this patient", a PT
+   number), bed, event type or status ("unacknowledged", "acknowledged", "withheld"), optionally
+   "in the last N hours", resolve to the `event_history` template. It is backed by `list_events`,
+   the same query as the app's Events tab and `cli.events`.
+   - The answer always states its filter: "2 pending (unacknowledged) events on bed Unit1-Bed02: …".
+   - Text answers give each event's short id.
+   - In the app chat the worker also publishes the filter (`type:"events_filter"`), and the app
+     shows a button that opens the Events tab with the same rows.
+   - A listing whose target can't be resolved ("events for Mr Smith") is **declined with a hint**,
+     never passed to the LLM router or the KB model.
+   - `cli.events --ask "<question>"` shows which query and parameters a question resolves to, the
+     rows, and the exact answer.
 3. **Retrieve (RAG)** via `HybridRetriever`: a **vector** search over Qdrant (*Retrieved passages*)
    **plus** a **graph** query over Neo4j (*Known relationships*). Two separately-labelled,
    separately-cited blocks (`RetrievalResult`) — no cross-block re-ranking. The corpus is the

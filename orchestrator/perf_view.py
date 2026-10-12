@@ -79,3 +79,46 @@ def build_perf_view(rows: list[dict]) -> dict:
         "why": r.get("why"), "source": row_source(r), "dataset": r.get("source_dataset"),
     } for r in rows]
     return {"models": models, "events": events}
+
+
+_DEMO_SOURCES = {"simulator", "ecg_sigma"}
+
+
+def _vitals_why(reason: str | None) -> str | None:
+    """The stored gate reason "vitals_alert (MEWS 6 >= threshold 3)" -> "MEWS 6 >= threshold 3"
+    (what a live row carries as alert_reason); other reasons ("ok") are not a vitals explanation."""
+    m = re.match(r"^vitals_alert \((.*)\)$", reason or "")
+    return m.group(1) if m else None
+
+
+def build_events_view(rows: list[dict], *, low_confidence_below: float | None = None) -> list[dict]:
+    """`kb.graph.events.list_events` rows as JSON for the app's Events tab AND the worklist backfill.
+
+    Keys match a live `type:"event"` inbox message (live.inbox.build_event_message), so a backfilled
+    pending row renders exactly like one pushed when it happened, plus the history-only fields
+    (pending, alert, reason_code, delivered, processed_at, model_id, dataset).
+    """
+    out = []
+    for r in rows:
+        conf = r.get("confidence")
+        demo = r.get("source_kind") in _DEMO_SOURCES
+        out.append({
+            "event_id": r.get("id"), "patient": r.get("patient"), "bed": r.get("bed"),
+            "unit": r.get("unit"), "event_type": r.get("event_type"), "ts": r.get("timestamp"),
+            "processed_at": r.get("processed_at"), "criticality": r.get("criticality"),
+            "status": r.get("status") or "reported", "pending": bool(r.get("pending")),
+            "confidence": conf,
+            "low_confidence": bool(low_confidence_below is not None and conf is not None
+                                   and conf < low_confidence_below),
+            "alert": bool(r.get("alert_gate")), "reason_code": r.get("alert_reason_code"),
+            "alert_basis": r.get("alert_basis") or "rhythm",
+            "alert_reason": _vitals_why(r.get("alert_reason")),
+            "why": r.get("why"), "false_positive": r.get("is_false_positive"),
+            "delivered": {"app": r.get("delivered_app"), "call": r.get("delivered_call"),
+                          "sms": r.get("delivered_sms")},
+            "source": row_source(r) if demo else None, "source_label": row_source(r),
+            "dataset": r.get("source_dataset"), "model_id": r.get("model_id"),
+            "truth": r.get("ground_truth_condition"), "outcome": r.get("eval_outcome"),
+            "links": {k: {} for k in r.get("artifact_kinds") or []},
+        })
+    return out

@@ -171,6 +171,8 @@ class OutboundHandler(OrchestratorHandler):
         self.working.set_authenticated(session_id, patient_ref=self.alert.patient_ref)
         print(f"[voice] speaking event alert for {self.alert.patient_ref} "
               f"(event {self.alert.event_id})", flush=True)
+        # Built from structured fields only (pseudonym, bed, rhythm, vitals): safe to log (rule 6).
+        print(f"[voice] alert text: {self.alert.spoken_alert!r}", flush=True)
         return self.alert.spoken_alert
 
     def _authenticated_turn(self, session_id: str, text: str, *, spoken: bool = False) -> str:
@@ -227,10 +229,14 @@ class InboxHandler(OrchestratorHandler):
     still comes from the orchestrator.
     """
 
-    def __init__(self, orchestrator, working_memory, *, driver=None, on_show=None, **kwargs) -> None:
+    def __init__(self, orchestrator, working_memory, *, driver=None, on_show=None, on_filter=None,
+                 **kwargs) -> None:
         super().__init__(orchestrator, working_memory, **kwargs)
         self.driver = driver
         self._on_show = on_show or (lambda event_id, kind: None)
+        # Called with the Events-tab filter of an event-listing answer, so the app can offer
+        # "open this list in the Events tab" under the reply.
+        self._on_filter = on_filter or (lambda history_filter, label: None)
         self._selected: dict[str, tuple[str, str]] = {}  # session_id -> (event_id, patient_ref)
 
     def set_selection(self, session_id: str, event_id: str) -> str | None:
@@ -289,6 +295,11 @@ class InboxHandler(OrchestratorHandler):
         result = self.orchestrator.handle_turn(session_id, text, **_voice(spoken))
         self.audit.write(actor=f"app:{session_id}", action="phi_voice_query",
                          subject=patient_ref, outcome="declined" if result.declined else "answered")
+        if getattr(result, "history_filter", None):
+            try:
+                self._on_filter(result.history_filter, result.answer.split("\n", 1)[0].rstrip(":"))
+            except Exception as exc:  # noqa: BLE001 - the link is a convenience; still answer
+                print(f"[worker] inbox on_filter failed: {exc}", flush=True)
         return result.answer
 
 
@@ -328,7 +339,7 @@ def build_outbound_handler(
 
 
 def build_inbox_handler(
-    *, embedder: str = "hashing", llm: str = "echo", on_show=None,
+    *, embedder: str = "hashing", llm: str = "echo", on_show=None, on_filter=None,
 ) -> tuple["InboxHandler", str | None, "callable | None"]:
     """Build the in-app inbox chat handler for the worker. Returns (handler, greeting, cleanup).
 
@@ -339,5 +350,5 @@ def build_inbox_handler(
     from orchestrator.chat import build_orchestrator  # noqa: PLC0415
 
     orch, driver = build_orchestrator(embedder=embedder, llm=llm)
-    handler = InboxHandler(orch, orch.working, driver=driver, on_show=on_show)
+    handler = InboxHandler(orch, orch.working, driver=driver, on_show=on_show, on_filter=on_filter)
     return handler, None, driver.close

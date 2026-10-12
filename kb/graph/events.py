@@ -12,6 +12,7 @@ from common.criticality import criticality
 
 from .driver import GraphDriver
 from .entities import condition_id
+from .templates import CLOSED_STATUSES
 
 
 def persist_monitored_event(
@@ -134,6 +135,14 @@ def set_event_status(driver: GraphDriver, uuid: str, status: str) -> None:
     driver.run_write(
         "MATCH (e:MonitoredEvent {id:$uuid}) SET e.status=$status", uuid=uuid, status=status
     )
+
+
+def get_event_status(driver: GraphDriver, uuid: str) -> str | None:
+    """A MonitoredEvent's lifecycle status, or None if the event is unknown."""
+    rows = driver.run_read(
+        "MATCH (e:MonitoredEvent {id:$uuid}) RETURN e.status AS status", uuid=uuid
+    )
+    return rows[0]["status"] if rows else None
 
 
 def get_event_patient(driver: GraphDriver, uuid: str) -> str | None:
@@ -280,3 +289,104 @@ def get_event_info(driver: GraphDriver, uuid: str) -> dict | None:
         uuid=uuid,
     )
     return dict(rows[0]) if rows else None
+
+
+# --- event history (the shared listing behind cli.events, the app's Events tab and voice) ----------
+
+#: Status filter values for `list_events`. `pending` is the one definition of "unacknowledged" every
+#: surface uses: the event was ALERTED (passed the alert gate, so it reached the clinician's
+#: worklist) and is not acknowledged/resolved yet. `withheld` = not alerted (low confidence, FP, …).
+STATUS_FILTERS = ("any", "pending", "acknowledged", "resolved", "withheld")
+
+#: Properties of one history row (plus `patient`, `bed`, `unit`, computed `pending`).
+HISTORY_FIELDS = (*EVAL_FIELDS, "is_false_positive", "mews_risk", "alert_reason")
+
+
+def is_pending(row: dict) -> bool:
+    """The Python twin of the `pending` Cypher filter (rows from `list_events`)."""
+    return bool(row.get("alert_gate")) and (row.get("status") or "reported") not in CLOSED_STATUSES
+
+
+def normalize_bed(bed: str | None) -> str | None:
+    """`Unit1-Bed02` stays; `bed 2` / `Bed2` / `bed02` -> `Bed02` (matched as a label suffix)."""
+    if not bed:
+        return None
+    import re  # noqa: PLC0415
+
+    text = bed.strip()
+    if "-" in text:
+        return text
+    m = re.fullmatch(r"(?i)bed\s*0*(\d+)", text)
+    return f"Bed{int(m.group(1)):02d}" if m else text
+
+
+def list_events(
+    driver: GraphDriver,
+    *,
+    patient: str | None = None,
+    bed: str | None = None,
+    unit: str | None = None,
+    event_type: str | None = None,
+    status: str = "any",
+    min_criticality: str | None = None,
+    since: float | None = None,
+    since_on: str = "event",
+    labelled_only: bool = False,
+    model_id: str | None = None,
+    dataset: str | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    """Every persisted event matching the filters, newest first, with patient/bed/unit + `pending`.
+
+    `since` is epoch seconds against the event time (`since_on="event"`) or when the relay
+    processed it (`"processed"`, what the performance view uses). A bed without a unit prefix
+    (`Bed02`) matches that bed in any unit. Read-only; pseudonyms only.
+    """
+    if status not in STATUS_FILTERS:
+        raise ValueError(f"status must be one of {STATUS_FILTERS}, got {status!r}")
+    from common.criticality import criticality_rank  # noqa: PLC0415
+
+    bed = normalize_bed(bed)
+    min_rank = criticality_rank(min_criticality) if min_criticality else -1
+    levels = [c for c in ("Low", "Medium", "High", "Critical") if criticality_rank(c) >= min_rank]
+    time_expr = ("coalesce(e.processed_at, e.timestamp)" if since_on == "processed"
+                 else "e.timestamp")
+    fields = ", ".join(f"e.{f} AS {f}" for f in HISTORY_FIELDS)
+    rows = driver.run_read(
+        f"""
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
+        WITH p, e, b, u, coalesce(e.status, 'reported') AS st
+        WHERE ($patient IS NULL OR p.id = $patient)
+          AND ($bed IS NULL OR b.label = $bed OR b.label ENDS WITH ('-' + $bed))
+          AND ($unit IS NULL OR u.name = $unit)
+          AND ($etype IS NULL OR e.event_type = $etype)
+          AND ($since IS NULL OR {time_expr} >= $since)
+          AND ($model IS NULL OR e.model_id = $model)
+          AND ($dataset IS NULL OR e.source_dataset = $dataset)
+          AND (NOT $labelled OR e.ground_truth_condition IS NOT NULL)
+          AND ($min_rank < 0 OR e.criticality IN $levels)
+          AND CASE $status
+                WHEN 'pending' THEN coalesce(e.alert_gate, false) AND NOT st IN $closed
+                WHEN 'withheld' THEN NOT coalesce(e.alert_gate, false)
+                WHEN 'any' THEN true
+                ELSE st = $status
+              END
+        RETURN p.id AS patient, b.label AS bed, u.name AS unit, {fields},
+               e.ecg_plot_ref IS NOT NULL AS has_ecg_strip,
+               size(coalesce(e.hr_history, [])) > 0 AS has_hr_trend,
+               EXISTS {{ (e)-[:HAS_REPORT]->(:Report) }} AS has_report
+        ORDER BY {time_expr} DESC
+        """ + ("LIMIT $limit" if limit else ""),
+        patient=patient, bed=bed, unit=unit,
+        etype=event_type.strip().upper().replace(" ", "_") if event_type else None,
+        since=since, model=model_id, dataset=dataset, labelled=labelled_only,
+        min_rank=min_rank, levels=levels, status=status, closed=CLOSED_STATUSES, limit=limit,
+    )
+    out = [dict(r) for r in rows]
+    for r in out:
+        r["pending"] = is_pending(r)
+        # Which artifacts the row can open, in the worklist's order (live.inbox.artifact_kinds_for).
+        r["artifact_kinds"] = [k for k in ("ecg_strip", "hr_trend", "report") if r.pop(f"has_{k}", False)]
+    return out

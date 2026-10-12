@@ -25,8 +25,8 @@ from common.tracing import Tracer
 from common.vitals_format import fmt_vital
 from kb.graph.driver import GraphDriver
 from kb.graph.llm_router import route as llm_route
-from kb.graph.lookup import match_intent
-from kb.graph.templates import run_template
+from kb.graph.lookup import looks_like_event_listing, match_intent
+from kb.graph.templates import EVENT_HISTORY, describe_event_history, run_template
 from kb.hybrid.retriever import HybridRetriever
 from kb.vector.answer import _best_overlap
 from memory.episodic import EpisodicMemory
@@ -83,6 +83,12 @@ def explain_decline(result, overlap: float, top_score: float = 0.0, *,
 
 
 _DECLINE = "I don't have information on that in the knowledge base."
+# An event listing no rule could resolve. Declined rather than guessed, so every event list the
+# agent does give comes from the same query the Events tab and `cli.events` run.
+_EVENT_LISTING_HINT = (
+    "I can only list events I can show you on the dashboard: by patient (a PT number, or this "
+    "patient), by bed number, by event type, or by status (pending, acknowledged, withheld). For "
+    "example: pending events on bed 2.")
 # "say that again" — re-voice the previous answer from working memory (basic conversational memory).
 _REPEAT = re.compile(
     r"\b(repeat( that| it| again| the (last|previous|prior)[\w ]*)?|say (that|it) again|"
@@ -132,6 +138,21 @@ class TurnResult:
     escalated: bool = False
     model_input: str = ""  # the (de-identified) text actually sent to the model — for audit/tests
     trace: list[dict] = field(default_factory=list)
+    # Set when the answer is an event listing: the Events-tab filter that shows the same rows
+    # (patient/bed/event_type/status/min_criticality/since), so the app can link to it.
+    history_filter: dict | None = None
+
+
+def history_filter_for(params: dict) -> dict:
+    """Template params -> the `/events` request fields that reproduce the same listing."""
+    out = {"status": params.get("status") or "any"}
+    for src, dst in (("patient_id", "patient"), ("bed", "bed"), ("event_type", "event_type"),
+                     ("min_criticality", "min_criticality")):
+        if params.get(src):
+            out[dst] = params[src]
+    if params.get("since"):
+        out["since"] = str(params["since"])  # epoch seconds: /events accepts it as-is
+    return out
 
 
 def _is_patient_passage(source: str) -> bool:
@@ -416,6 +437,43 @@ def _spoken_event_summary(rows: list[dict]) -> str:
     return text
 
 
+def _answer_event_history(rows: list[dict], params: dict, *, spoken: bool = False) -> str:
+    """An event list that states its own filter, so it can be checked row for row on the Events
+    tab (or with `cli.events`). Text lists every event with a short id; spoken counts them."""
+    desc = describe_event_history(params)
+    if not rows:
+        return f"No {desc}."
+    n = len(rows)
+    one = desc.replace(" events", " event", 1) if n == 1 else desc
+    if spoken:
+        kinds: dict[str, int] = {}
+        for r in rows:
+            k = _spoken_event(r.get("event"))
+            kinds[k] = kinds.get(k, 0) + 1
+        text = f"{n} {one}: " + ", ".join(f"{k}{_times(c)}" for k, c in kinds.items()) + "."
+        beds = sorted({r["bed"] for r in rows if r.get("bed")})
+        if len(beds) > 1 and not params.get("bed"):
+            text += f" Beds: {', '.join(_spoken_bed(b) for b in beds)}."
+        if (params.get("status") or "any") == "any":
+            pending = sum(1 for r in rows if r.get("status") == "pending")
+            text += f" {pending} pending." if pending else " None pending."
+        return text
+    lines = []
+    for r in rows:
+        parts = [_fmt_value("ts", r["ts"]) if r.get("ts") is not None else "time unknown"]
+        if not params.get("bed"):
+            parts.append(r.get("bed") or "bed unknown")
+        if not params.get("patient_id"):
+            parts.append(r.get("patient") or "patient unknown")
+        event = _fmt_value("event", r.get("event") or "event")
+        if r.get("confidence") is not None:
+            event += f" {r['confidence']:.0%}"
+        parts += [event, r.get("criticality") or "criticality unknown", r.get("status") or "?",
+                  f"id {str(r.get('event_id') or '?')[:8]}"]
+        lines.append("- " + " · ".join(parts))
+    return f"{n} {one}:\n" + "\n".join(lines)
+
+
 def _answer_operational(rows: list[dict] | None, name: str | None = None) -> str:
     """Deterministic, readable answer for a structured graph result (no LLM).
 
@@ -573,7 +631,11 @@ class Orchestrator:
         with tracer.span("retrieve") as sp:
             intent = match_intent(user_text, now=now, patient_ref=state.patient_ref,
                                   event_ref=state.event_ref)
-            if intent is None and self.llm_router:
+            listing_declined = intent is None and looks_like_event_listing(user_text)
+            if listing_declined:
+                print("[orchestrator] event listing with no resolvable filter: declined with a hint",
+                      flush=True)
+            if intent is None and self.llm_router and not listing_declined:
                 # The regexes only fire on phrasings someone anticipated. When one misses a question
                 # that is plainly about a bed/patient/event, ask the model which template was meant
                 # — it picks a name from a fixed menu and never supplies an identity. Gated on
@@ -586,9 +648,14 @@ class Orchestrator:
             if intent:
                 name, params = intent
                 operational_rows = run_template(self.driver, name, **params)
+                shown = {k: v for k, v in params.items() if k != "since"}
+                print(f"[orchestrator] graph query {name} {shown} -> {len(operational_rows)} row(s)",
+                      flush=True)
                 kb_context = _render_operational(name, operational_rows)
                 citations = [f"graph:{name}"]
                 mode, declined = "operational", False
+            elif listing_declined:
+                mode, declined, kb_context, citations = "operational", False, "", []
             else:
                 mode = "hybrid"
                 result = self.hybrid.retrieve(user_text, mode="hybrid")
@@ -621,6 +688,11 @@ class Orchestrator:
             answer_text = self.guardrails.refusal_for_emergency
         elif action == "decline":
             answer_text = _DECLINE
+        elif mode == "operational" and listing_declined:
+            answer_text = _EVENT_LISTING_HINT
+        elif mode == "operational" and name == EVENT_HISTORY:
+            answer_text = _answer_event_history(operational_rows, params, spoken=spoken)
+            model_input = self.llm.deidentifier.deidentify(kb_context)
         elif mode == "operational":
             # Structured graph result -> deterministic, crisp answer. No LLM is called, so NO prompt
             # is built: conversation history and recalled past interactions never touch an operational
@@ -679,8 +751,10 @@ class Orchestrator:
                     patient_ref=state.patient_ref, timestamp=now,
                 )
 
+        listed = mode == "operational" and not listing_declined and name == EVENT_HISTORY
         return TurnResult(
             answer=answer_text, citations=list(dict.fromkeys(citations)),
             mode=mode, declined=(action == "decline"), escalated=escalated,
             model_input=model_input, trace=tracer.as_dicts(),
+            history_filter=history_filter_for(params) if listed and action == "answer" else None,
         )

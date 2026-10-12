@@ -21,9 +21,10 @@ from common.config import DEFAULT, Config
 from common.criticality import alert_basis, event_criticality
 from inference.serialize import dict_to_event
 from kb.graph.driver import GraphDriver
-from kb.graph.events import set_event_delivery
+from kb.graph.events import get_event_status, set_event_delivery
 from kb.vector.retriever import VectorRetriever
 from live.inbox import artifact_kinds_for, build_event_message, mint_artifact_links
+from orchestrator.call_queue import CallJob
 from orchestrator.event_flow import process_device_event
 from orchestrator.outbound_flow import OutboundResult, run_outbound, run_text_notify, should_call
 from orchestrator.patient_bootstrap import ensure_patient
@@ -85,6 +86,8 @@ class ConsumeResult:
     decision_reason: str
     outbound: OutboundResult | None = None
     app_dispatched: bool = False  # a worklist notification was pushed to the hospital inbox
+    call_queued: bool = False  # the phone call was handed to the call queue (placed later)
+    queue_depth: int = 0  # calls waiting (incl. this one) when it was queued
     # Per-event facts for the `[event]` log line and the performance tracker (orchestrator.event_log):
     # source, prediction vs truth + outcome, criticality, gate decision, why. None if not computed.
     trace: dict | None = None
@@ -109,6 +112,7 @@ def process_bus_event(
     inbox_publisher=None,
     token_store=None,
     call_end_waiter=None,
+    call_queue=None,
 ) -> ConsumeResult:
     """Reconstruct, persist, and (if the gate clears) alert for one bus payload.
 
@@ -124,6 +128,10 @@ def process_bus_event(
     change the criticality gate. `app`/`app+call` push a worklist notification (with scoped artifact
     links) into the hospital inbox via `inbox_publisher` (+ `token_store`); `call`/`app+call` run the
     existing per-event SIP/voice (or text) alert. `call` never pushes to the inbox.
+
+    `call_queue` (live LiveKit path only): instead of dialling here and waiting for the hang-up,
+    queue the call and return straight away, so the next event reaches the app without waiting on
+    this call. A `CallDispatcher` places queued calls via `run_queued_call`.
     """
     event = dict_to_event(payload)
     w = event.window
@@ -213,63 +221,139 @@ def process_bus_event(
             utterances=utterances, config=config, bed=bed_label,
         )
     elif caller_factory is not None:  # live LiveKit audio: stage the alert, place the call, hand off
-        room = f"rmsai-outbound-{w.event_id}"
-        print(f"[consume] criticality gate PASSED ({reason}); staging alert for room {room}",
-              flush=True)
-        alert_store.put(OutboundAlert(
-            session_id=room, patient_ref=w.patient_ref, event_id=w.event_id,
-            spoken_alert=spoken_report(event, bed=bed_label, config=config), bed=bed_label,
-        ))
-        # Dispatch the agent into this room — in the background, WHILE the call is dialled. The
-        # dispatch (duplicate-agent check + create on LiveKit Cloud) took ~4s and used to delay the
-        # dial; the agent joins in 1-4s while the phone rings for 10s+, and the worker's greeting
-        # gate waits for the answer anyway. Best-effort: a dispatch hiccup must not abort a
-        # persisted, gated event.
-        def _dispatch(why: str) -> None:
-            if dispatch_fn is None:
-                return
-            try:
-                dispatch_fn(room)
-            except Exception as exc:  # noqa: BLE001 - the call can still connect; only Q&A needs the agent
-                print(f"[consume] agent dispatch ({why}) to {room} failed: "
-                      f"{type(exc).__name__}: {exc}", flush=True)
-
-        dispatcher = threading.Thread(target=_dispatch, args=("first",), daemon=True)
-        dispatcher.start()
-        print(f"[consume] alert staged in Redis; placing call (agent dispatching in parallel) -> "
-              f"room {room}", flush=True)
-        result = run_outbound(
-            event, driver=driver, orchestrator=orchestrator, caller=caller_factory(room),
-            utterances=utterances, config=config, bed=bed_label, live_audio=True,
-            fallback_notifier=notifier,
-            # A retry needs the agent again: after an unanswered attempt the room closed and it left.
-            before_retry=lambda: _dispatch("retry"),
+        if call_queue is not None:
+            depth = call_queue.push(CallJob(
+                event_id=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
+                bed=bed_label, criticality=event_criticality(event, config), reason=reason,
+                payload=payload,
+            ))
+            print(f"[consume] criticality gate PASSED ({reason}); call queued for event "
+                  f"{w.event_id} ({depth} waiting)", flush=True)
+            return ConsumeResult(
+                event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
+                bed=bed_label, persisted=True, called=False, decision_reason=reason,
+                app_dispatched=app_dispatched, trace=trace, call_queued=True, queue_depth=depth,
+            )
+        print(f"[consume] criticality gate PASSED ({reason})", flush=True)
+        result = _place_live_call(
+            event, bed_label=bed_label, driver=driver, orchestrator=orchestrator,
+            utterances=utterances, config=config, notifier=notifier,
+            caller_factory=caller_factory, dispatch_fn=dispatch_fn, alert_store=alert_store,
+            call_end_waiter=call_end_waiter,
         )
-        dispatcher.join(timeout=10)
-        # One call at a time: wait for the clinician to hang up before the next event can dial.
-        # Moving on at "answered" rang the next alert into the call still in progress.
-        if call_end_waiter is not None and result.outcome == "answered":
-            print(f"[consume] call answered; waiting for it to end before the next event "
-                  f"(room {room})", flush=True)
-            try:
-                waited = call_end_waiter(room)
-                print(f"[consume] call in {room} ended after {waited:.0f}s", flush=True)
-            except Exception as exc:  # noqa: BLE001 - never wedge the consumer on a status probe
-                print(f"[consume] could not confirm call end in {room}: "
-                      f"{type(exc).__name__}: {exc}", flush=True)
     else:
         result = run_outbound(
             event, driver=driver, orchestrator=orchestrator, caller=caller,
             utterances=utterances, config=config, bed=bed_label, fallback_notifier=notifier,
         )
-    if result.fallback:
-        print(f"[consume] call {result.outcome} after {result.attempts} attempt(s); SMS fallback: "
-              f"{result.fallback} -> status {result.status}", flush=True)
-    _record_delivery(driver, w.event_id,
-                     delivered_call=result.outcome if result.called else None,
-                     delivered_sms=result.fallback)
+    _finish_call(driver, w.event_id, result)
     return ConsumeResult(
         event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
         bed=bed_label, persisted=True, called=result.called, decision_reason=reason,
         outbound=result, app_dispatched=app_dispatched, trace=trace,
+    )
+
+
+def _finish_call(driver, event_id: str, result: OutboundResult) -> None:
+    if result.fallback:
+        print(f"[consume] call {result.outcome} after {result.attempts} attempt(s); SMS fallback: "
+              f"{result.fallback} -> status {result.status}", flush=True)
+    _record_delivery(driver, event_id,
+                     delivered_call=result.outcome if result.called else None,
+                     delivered_sms=result.fallback)
+
+
+def _place_live_call(
+    event, *, bed_label, driver, orchestrator, utterances, config, notifier,
+    caller_factory, dispatch_fn, alert_store, call_end_waiter,
+) -> OutboundResult:
+    """Stage the alert, dispatch the agent, dial, and (if answered) wait for the hang-up.
+
+    The alert is staged here, at dial time, so a call that waited in the queue still finds it
+    (it expires after the store's TTL).
+    """
+    w = event.window
+    room = f"rmsai-outbound-{w.event_id}"
+    alert_store.put(OutboundAlert(
+        session_id=room, patient_ref=w.patient_ref, event_id=w.event_id,
+        spoken_alert=spoken_report(event, bed=bed_label, config=config), bed=bed_label,
+    ))
+    # Dispatch the agent into this room — in the background, WHILE the call is dialled. The
+    # dispatch (duplicate-agent check + create on LiveKit Cloud) took ~4s and used to delay the
+    # dial; the agent joins in 1-4s while the phone rings for 10s+, and the worker's greeting
+    # gate waits for the answer anyway. Best-effort: a dispatch hiccup must not abort a
+    # persisted, gated event.
+    def _dispatch(why: str) -> None:
+        if dispatch_fn is None:
+            return
+        try:
+            dispatch_fn(room)
+        except Exception as exc:  # noqa: BLE001 - the call can still connect; only Q&A needs the agent
+            print(f"[consume] agent dispatch ({why}) to {room} failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
+    dispatcher = threading.Thread(target=_dispatch, args=("first",), daemon=True)
+    dispatcher.start()
+    print(f"[consume] alert staged in Redis; placing call (agent dispatching in parallel) -> "
+          f"room {room}", flush=True)
+    result = run_outbound(
+        event, driver=driver, orchestrator=orchestrator, caller=caller_factory(room),
+        utterances=utterances, config=config, bed=bed_label, live_audio=True,
+        fallback_notifier=notifier,
+        # A retry needs the agent again: after an unanswered attempt the room closed and it left.
+        before_retry=lambda: _dispatch("retry"),
+    )
+    dispatcher.join(timeout=10)
+    # One call at a time: wait for the clinician to hang up before the next call can dial.
+    # Moving on at "answered" rang the next alert into the call still in progress.
+    if call_end_waiter is not None and result.outcome == "answered":
+        print(f"[consume] call answered; waiting for it to end before the next call "
+              f"(room {room})", flush=True)
+        try:
+            waited = call_end_waiter(room)
+            print(f"[consume] call in {room} ended after {waited:.0f}s", flush=True)
+        except Exception as exc:  # noqa: BLE001 - never wedge the consumer on a status probe
+            print(f"[consume] could not confirm call end in {room}: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+    return result
+
+
+# Statuses after which a queued call is pointless: the clinician has already seen to the event
+# (e.g. acknowledged it in the companion app while an earlier call was in progress).
+_SKIP_CALL_STATUSES = {"acknowledged", "resolved"}
+
+
+def run_queued_call(
+    job: CallJob, *, driver, orchestrator, utterances, config: Config = DEFAULT, notifier=None,
+    caller_factory, dispatch_fn=None, alert_store, call_end_waiter=None,
+) -> ConsumeResult | None:
+    """Place one queued call (the `CallDispatcher` handler). None if it was skipped.
+
+    Skipped when the event was acknowledged/resolved while it waited. A status lookup failure
+    does not block the call (rule #8): ringing twice beats not ringing.
+    """
+    try:
+        status = get_event_status(driver, job.event_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[calls] could not read status of {job.event_id} ({type(exc).__name__}: {exc}); "
+              "calling anyway", flush=True)
+        status = None
+    if status in _SKIP_CALL_STATUSES:
+        print(f"[calls] skip {job.patient_ref}/{job.event_type} @ {job.bed}: already {status} "
+              f"(event {job.event_id})", flush=True)
+        return None
+    print(f"[calls] dialling for {job.patient_ref}/{job.event_type} @ {job.bed} "
+          f"({job.criticality}, event {job.event_id})", flush=True)
+    event = dict_to_event(job.payload)
+    result = _place_live_call(
+        event, bed_label=job.bed, driver=driver, orchestrator=orchestrator,
+        utterances=utterances, config=config, notifier=notifier,
+        caller_factory=caller_factory, dispatch_fn=dispatch_fn, alert_store=alert_store,
+        call_end_waiter=call_end_waiter,
+    )
+    _finish_call(driver, job.event_id, result)
+    return ConsumeResult(
+        event_uuid=job.event_id, patient_ref=job.patient_ref, event_type=job.event_type,
+        bed=job.bed, persisted=True, called=result.called, decision_reason=job.reason,
+        outbound=result,
     )
