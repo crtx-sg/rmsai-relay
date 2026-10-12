@@ -156,3 +156,54 @@ def test_failed_bge_load_is_not_cached(monkeypatch):
     monkeypatch.setattr(emb, "_BGE_CACHE", {})
     assert emb.get_embedder("auto").name.startswith("hashing")  # falls back
     assert emb._BGE_CACHE == {}                                   # and will retry BGE next time
+
+
+# --- nested headings (2026-10-12: a protocol repeating "Acute & Emergency Care" per rhythm) ---------
+
+_NESTED = """# Clinical Protocol
+Intro text.
+
+---
+
+## 1. AFib Protocol
+### Acute & Emergency Care
+Rate control with beta-blockers.
+### Long-Term Management
+Anticoagulate per CHA2DS2-VASc.
+
+---
+
+## 2. SVT Protocol
+### Acute & Emergency Care
+Vagal maneuvers, then adenosine.
+"""
+
+
+def test_nested_headings_cite_their_parent_section():
+    from kb.vector.chunking import chunk_document
+
+    chunks = chunk_document(_NESTED, "p.md")
+    assert [c.source for c in chunks] == [
+        "p.md#Clinical Protocol",
+        "p.md#1. AFib Protocol › Acute & Emergency Care",
+        "p.md#1. AFib Protocol › Long-Term Management",
+        "p.md#2. SVT Protocol › Acute & Emergency Care",
+    ]
+    # the embedded text names the rhythm, so an SVT question can find (only) the SVT section
+    assert chunks[3].text.startswith("2. SVT Protocol › Acute & Emergency Care\nVagal")
+
+
+def test_horizontal_rules_are_not_content():
+    from kb.vector.chunking import chunk_document
+
+    chunks = chunk_document(_NESTED, "p.md")
+    assert all("---" not in c.text for c in chunks)
+    assert chunks[2].text.endswith("CHA2DS2-VASc.")  # no stray "---" chunk after the section
+
+
+def test_flat_documents_keep_their_citations():
+    from kb.vector.chunking import chunk_document
+
+    flat = "# Title\nIntro.\n## Rate control\nBody.\n## Escalation\nMore."
+    assert [c.source for c in chunk_document(flat, "f.md")] == [
+        "f.md#Title", "f.md#Rate control", "f.md#Escalation"]

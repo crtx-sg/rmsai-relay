@@ -2,6 +2,11 @@
 
 Splits markdown documents into citable chunks along section headings (and further by size if a
 section is long). Each chunk carries a `source` citation of the form `filename#Heading`.
+
+A nested heading is cited with its parent headings below the document title, joined by " › "
+(`protocol.md#2. SVT Protocol › Acute & Emergency Care`). Without the path, a document that
+repeats "Acute & Emergency Care" under each rhythm produced chunks that never named their rhythm:
+an SVT question could retrieve the PVC section, and the citation could not tell them apart.
 """
 
 from __future__ import annotations
@@ -11,6 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+# A markdown horizontal rule ("---", "***", "___"): layout, not content.
+_RULE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+_PATH_SEP = " › "
 _DEFAULT_MAX_CHARS = 800
 
 
@@ -23,13 +31,22 @@ class Chunk:
 
 
 def _split_sections(text: str) -> list[tuple[str, str]]:
-    """Yield (heading, body) sections. Text before the first heading uses heading ''."""
+    """Yield (heading path, body) sections. Text before the first heading uses heading ''.
+
+    The path is the heading plus its ancestors, excluding level-1 headings (the document title,
+    which would only lengthen every citation): a level-2 section under the title keeps its plain
+    heading, a level-3 one becomes "Parent › Child". Horizontal rules are dropped from bodies.
+    """
     sections: list[tuple[str, list[str]]] = [("", [])]
+    stack: list[tuple[int, str]] = []  # (level, heading) of the open ancestors
     for line in text.splitlines():
         m = _HEADING.match(line)
         if m:
-            sections.append((m.group(2).strip(), []))
-        else:
+            level, heading = len(m.group(1)), m.group(2).strip()
+            stack = [(lv, h) for lv, h in stack if lv < level] + [(level, heading)]
+            path = [h for lv, h in stack if lv > 1] or [heading]
+            sections.append((_PATH_SEP.join(path), []))
+        elif not _RULE.match(line):
             sections[-1][1].append(line)
     return [(h, "\n".join(body).strip()) for h, body in sections]
 
