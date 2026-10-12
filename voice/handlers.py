@@ -216,6 +216,10 @@ def artifact_show_intent(text: str) -> str | None:
     return None
 
 
+#: Selection without speak-on-select (the companion app's voice is muted).
+SELECT_SILENT = "/select-silent "
+
+
 class InboxHandler(OrchestratorHandler):
     """In-app chat handler for the persistent per-hospital inbox room (Phase 9, Step 5).
 
@@ -277,9 +281,12 @@ class InboxHandler(OrchestratorHandler):
         stripped = (text or "").strip()
         # Selection control message (only the lk.chat text path reliably reaches the agent worker,
         # so the app scopes the conversation by sending "/select <event_id>" here). No chat reply.
-        if stripped.startswith("/select "):
-            self.set_selection(session_id, stripped[len("/select "):].strip())
-            return ""
+        # "/select-silent <event_id>" scopes it the same way; the app sends it when its voice is
+        # muted (e.g. the clinician is on the phone alert), so the worker speaks nothing.
+        for prefix in (SELECT_SILENT, "/select "):
+            if stripped.startswith(prefix):
+                self.set_selection(session_id, stripped[len(prefix):].strip())
+                return ""
         sel = self._selected.get(session_id)
         if not sel:
             return _SELECT_PROMPT

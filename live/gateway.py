@@ -108,6 +108,12 @@ class EventInfoRequest(BaseModel):
     event_id: str
 
 
+def speak_on_select_default(config: Config) -> bool:
+    """The app's speak-on-select default: on, except when calls go out alongside the app."""
+    modes = {m.strip() for m in (config.dispatch_mode or "").split("+")}
+    return bool(config.inbox_speak_on_select) and not {"app", "call"} <= modes
+
+
 def create_app(
     config: Config = DEFAULT,
     *,
@@ -177,6 +183,11 @@ def create_app(
             "identity": identity,
             "token": token,
             "hospital_id": config.hospital_id,
+            "dispatch_mode": config.dispatch_mode,
+            # Whether selecting a row should speak its report, until the clinician toggles it. Off
+            # in app+call mode: the clinician may be on the phone alert for the same event, and the
+            # app speaking too is double speech. INBOX_SPEAK_ON_SELECT=false turns it off everywhere.
+            "speak_on_select": speak_on_select_default(config),
         }
 
     @api.post("/ack")

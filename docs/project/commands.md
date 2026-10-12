@@ -218,3 +218,8 @@ truth → outcome for labelled events, and the event id.
   only the ones pushed since you connected.
 - **Chat → Events link:** when a chat answer lists events, a "📋 Open in Events tab: …" button
   appears under it and opens the tab with the same filter.
+- **Voice on select:** the header toggle (🔊 Voice on select / 🔇 Voice muted) decides whether
+  selecting a row speaks its report. It's muted by default in `app+call` mode, so a clinician on
+  the phone alert doesn't hear the event twice. The choice is remembered per dispatch mode in the
+  browser. The worker log shows `selected event … (app voice muted: not spoken)` for a muted
+  selection.

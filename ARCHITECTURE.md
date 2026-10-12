@@ -4,6 +4,10 @@ A plain-language map of how `rmsai-relay` works end-to-end: what runs when the E
 how the LLM answers questions, how the voice pipeline speaks, and which model sits where. For the
 phase plan, contracts, and config keys see [README.md](README.md).
 
+![rmsai-relay architecture and pipeline flow](architecture.png)
+
+*The diagram is generated: `uv run python docs/make_arch_diagram.py` rewrites `architecture.png`.*
+
 ## The big picture: two pipelines
 
 The system is **two separate flows** that meet at the databases:
@@ -17,13 +21,17 @@ The two never call each other directly — they hand off through **Neo4j** (grap
 (vector). The event pipeline *writes* them; the conversation pipeline *reads* them.
 
 **Where Redis fits (partial decoupling).** The *knowledge* hand-off is via the databases above; Redis
-adds **asynchronous / cross-process** decoupling at two specific seams:
+adds **asynchronous / cross-process** decoupling at three specific seams:
 - **Event bus** (Redis Stream `rmsai.events`) — *within* the event pipeline: the producer
   (`cli.ingest --emit bus`, `XADD`) is fully decoupled from the consumer (`bus_consumer`, which
   drains, persists, and dispatches). Producer and consumer run independently.
+- **Call queue** (sorted set `rmsai:calls:queue` + hash `rmsai:calls:jobs`) — *within* the consumer,
+  on the SIP transport: the worklist push happens at once, while phone calls wait here and are placed
+  one at a time, most severe first. A stream can't do this, because a stream is strictly FIFO.
 - **OutboundAlert store** (Redis key `rmsai:outbound_alert:{sid}`, TTL) — *between* the pipelines:
   the consumer that places a call writes the "who/why we're calling" context; the **voice worker is a
-  separate process** and reads it on joining the LiveKit room.
+  separate process** and reads it on joining the LiveKit room. With the call queue it is written at
+  dial time, not when the event arrives, so a call that waited never finds it expired.
 
 Everything else is synchronous: a single Q&A turn calls the orchestrator **in-process**, and the deep
 knowledge lives in Neo4j/Qdrant — so the pipelines are **partially** decoupled via Redis, not fully.
@@ -46,9 +54,10 @@ knowledge lives in Neo4j/Qdrant — so the pipelines are **partially** decoupled
         ├─► Neo4j  (graph: who/what/when) ◄──────────────────┤  reads the SAME databases
         ├─► Qdrant (vector: report text)  ◄──────────────────┤
         ▼                                                     ▼
-  should_call?  ──yes──► place call / SMS ─────────────► answer text ─► TTS ─► audio to caller
-   (criticality, confidence,                                              (Piper or ElevenLabs)
-    vitals override)
+  should_call?  ──yes──┬─► app worklist push (at once) answer text ─► TTS ─► audio to caller
+   (criticality,       │                                               (Piper or ElevenLabs)
+    confidence,        └─► call queue (Redis ZSET, most severe first)
+    vitals override)         └─► CallDispatcher: one call at a time ─► SIP dial / SMS fallback
 ```
 
 ---
@@ -173,6 +182,38 @@ first and first-come within a level. One `CallDispatcher` thread places the call
 
 WebRTC and the text channel never block, so they dispatch inline as before.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Redis Stream rmsai.events
+    participant C as consumer (cli.consume --transport sip)
+    participant G as Neo4j
+    participant A as companion app (inbox room)
+    participant Q as Redis call queue
+    participant D as CallDispatcher thread
+    B->>C: XREADGROUP event
+    C->>G: persist MonitoredEvent (+ report narrative to Qdrant)
+    C->>C: should_call gate passes
+    C->>A: push the worklist row now
+    C->>Q: HSETNX jobs[event_id] + ZADD queue (score = severity band + enqueue ms)
+    C->>B: XACK (the queue now holds the pending call)
+    Note over C,A: the next event is read straight away: every row appears without waiting for a call
+    D->>Q: ZPOPMIN (most severe, then oldest)
+    D->>G: status of the event?
+    alt acknowledged or resolved while it waited
+        D->>D: skip ([calls] skip …)
+    else still open
+        D->>D: stage OutboundAlert, dispatch agent, SIP dial, wait for hang-up
+    end
+    D->>Q: HDEL jobs[event_id] (only now)
+```
+
+A job leaves the hash only after its call is over, so a consumer that dies mid-call re-queues it
+on start (`CallQueue.recover`). A failing call is logged and dropped, never retried forever; the
+retries and SMS fallback inside one call still apply. The demo Redis keeps no snapshot
+(`--save ""`), so the queue survives a **consumer** restart but not a Redis restart or
+`make docker-down`. The events themselves are safe in Neo4j; only their pending calls are lost.
+
 **One definition of "pending".** An event is *pending* when it was **alerted** (`alert_gate`) and is
 not acknowledged or resolved (`kb.graph.events.is_pending`). An event that was never alerted is
 *withheld*, not pending. `list_events` is the one query over every stored event, filtered by
@@ -268,9 +309,10 @@ flowchart TD
 4. **De-identify** the retrieved context (Presidio or regex, `DEID_BACKEND`) so no name/PHI reaches
    the model.
 5. **LLM generate**: the prompt goes to the `LLMProvider`, always wrapped in `DeidentifyingLLM`:
-   `EchoLLM` (the code default, `LLM_PROVIDER=echo`, deterministic and offline) or self-hosted
-   **Ollama** `llama3.2` (`LLM_PROVIDER=ollama`, the setting for real use). Anthropic/OpenAI fit the
-   interface but are **not implemented**; an unrecognised `LLM_PROVIDER` silently falls back to Echo.
+   `EchoLLM` (the code default, `LLM_PROVIDER=echo`, deterministic and offline), self-hosted
+   **Ollama** `llama3.2` (`LLM_PROVIDER=ollama`, the only option for real PHI), or a cloud model for
+   synthetic data: `anthropic`, `gemini`, or any OpenAI-compatible API (`openai`). An unrecognised
+   `LLM_PROVIDER` is an error at startup.
 6. **Output guardrail** → the final answer text.
 
 **Back to voice:**
@@ -282,7 +324,11 @@ flowchart TD
 
 Two shortcuts reuse the same machinery:
 - **Speak-on-select** (companion app): selecting a worklist row sends a `/select` control message;
-  the worker speaks that event's stored `Report.summary` via TTS (`INBOX_SPEAK_ON_SELECT`).
+  the worker speaks that event's stored `Report.summary` via TTS (`INBOX_SPEAK_ON_SELECT`). The
+  app's header toggle mutes it, and it's muted by default in `app+call` mode (the gateway's
+  `/session` returns `speak_on_select`), so a clinician on the phone alert doesn't hear the event
+  twice. A muted selection is sent as `/select-silent <id>`: the chat is scoped the same way, but
+  nothing is spoken and no TTS runs.
 - **Text chat**: a typed question runs the same orchestrator turn and returns a **typed** answer (no
   STT/TTS). Typed turns are never wake-word gated.
 
@@ -450,7 +496,7 @@ chat and WebRTC stay local:
 local LiveKit ── app inbox (rmsai-inbox-*) · WebRTC outbound rooms ── worker rmsai-agent
 LiveKit Cloud ── phone rooms (rmsai-outbound-*, rmsai-call-*) ─────── worker rmsai-agent-phone
                  ▲ carrier: SignalWire (native SIP trunk) | Twilio (TwiML bridge / paid Elastic SIP)
-shared ── Redis (staged outbound alerts) · Neo4j · Qdrant · audit log
+shared ── Redis (call queue, staged outbound alerts) · Neo4j · Qdrant · audit log
 ```
 
 - **`Config.telephony()`** is the config the call paths use (`cli.consume --transport sip`,
@@ -480,7 +526,9 @@ sequenceDiagram
     participant W as phone worker (rmsai-agent-phone, local)
     participant SW as SignalWire Domain App
     participant P as clinician's phone
-    C->>C: should_call(event) passes the gate
+    C->>C: should_call(event) passes the gate, worklist push
+    C->>R: queue the call (ZADD rmsai:calls:queue)
+    R-->>C: CallDispatcher: ZPOPMIN when the previous call has ended (skip if acked)
     C->>R: stage OutboundAlert (key = room rmsai-outbound-EVENT_ID, TTL 15 min)
     C->>LK: CreateAgentDispatch(room, rmsai-agent-phone)
     LK->>W: job: join room
@@ -493,6 +541,8 @@ sequenceDiagram
     SW-->>LK: 200 OK (only now: answer_on_bridge)
     LK-->>C: participant created → ANSWERED
     W->>P: PIN prompt → spoken alert → grounded Q&A (wake word) → "acknowledge" → status acknowledged
+    P-->>LK: hangs up, room closes
+    LK-->>C: call ended → dispatcher pops the next queued call
 ```
 
 On failure, `CreateSIPParticipant` raises: a ring timeout, busy, or any SIP error such as
@@ -524,9 +574,11 @@ sequenceDiagram
     W->>P: PIN prompt → grounded answers
 ```
 
-- **Status:** SignalWire is configured, and its first outbound test returned `603 Decline` with no call
-  in SignalWire's log (trial mode suspected). Twilio call-in is set up; its outbound bridge is deferred.
-  The SMS fallback works.
+- **Status (2026-10-12):** SignalWire outbound works end to end (the account had to leave trial
+  mode, which caused the earlier `603 Decline`): the phone rings, the PIN is accepted, the alert is
+  spoken and Q&A works, with ElevenLabs STT/TTS. `make demo-phone-up` runs event-driven calls
+  through the queue. SignalWire call-in is not yet tested. Twilio call-in is set up; its outbound
+  bridge is deferred. The SMS fallback works.
 - **Set-up:** [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md) (SignalWire) and README § Phone calls.
 
 ## The models, at a glance
@@ -536,7 +588,8 @@ sequenceDiagram
 | **ECG classification** | `ECGTransCovNet` (CNN + Transformer, PyTorch) | `inference/ecg_model.py` | checkpoint; stub fallback |
 | **Vitals / severity** | MEWS (rule-based rubric) + Mann-Kendall trends (statistical test) — **no ML** | `inference/`, `common/criticality.py` | — |
 | **Embeddings** (vector search) | hashing (default) or **BGE** `bge-small-en-v1.5` | `kb/vector/` | `EMBEDDER` |
-| **LLM** (answers) | Echo (code default, offline) or **Ollama `llama3.2`** (local) | `common/providers.py` | `LLM_PROVIDER` (`LLMProvider` interface) |
+| **Call ordering** | Redis sorted set + one dispatcher thread (no model) | `orchestrator/call_queue.py` | — |
+| **LLM** (answers) | Echo (code default, offline), **Ollama `llama3.2`** (local), or Claude / Gemini / OpenAI-compatible (synthetic data only) | `common/providers.py` | `LLM_PROVIDER` (`LLMProvider` interface) |
 | **STT** (speech→text) | faster-whisper `base.en` or ElevenLabs Scribe | `voice/adapters.py` | `STT_BACKEND` |
 | **TTS** (text→speech) | Piper or ElevenLabs | `voice/adapters.py` | `TTS_BACKEND` |
 | **VAD** (speech detection: endpointing + barge-in) | Silero | LiveKit worker | — |

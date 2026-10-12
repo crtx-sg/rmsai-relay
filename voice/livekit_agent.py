@@ -826,6 +826,9 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
             if line:
                 print(f"[worker] speaking selected event {event_id}: {line!r}", flush=True)
                 session.say(line)
+        elif is_inbox and text.startswith("/select-silent "):
+            print(f"[worker] selected event {text.split(' ', 1)[1].strip()} "
+                  "(app voice muted: not spoken)", flush=True)
         if not reply:  # control messages (e.g. /select) produce no chat bubble
             return
         print(f"[worker] text chat reply: {reply!r}", flush=True)

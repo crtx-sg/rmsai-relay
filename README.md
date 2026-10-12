@@ -28,9 +28,11 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
    care guidance, and a markdown clinician report.
 3. **Persist** it into a knowledge base — a Neo4j graph (patient ↔ event ↔ condition ↔ guideline)
    and a Qdrant vector store (clinical-protocol passages + report narrative).
-4. **Report** critical events to the companion-app worklist and/or by an outbound voice call
-   (WebRTC today; phone via LiveKit Cloud + SignalWire or Twilio [in progress](#phone-calls-livekit-cloud--signalwire-or-twilio))
-   or a text message, with an SMS fallback when a call goes unanswered.
+4. **Report** critical events to the companion-app worklist (all at once) and/or by an outbound
+   voice call: WebRTC, or a real phone call via LiveKit Cloud + SignalWire
+   ([Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)). Phone calls queue in Redis and
+   go out one at a time, most severe first. A text message is the alternative channel, and the SMS
+   fallback covers a call that goes unanswered.
 5. **Converse** — after a shared-PIN gate, the clinician asks follow-up questions answered from the
    KB + that patient's graph, and can verbally **acknowledge** the event (flips its status).
 
@@ -81,6 +83,10 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
 > For a plain-language walkthrough of the end-to-end control flow, data flow, and every model
 > (ECG classifier, LLM, STT/TTS, embeddings), see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
+![rmsai-relay architecture and pipeline flow](architecture.png)
+
+*Regenerate the diagram with `uv run python docs/make_arch_diagram.py`.*
+
 ```
                           ┌──────────────────────────────────────────────────────────────┐
                           │                      INGEST / DETECT                           │
@@ -106,9 +112,12 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
         │  criticality(event_type, mews_risk) → should_call gate                          │
         │        │ below threshold / NORMAL_SINUS → skip (still persisted)                │
         │        ▼ critical                                                               │
-        │  dispatch:  voice (LiveKit/SIP or WebRTC)   |   text (SMS notifier)             │
+        │  ① app:  push the worklist row to the inbox room NOW (every gated event)        │
+        │  ② call: SIP → queue it in Redis (ZSET rmsai:calls:queue, most severe first)    │
+        │          WebRTC / text (SMS) → dispatch inline                                  │
+        │  CallDispatcher thread: ZPOPMIN → skip if acked → one call at a time            │
         └───────────────────────────────┬────────────────────────────────────────────────┘
-                                         │  stage OutboundAlert (Redis, keyed by room)
+                                         │  stage OutboundAlert at dial time (Redis, keyed by room)
                                          ▼
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │                         VOICE LOOP  (two-process model)                         │
@@ -177,6 +186,7 @@ A few design points that aren't obvious from the diagram:
 | ECG classifier | **`ECG_TransConv`** (vendored `crtx-sg/ecgtranscnn`, PyTorch CPU), wrapped never reimplemented. Default artifact: the real-ECG `real_v2` 5-fold ensemble (13 classes) |
 | Vitals analysis | `ecgtranscnn` MEWS + Mann-Kendall trend + ECG-vital correlation (statistical), with a per-hospital clinical-significance policy on the trend (`config/hospitals/`) |
 | Event bus | **Redis Streams** (`rmsai.events`, consumer groups; partition by `patient_id`) |
+| Call queue | **Redis sorted set** `rmsai:calls:queue` + hash `rmsai:calls:jobs`: phone calls ordered by criticality, then arrival; one dispatcher thread (`orchestrator/call_queue.py`) |
 | Graph KB | **Neo4j** + Cypher (patient ↔ event ↔ condition ↔ treatment ↔ guideline ↔ bed/unit) |
 | Vector KB | **Qdrant** + embeddings (BGE via `sentence-transformers`, deterministic Hashing fallback) |
 | Memory tiers | working (Redis) · episodic (Qdrant) · semantic (= vector KB) |
@@ -190,7 +200,8 @@ A few design points that aren't obvious from the diagram:
 
 **No SQL DB in the POC.** Five stores: Neo4j (relationships + operational event log, behind an
 `EventStore` repository interface so it can migrate to Postgres/TimescaleDB later), Qdrant (text +
-embeddings), Redis (working memory + bus), HDF5 (waveforms), object/file store (plots, reports).
+embeddings), Redis (working memory, bus, call queue, staged call alerts), HDF5 (waveforms),
+object/file store (plots, reports).
 
 ### Repository layout
 
@@ -210,8 +221,9 @@ LiveKit Cloud + SignalWire setup.
 ## Phase status
 
 Built leaf-up, one phase at a time; a phase is "done" only when its CLI test passes. Phases **0–8
-are complete** and the companion app (9a) ships; live media (9b) is deferred. Telephony over the
-public phone network is in progress (see [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)).
+are complete** and the companion app (9a) ships; live media (9b) is deferred. Outbound phone calls
+over SignalWire work end to end; phone call-in is still being tested (see
+[Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)).
 
 | Phase | Scope | Status |
 |-------|-------|--------|
@@ -240,6 +252,8 @@ public phone network is in progress (see [Phone calls](#phone-calls-livekit-clou
 | — | Call queue: app gets every event at once, calls one at a time in severity order, skip-if-acked, restart-safe (`orchestrator/call_queue.py`, `make demo-phone-up`) | ✅ |
 | — | Phone worker registered on the wrong LiveKit (agents CLI env override) | ✅ fixed (`fe89028`) |
 | E1–E5 | Model performance & traceability: outcome + metrics, "why shown", provenance + model id, `[event]`/`[perf]` logs, `cli.model_perf`, app tab + detail panel | ✅ |
+| — | Voice on select: header toggle, muted by default in `app+call` so a clinician on the phone alert doesn't hear the event twice (`/select-silent`) | ✅ |
+| — | KB chunks cite their parent heading (`file#Parent › Child`); horizontal rules are not content | ✅ |
 | H1–H3 | Event history: one `pending` definition, `list_events` + `cli.events` (`--ask`), verifiable voice/chat listings that state their filter (or decline), app **Events** tab (`POST /events`, merges model performance), worklist backfill on login, chat → Events-tab link | ✅ |
 | E6 | Ask "why am I seeing this?" / "how is the model doing?" by chat or voice | 🔜 optional |
 | — | File-drop auto-publish watcher (inotify → `cli.ingest --emit bus`) | 🔜 planned |
@@ -454,7 +468,7 @@ but only as a logged override.
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
 | `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word so audio follow-ups needn't repeat it (audio only — does not affect text chat) |
 | `AUDIO_WAKE_REQUIRED` | `true` | require the wake word to open a follow-up audio turn (SIP/playground Q&A). Set `false` to answer **every** authenticated audio turn — the escape hatch when STT mishears the out-of-vocab brand word. The companion app already bypasses the gate (it controls the mic) |
-| `INBOX_SPEAK_ON_SELECT` | `true` | companion app: selecting a worklist row speaks that event's stored report summary aloud (in addition to scoping chat). Spoken text is the `Report.summary` — no model call |
+| `INBOX_SPEAK_ON_SELECT` | `true` | companion app: selecting a worklist row speaks that event's stored report summary aloud (in addition to scoping chat). Spoken text is the `Report.summary` — no model call. `false` turns it off everywhere. When on, the app's header toggle (🔊 Voice on select / 🔇 Voice muted) controls it per browser. Its default is **muted when `dispatch_mode` is `app+call`**, so a clinician on the phone alert doesn't hear the same event twice; it's remembered per dispatch mode. A muted selection is sent as `/select-silent`, so no TTS runs at all. Push-to-talk answers are always spoken |
 | `LIVEKIT_REDISPATCH_ON_START` | `true` | on worker startup, auto re-dispatch the agent into live `rmsai-inbox-*` rooms that lost their agent (e.g. after a worker restart), so the app doesn't need a re-login. On-demand equivalent: `cli.dispatch` |
 | `LIVEKIT_WORKER_HTTP_PORT` | `8081` | port for livekit-agents' health-check HTTP server. Only matters when two workers run side by side. The Docker `voice-worker` gets `8091` from Compose (*Compose*: set in the shell to change it), because host networking would otherwise collide with a worker run by hand (`[errno 98] address already in use`). The phone worker uses `LIVEKIT_SIP_WORKER_HTTP_PORT` (`8082`) |
 | `GATEWAY_PORT` | `8080` | *Compose*: host port for the containerized gateway. Move it (`GATEWAY_PORT=8090 make docker-up`) if `hapi-fhir` (`--profile emr`) or a hand-run gateway already holds 8080 |
@@ -828,12 +842,12 @@ uv run pytest -q -m "not infra"
 | `make stores-up` / `make stores-down` | start / stop **only** the backing stores (redis, neo4j, qdrant, livekit) — the target to use when you run the CLIs on the host |
 | `make stores-check` | which backing stores are reachable, and what to run if one is down |
 | `make docker-build` | build the shared app image (`infra/Dockerfile`) |
-| `make docker-up` / `make docker-down` | start every default service / stop everything (including the `telephony` phone worker) |
+| `make docker-up` / `make docker-down` | start every default service / stop everything (including the `telephony` phone worker). `make demo-down` is the same as `docker-down` |
 | `make docker-restart` | restart the three app services to pick up source edits (no rebuild) |
 | `make docker-logs` / `make docker-ps` | tail the app services / show container state |
 | `make docker-shell` | interactive shell in the app image with the repo mounted |
 | `make demo-up` / `make demo-check` | bring up every default service in dependency order and health-check it (the consumer stages WebRTC rooms: **no phone rings**) / re-run only the check |
-| `make demo-phone-up` | `demo-up` plus real phone calls: also starts the phone worker and runs the consumer with `--transport sip`. A later plain `make demo-up` puts the consumer back on WebRTC |
+| `make demo-phone-up` | `demo-up` plus real phone calls: also starts the phone worker and runs the consumer with `--transport sip`, so calls go through the Redis call queue. A later plain `make demo-up` puts the consumer back on WebRTC |
 | `make phone-up` / `make phone-down` / `make phone-logs` | start / stop / tail the phone-call worker (`voice-worker-phone`, profile `telephony`) |
 | `make phone-transcript` | follow the phone worker's conversation only: STT transcript, what was heard, the graph query, the reply (before TTS), the PIN and the spoken alert |
 | `make test` / `make lint` | `uv run pytest -q` / `ruff check .` |
@@ -1138,11 +1152,26 @@ docker compose -f infra/docker-compose.yml logs -f consumer
 # [consume] persisted MonitoredEvent … -> Neo4j graph
 # [consume] archived report narrative -> Qdrant vector store
 # [consume] dispatch=app: pushed inbox event … -> rmsai-inbox-h1 (kinds=[…])
+
+# with `make demo-phone-up` (SIP), each gated event is queued, then dialled in severity order:
+# [queued] PT6580/VENTRICULAR_TACHYCARDIA @ Unit1-Bed01: call 1 in queue [app worklist pushed]
+# [calls] dialling for PT6580/VENTRICULAR_TACHYCARDIA @ Unit1-Bed01 (Critical, event daf16c2d…)
+# [calls] skip PT6581/ATRIAL_FIBRILLATION @ Unit1-Bed02: already acknowledged (event …)
 ```
 
-Then **use it**: the worklist in the open app fills live. Selecting a row scopes chat to that event and speaks its report
-summary (`INBOX_SPEAK_ON_SELECT`). Ask questions by typing or by voice. For the phone/WebRTC paths
-and the on-demand call, see [End-to-end testing](#end-to-end-testing) §5–6.
+Inspect the queue itself (event ids only; the job payloads carry pseudonyms, never names):
+
+```bash
+docker compose -f infra/docker-compose.yml exec redis redis-cli ZRANGE rmsai:calls:queue 0 -1 WITHSCORES
+docker compose -f infra/docker-compose.yml exec redis redis-cli HLEN rmsai:calls:jobs   # queued + in progress
+```
+
+Then **use it**: the worklist in the open app fills live. Selecting a row scopes chat to that event
+and, with the header's 🔊 **Voice on select** toggle on, speaks its report summary
+(`INBOX_SPEAK_ON_SELECT`). In `app+call` mode the toggle starts muted (🔇), so the app doesn't
+repeat what the phone call is saying; click it to turn the voice on. Ask questions by typing or by
+voice. For the phone/WebRTC paths and the on-demand call, see
+[End-to-end testing](#end-to-end-testing) §5–6.
 
 Query the KB directly without the app:
 
@@ -1178,9 +1207,10 @@ $RMSAI pytest -q tests/test_criticality.py -k fp_override    # one file / one te
 make test                               # host equivalent (uv run pytest -q)
 ```
 
-> **Known failures:** 9 tests fail on `main` today, independent of recent work
-> (`test_episodic_gate` ×3, `test_graph_templates` ×3, `test_speech_check` ×1, `test_voice_config` ×2).
-> Treat a run as green when those 9 are the only failures.
+> **Known failures:** the offline run (`-m "not infra"`) has 3 pre-existing failures, all STT
+> configuration tests unrelated to recent work (`test_speech_check` ×1, `test_voice_config` ×2;
+> checked 2026-10-12). The full suite has also shown `test_episodic_gate` ×3 and
+> `test_graph_templates` ×3. Treat a run as green when only those fail.
 
 Then the end-to-end smoke test — generate, classify, publish, consume, alert, acknowledge:
 
@@ -1298,6 +1328,8 @@ companion app `http://localhost:8080/`.
 | `cli.kb_dump --list` returns `[]` | the graph was wiped (full pytest run / `cli.kb_eval`) — redo steps 3–4 |
 | worklist empty | nothing is pending: every event was acknowledged or withheld (check the **Events** tab or `cli.events --status pending`). Also: `DISPATCH_MODE` without `app`, or a `[poison] … non-pseudonym patient ref` (curate real ECG with `cli.real_samples`) |
 | worklist empty, chat silent | worker not dispatched into the room → `cli.dispatch --all-inbox`; or a cached `app.js` (check the on-screen build tag) |
+| selecting a row is silent | the header shows 🔇 **Voice muted** (the default in `app+call` mode); click it. The worker logs `selected event … (app voice muted: not spoken)` |
+| the worklist shows events whose call hasn't come yet | expected with `--transport sip`: calls queue and go out one at a time, most severe first. `[queued] … call N in queue` in the consumer log gives the position |
 | answer declines on an in-corpus question | relevance gate — the log names both signals and both thresholds |
 
 ### 8. Performance
@@ -1345,7 +1377,9 @@ make docker-down          # stop + remove containers; named volumes survive
 
 Data survives a `down`: Neo4j (`neo4j_data`), Qdrant (`qdrant_data`), the model cache (`hf_cache`),
 and everything under `./data` (reports, plots, uploads, audit log) are volumes or bind mounts.
-Redis is in-memory by design (`--save ""`), so the **bus backlog and working memory do not survive**.
+Redis is in-memory by design (`--save ""`), so the **bus backlog, working memory and the call queue
+do not survive**: a call still queued at `down` is never placed (the event itself stays in Neo4j and
+on the worklist as pending). The call queue does survive a consumer-only restart.
 
 ```bash
 docker compose -f infra/docker-compose.yml down -v      # ⚠️ ALSO deletes graph + vectors + model cache
@@ -1862,8 +1896,8 @@ uv run pytest -q -m "not infra"        # offline: no containers needed
 uv run pytest -q                       # full suite: needs the stores, and resets the live Neo4j
 ```
 
-9 known pre-existing failures (episodic_gate, graph_templates, speech_check, voice_config); see
-[§6 of the runbook](#6-test-the-application).
+Known pre-existing failures: 3 offline (speech_check, voice_config), plus episodic_gate and
+graph_templates on the full suite; see [§6 of the runbook](#6-test-the-application).
 
 ### 2. Generate synthetic events (vendored simulator)
 
@@ -2113,11 +2147,12 @@ uv run python -m cli.text_chat             # inbound query by text (PIN-gated, K
 uv run python -m cli.voice                 # offline typed-text voice demo (no audio hardware)
 uv run python -m cli.consume --help        # bus consumer: --channel/--caller/--transport/--notifier/--number
 uv run python -m cli.outbound --file <f>.h5  # single-file outbound loop (--no-answer, --fail-delivery, --notifier)
-uv run python -m cli.gateway               # companion-app gateway (serves app/, /session, /ack, /artifact*)
+uv run python -m cli.gateway               # companion-app gateway (serves app/, /session, /ack, /events, /artifact*)
 uv run python -m cli.inbox_publish --dry-run   # push a worklist message into the inbox room
 uv run python -m cli.voice_worker dev      # agent worker; VOICE_WORKER_ROLE=phone for the phone worker
 uv run python -m cli.livekit_token --room <r>  # join token for a room (playground testing)
 uv run python -m cli.dispatch --all-inbox  # re-dispatch the agent into agent-less inbox rooms
 uv run python -m cli.sip_setup --dry-run   # telephony trunks + dispatch rule (--swml / --twiml print the carrier scripts)
 uv run python -m cli.model_perf --events   # model performance from the graph (TP/FP/FN/TN, CIs, per class, why)
+uv run python -m cli.events --status pending   # every stored event, filtered; --ask "<q>" shows what the agent would say
 ```

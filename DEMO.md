@@ -297,7 +297,9 @@ reason (`below_threshold`, …).
 1. (Already done above.) Open `http://localhost:8080/` and enter the PIN (`INBOUND_AUTH_PIN`, default `1234`).
 2. The worklist fills live. Patients appear as `PT9#####` pseudonyms. The dry-run output in §4
    and the `pick` output map each one back to its dataset subject.
-3. Select a row. Chat is scoped to that event, and its summary is spoken (`INBOX_SPEAK_ON_SELECT`).
+3. Select a row. Chat is scoped to that event, and its summary is spoken (`INBOX_SPEAK_ON_SELECT`),
+   unless the header shows 🔇 Voice muted. That is the default in `app+call` mode, so the app doesn't
+   talk over a phone alert; click it to turn the voice on.
 4. Ask follow-ups, typed or by voice:
    - *"what were the vitals at the time of the event?"*
    - *"what is the escalation checklist for a critical alarm?"* (cites the sample SOP from §2)

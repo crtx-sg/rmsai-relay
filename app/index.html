@@ -22,6 +22,9 @@
     :root[data-theme="dark"] { color-scheme: dark; --bg: #0f1115; --fg: #e8e8e8; --sub: #a8a8a8;
                                --panel: #1b1e24; }
     body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
+    #voice-btn { background: transparent; color: #fff; border: 1px solid #fff6; border-radius: 4px;
+                 padding: .2rem .5rem; font-size: .8rem; cursor: pointer; }
+    #voice-btn.muted { opacity: .7; border-style: dashed; }
     #theme-btn { background: transparent; color: #fff; border: 1px solid #fff6; border-radius: 4px;
                  padding: .15rem .55rem; font-size: .78rem; cursor: pointer; }
     header { display: flex; align-items: center; gap: 1rem; padding: .75rem 1rem;
@@ -138,6 +141,7 @@
       <button data-tab="perf">Events</button>
     </nav>
     <span id="room-label"></span>
+    <button id="voice-btn" class="hidden" title="Speak an event's report aloud when you select it">🔊 Voice</button>
     <button id="theme-btn" title="Switch background">◐ Theme</button>
     <span id="status-pill">not connected</span>
   </header>

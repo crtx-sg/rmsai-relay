@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-10-12 events-tab-3";
+const APP_BUILD = "2026-10-12 voice-toggle-1";
 
 const LK = window.LivekitClient;
 
@@ -301,6 +301,7 @@ async function connect(sess) {
   // thing to misdiagnose here — it looks exactly like a broken worker.
   document.getElementById("room-label").textContent = `${session.room} · app ${APP_BUILD}`;
   document.getElementById("tabs").classList.remove("hidden");
+  initVoiceToggle();
   setStatus("connecting…");
 
   room = new LK.Room();
@@ -460,6 +461,41 @@ function currentTheme() {
   const set = document.documentElement.dataset.theme;
   if (set) return set;
   return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+// --- voice on select: speak the selected event's report, or stay silent --------------------------
+// Off by default in app+call mode (the gateway's `speak_on_select`): the clinician may be on the
+// phone alert for this very event, and the app speaking too is double speech. The choice is kept per
+// dispatch mode in this browser. Muted selections go out as "/select-silent", so the worker doesn't
+// run TTS at all (no audio, no TTS cost); push-to-talk answers are still spoken.
+let speakOnSelect = true;
+
+function voicePrefKey() { return `rmsai-voice-on-select:${(session && session.dispatch_mode) || "app"}`; }
+
+function initVoiceToggle() {
+  speakOnSelect = session && typeof session.speak_on_select === "boolean" ? session.speak_on_select : true;
+  try {
+    const saved = localStorage.getItem(voicePrefKey());
+    if (saved === "on" || saved === "off") speakOnSelect = saved === "on";
+  } catch (e) { /* storage unavailable: the gateway default applies */ }
+  updateVoiceButton();
+}
+
+function toggleVoice() {
+  speakOnSelect = !speakOnSelect;
+  try { localStorage.setItem(voicePrefKey(), speakOnSelect ? "on" : "off"); } catch (e) { /* session only */ }
+  updateVoiceButton();
+}
+
+function updateVoiceButton() {
+  const b = document.getElementById("voice-btn");
+  if (!b) return;
+  b.classList.remove("hidden");
+  b.classList.toggle("muted", !speakOnSelect);
+  b.textContent = speakOnSelect ? "🔊 Voice on select" : "🔇 Voice muted";
+  b.title = speakOnSelect
+    ? "Selecting an event speaks its report. Click to mute (e.g. while you're on the phone alert)."
+    : "Selecting an event stays silent. Click to have the report spoken.";
 }
 
 function toggleTheme() {
@@ -725,7 +761,8 @@ function renderPerf(data) {
 // topics are swallowed by the framework).
 function sendSelect(eventId) {
   if (!room || !eventId) return;
-  room.localParticipant.sendText(`/select ${eventId}`, { topic: CHAT_TOPIC })
+  const cmd = speakOnSelect ? "/select" : "/select-silent";
+  room.localParticipant.sendText(`${cmd} ${eventId}`, { topic: CHAT_TOPIC })
     .catch((e) => console.warn("select failed", e));
 }
 
@@ -829,6 +866,7 @@ document.getElementById("rows").addEventListener("click", (e) => {
 
 // Theme toggle
 document.getElementById("theme-btn").addEventListener("click", toggleTheme);
+document.getElementById("voice-btn").addEventListener("click", toggleVoice);
 updateThemeButton();
 
 // Tabs + performance view
