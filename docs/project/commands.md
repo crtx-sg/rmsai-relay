@@ -194,7 +194,7 @@ uv run python -m cli.events --ask "unacknowledged events for this patient" --as-
 
 Voice and chat event listings ("unacknowledged events on bed 2", "acknowledged events for this
 patient", "all VF events", "withheld events") run this same query. Every answer states its filter
-("2 pending (unacknowledged) events on bed Unit1-Bed02: …"), and text answers give each event's
+("2 pending (unacknowledged) events on bed Unit1-Bed02 for 1 patient: …"), and text answers give each event's
 short id. A listing whose target can't be resolved ("events for Mr Smith") is declined with a
 hint, not guessed. The worker log shows `[orchestrator] graph query event_history {…} -> N row(s)`,
 and `make phone-transcript` includes that line.

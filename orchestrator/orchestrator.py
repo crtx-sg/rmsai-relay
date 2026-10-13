@@ -445,6 +445,12 @@ def _answer_event_history(rows: list[dict], params: dict, *, spoken: bool = Fals
         return f"No {desc}."
     n = len(rows)
     one = desc.replace(" events", " event", 1) if n == 1 else desc
+    # "How many patients…" was answered with an event count: one patient can have several events
+    # (PT998224: VF and VT), so a listing not already scoped to a patient also says how many.
+    if n > 1 and not params.get("patient_id"):
+        patients = len({r["patient"] for r in rows if r.get("patient")})
+        if patients:
+            one += f" for {patients} patient{'' if patients == 1 else 's'}"
     if spoken:
         kinds: dict[str, int] = {}
         for r in rows:

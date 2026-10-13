@@ -108,9 +108,23 @@ def test_text_answer_states_filter_and_lists_ids():
     rows = event_history_rows(_Driver([_graph_row("34924fb9-ca69"), _graph_row("6bbd8fa0-e240")]))
     out = _answer_event_history(rows, {"status": "pending", "bed": "Unit1-Bed02"})
     head, *lines = out.splitlines()
-    assert head == "2 pending (unacknowledged) events on bed Unit1-Bed02:"
+    assert head == "2 pending (unacknowledged) events on bed Unit1-Bed02 for 1 patient:"
     assert lines[0].endswith("id 34924fb9") and "Unit1-Bed02" not in lines[0]  # bed is the filter
     assert "VENTRICULAR TACHYCARDIA 52%" in lines[0] and "pending" in lines[0]
+
+
+def test_listing_counts_patients_not_only_events():
+    # "How many patients are assigned to my work list?" was answered "10 pending events": two of
+    # them were one patient's VF and VT, so the answer must say 9 patients (2026-10-13 call-in).
+    rows = event_history_rows(_Driver([
+        _graph_row("a"), _graph_row("b", event_type="VENTRICULAR_FIBRILLATION"),
+        _graph_row("c", patient="PT984532", bed="Unit1-Bed04")]))
+    out = _answer_event_history(rows, {"status": "pending"}, spoken=True)
+    assert out.startswith("3 pending (unacknowledged) events for 2 patients: ")
+    assert _answer_event_history(rows, {"status": "pending"}).startswith(
+        "3 pending (unacknowledged) events for 2 patients:\n")
+    # a single event, or a listing already scoped to one patient, adds nothing
+    assert "patient" not in _answer_event_history(rows[:1], {"status": "pending"}).splitlines()[0]
 
 
 def test_empty_answer_names_the_filter():

@@ -328,7 +328,8 @@ retriever:
 | "Say all **unacknowledged events in bed 2**" · "**acknowledged** events for this patient" · "all **VT events** in the last 6 hours" · "**withheld** events" | T11 event history: the same rows as the app's Events tab and `cli.events` |
 
 **Verifiable event listings.** Every event-history answer (T11) states the filter it used, e.g. "2
-pending (unacknowledged) events on bed Unit1-Bed02: …". A typed answer lists each event's time,
+pending (unacknowledged) events on bed Unit1-Bed02 for 1 patient: …". A listing across patients also says how many patients ("10 pending (unacknowledged)
+events for 9 patients: …"). A typed answer lists each event's time,
 confidence, criticality, status and short id. *Pending* has one meaning everywhere: **alerted**
 and not acknowledged or resolved. An event that was never alerted is *withheld*.
 
@@ -1279,7 +1280,7 @@ $RMSAI cli.events --bed "bed 2" --status pending       # the rows (also: --patie
 $RMSAI cli.events --ask "say all unacked events in bed 02"
 # [events] query      event_history {"status": "pending", "bed": "Unit1-Bed02"}
 # [events] rows       2
-# [events] answer     2 pending (unacknowledged) events on bed Unit1-Bed02: …
+# [events] answer     2 pending (unacknowledged) events on bed Unit1-Bed02 for 1 patient: …
 ```
 
 **Why did a question take that path?** Regex template vs LLM router vs document retrieval:

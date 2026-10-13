@@ -294,7 +294,7 @@ flowchart TD
    number), bed, event type or status ("unacknowledged", "acknowledged", "withheld"), optionally
    "in the last N hours", resolve to the `event_history` template. It is backed by `list_events`,
    the same query as the app's Events tab and `cli.events`.
-   - The answer always states its filter: "2 pending (unacknowledged) events on bed Unit1-Bed02: …".
+   - The answer always states its filter: "2 pending (unacknowledged) events on bed Unit1-Bed02 for 1 patient: …".
    - Text answers give each event's short id.
    - In the app chat the worker also publishes the filter (`type:"events_filter"`), and the app
      shows a button that opens the Events tab with the same rows.
