@@ -5,7 +5,8 @@
 > evidence**. `production-plan.md` sat here and was being returned as the top hit for questions it
 > had no business answering. Project/engineering docs belong in `docs/project/` and upload test
 > fixtures in `docs/samples/`, both of which the non-recursive glob excludes; non-markdown files
-> (`.html`, `.py`, and **`.pdf`** — those go through `cli.kb_upload`) are never indexed.
+> (`.html`, `.py`, and **`.pdf`** — those go through `cli.kb_upload`) are never indexed. `make_arch_diagram.py` / `make_deploy_diagram.py` regenerate `architecture.png` /
+> `deployment.png` at the repo root.
 
 Small committed clinical-protocol corpus for the knowledge base. Phase 2A indexes these into the
 vector store (Qdrant); Phase 2B also extracts `Condition`/`Treatment`/`Guideline` entities from the

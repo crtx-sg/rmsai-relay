@@ -7,11 +7,14 @@ Everything runs as a Docker service — the backing stores *and* the application
 | `docker-compose.yml` | all services; its header explains the profiles and why the app uses host networking |
 | `Dockerfile` | one shared image for every app service (consumer, voice-worker, gateway, tools, real-samples, voice-worker-phone) |
 | `livekit.yaml` | LiveKit dev config — binds all interfaces, advertises a browser-reachable RTC node IP |
+| `demo-check.sh` | read-only readiness check run by `make demo-up` / `make demo-check` |
 
 ```bash
 make docker-build     # once, and after pyproject.toml / uv.lock / vendored-package changes
 make demo-up          # start everything in dependency order, wait for health, then demo-check
 make demo-check       # read-only: containers, endpoints, voice worker registered with LiveKit
+make demo-phone-up    # demo-up + phone worker; consumer on --transport sip --notifier signalwire (real calls + SMS)
+make phone-transcript # follow the phone worker's conversation lines only
 make demo-down        # stop + remove containers (named volumes are kept)
 make docker-logs      # tail the three app services
 ```

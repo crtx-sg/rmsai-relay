@@ -18,13 +18,14 @@ This is the demo path. The README has the background: [Setup](README.md#setup),
 
 The default. Everything below (§0–§5B) runs on your machine: the local LiveKit, the app, WebRTC calls,
 a simulated caller and simulated SMS. The telephony settings in `.env` (`LIVEKIT_SIP_*`, `SIGNALWIRE_*`)
-can stay there. They are only used by four explicit options, none of them a default:
-`--transport sip`, `--caller livekit`, `--notifier signalwire`, and `cli.sip_setup` / `make phone-up`.
+can stay there. They are only used by explicit choices: `--caller livekit` (with `cli.consume`'s
+`--transport sip`, its CLI default; the compose consumer passes `webrtc`), `--notifier signalwire`,
+and `cli.sip_setup` / `make phone-up` / `make demo-phone-up`.
 
 | Mode | Set | What you get |
 |---|---|---|
 | **App only** | `outbound.dispatch_mode: app` in `config/hospitals/<HOSPITAL_ID>.yaml`, then `make docker-restart` | worklist, event-scoped chat and voice in the app, speak-on-select (§5A) |
-| **Event call in the browser** | `outbound.dispatch_mode: app+call` in the hospital file, then `make docker-restart` | per critical event, the consumer log prints a room + token; join in the LiveKit playground → PIN → spoken alert → Q&A → acknowledge (§5B) |
+| **Event call in the browser** | nothing: `app+call` is the default `dispatch_mode` | per critical event, the consumer log prints a room + token; join in the LiveKit playground → PIN → spoken alert → Q&A → acknowledge (§5B) |
 | **Offline, scripted** | nothing (host `uv run`) | the whole loop with no browser or audio (below) |
 
 ```bash
@@ -40,7 +41,7 @@ uv run python -m cli.call                                             # simulate
 - Optional hard switch: comment out `LIVEKIT_SIP_URL` in `.env` to force single-server mode. The
   phone worker then refuses to start, and any SIP path fails against the local LiveKit (which has no
   SIP service), so nothing can reach Cloud.
-- Not possible locally: ringing a real phone. That needs [§5C](#c-real-phone-calls-livekit-cloud--signalwire--in-progress).
+- Not possible locally: ringing a real phone. That needs [§5C](#c-real-phone-calls-livekit-cloud--signalwire).
 
 ---
 
@@ -103,7 +104,7 @@ EcgTransConvModel
 |---|---|---|
 | `5 checkpoint(s), 13 classes` + `EcgTransConvModel` | real_v2 ensemble ✔ | — |
 | `16 classes` | a simulator checkpoint | point `ECG_CHECKPOINTS` at `real_v2/fold*.pt` |
-| `StubECGModel`, no load line | `ECG_CHECKPOINTS` unset | add it to `.env`, then `make docker-up` |
+| `StubECGModel`, no load line | `ECG_CHECKPOINTS` unset | add it to `.env`, then `make docker-restart` |
 | `failed to load ECG checkpoint … No module named 'ecg_transcovnet.checkpoint'` | stale image | `make docker-build && make docker-up` |
 | `ECG checkpoint(s) not found` | weights missing | `make weights ECGTRANSCNN_DIR=…` |
 
@@ -111,7 +112,7 @@ EcgTransConvModel
 
 ## 2. Initialize the knowledge base
 
-Both stores start empty. They are also wiped by some tests (see [Troubleshooting](#troubleshooting)).
+Both stores start empty. `cli.kb_eval` resets the live graph (tests only do with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`) (see [Troubleshooting](#troubleshooting)).
 
 ```bash
 $RMSAI cli.graph migrate                                   # {"migrated": true}
@@ -121,8 +122,8 @@ $RMSAI cli.kb_vector --embedder bge index --dir docs       # clinical corpus -> 
 $RMSAI cli.kb_upload --file docs/samples/critical_alarm_sop.md   # optional: a sample SOP to cite
 ```
 
-**Order matters:** index the documents *before* you ingest events. `cli.kb_vector index --reset`
-wipes the per-event report narratives.
+Plain `index` appends, so order doesn't matter. Only `cli.kb_vector index --reset` wipes the
+per-event report narratives: never run it after ingesting events.
 
 ---
 
@@ -151,7 +152,7 @@ package v2 (manifest 096bdfbafa04), split=test
 ### Pick events
 
 ```bash
-rm -rf data/real     # optional: start clean (pick replaces same-named files but never clears the folder)
+# pick removes earlier pick files from data/real first (other .h5 files there are kept, with a warning)
 docker compose -f infra/docker-compose.yml run --rm real-samples pick \
     --pick VENTRICULAR_TACHYCARDIA:2,ATRIAL_FIBRILLATION:2,NORMAL_SINUS:1
 ```
@@ -175,7 +176,7 @@ docker compose -f infra/docker-compose.yml run --rm real-samples  pick --pick VE
 - `run --rm real-samples`: a one-off container from the `real-samples` service, removed on exit.
   It uses the same image as the app services, plus two mounts:
   - the repo at `/app`, so output under `data/real/` appears on the host;
-  - `${ECGPKG_HOST_DIR:-../ecg_sigma/packages}` at `/ecgpkg`, **read-only**.
+  - `${ECGPKG_HOST_DIR:-../../ecg_sigma/packages}` (relative to `infra/`, i.e. `../ecg_sigma/packages` from the repo root) at `/ecgpkg`, **read-only**.
 - The service's entrypoint is `python -m cli.real_samples`, so everything after the service name is
   passed straight to the CLI. With no arguments it runs `list`.
 - It is a separate service, not `tools`, so a host without ecg_sigma keeps a working `tools`. Here
@@ -225,7 +226,7 @@ docker compose -f infra/docker-compose.yml run --rm real-samples  pick --pick VE
 | `--dataset mitbih vfdb …` | all | restrict to source databases |
 | `--seed N` | 42 | a different, still reproducible, selection |
 | `--out DIR` | `data/real` | output directory (must be outside the package; it is checksummed) |
-| `--split train\|val\|test` | `test` | non-test splits work but warn: the model has seen those events |
+| `--split train\|val\|test` (before `pick`) | `test` | non-test splits work but warn: the model has seen those events |
 | `--checkpoint …` | `ECG_CHECKPOINTS` | checkpoint(s) to check the package against |
 | `--allow-mismatch` | off | proceed despite a package/model mismatch |
 | `--package DIR` (before `pick`) | `ECGPKG_DIR` | package root; the service sets it to `/ecgpkg/${ECGPKG_NAME:-ecg_pkg_v2}` |
@@ -265,11 +266,10 @@ are the usual confusions), re-pick with another `--seed`.
 
 ### Open the app first
 
-Log in to `http://localhost:8080/` (PIN `1234`) **before** publishing. The worklist is
-live-push-only, with no backlog fetch. The inbox room `rmsai-inbox-h1` only exists while the app is
-connected, and an event pushed while it's closed is lost to the worklist. The consumer then logs
-`inbox push failed … 503 … inbox room not open`. Publishing again is safe: the graph is keyed by
-event id.
+Log in to `http://localhost:8080/` (PIN `1234`) **before** publishing. The inbox room `rmsai-inbox-h1` only exists while the app is
+connected, so a push while it's closed fails (`inbox push failed … 503 … inbox room not open`). The
+event isn't lost: on login the app backfills every pending (alerted, unacknowledged) event from the
+graph. Publishing again is also safe: the graph is keyed by event id.
 
 ### Publish to the bus
 
@@ -289,10 +289,10 @@ docker compose -f infra/docker-compose.yml logs -f consumer
 #         truth VENTRICULAR_TACHYCARDIA → TP · Critical · alert ✓ vitals_alert · app ✓ · why: …
 ```
 
-Critical/High events are dispatched. `NORMAL_SINUS`/Low events are persisted but skipped with a
+Critical/High events are dispatched (a vitals-driven alert, whose rhythm is below the confidence gate, goes to the worklist only unless `outbound.call_vitals_alerts: true`). `NORMAL_SINUS`/Low events are persisted but skipped with a
 reason (`below_threshold`, …).
 
-### A. Companion app (default, `dispatch_mode: app`)
+### A. Companion app (`dispatch_mode: app`, or the default `app+call`)
 
 1. (Already done above.) Open `http://localhost:8080/` and enter the PIN (`INBOUND_AUTH_PIN`, default `1234`).
 2. The worklist fills live. Patients appear as `PT9#####` pseudonyms. The dry-run output in §4
@@ -326,9 +326,8 @@ With a handful of events the intervals are wide, and the tab says so. Say it out
 
 ### B. Outbound voice call over WebRTC (no phone)
 
-Set `outbound.dispatch_mode: app+call` in `config/hospitals/<HOSPITAL_ID>.yaml` (README, "Per-hospital
-configuration"), run `make docker-restart` so the consumer reloads it, and publish
-again. For each critical event, the consumer log prints an `rmsai-outbound-<event_id>` room and a
+With `outbound.dispatch_mode: app+call` (the default; README, "Per-hospital configuration"; after
+changing it run `make docker-restart`), publish an event. For each critical event, the consumer log prints an `rmsai-outbound-<event_id>` room and a
 `Token:`. Join it at <https://agents-playground.livekit.io> (Manual → URL + token → allow mic):
 
 1. Say the PIN.
@@ -338,7 +337,7 @@ again. For each critical event, the consumer log prints an `rmsai-outbound-<even
 
 Full detail: [README §5](README.md#5-real-webrtc-audio-loop-browser-no-phone).
 
-### C. Real phone calls (LiveKit Cloud + SignalWire) — in progress
+### C. Real phone calls (LiveKit Cloud + SignalWire)
 
 Phone calls run on a **second LiveKit** (a LiveKit Cloud project, `LIVEKIT_SIP_URL`), because a
 LiveKit SIP bridge only connects calls into rooms on its own server. The app, inbox and WebRTC stay
@@ -347,17 +346,17 @@ the missed-call SMS. It needs an account out of trial mode.
 
 | Direction | Status |
 |---|---|
-| Event **out** (relay → your phone → PIN → alert → Q&A → acknowledge) | works (verified 2026-10-12, after leaving trial mode) |
-| Call **in** (your phone → SignalWire number → PIN → Q&A) | configured; not tested yet |
-| SMS fallback when an alert call is unanswered | SignalWire SMS from the same number (`--notifier signalwire`, the `make demo-phone-up` default); live delivery not yet confirmed |
+| Event **out** (relay → your phone → PIN → alert → Q&A → acknowledge) | works (verified 2026-10-12; needs the account out of trial mode and `SIGNALWIRE_SIP_USER`) |
+| Call **in** (your phone → SignalWire number → PIN → Q&A) | works (verified 2026-10-13) |
+| SMS fallback when an alert call is unanswered | SignalWire SMS from the same number (`--notifier signalwire`, the `make demo-phone-up` default); delivered (test SMS to a +91 number, 2026-10-13) |
 
 Full step-by-step setup: **[`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)**. Once set up:
 
 ```bash
 make phone-up && make phone-logs           # "registered worker" url must be the Cloud URL
 uv run python -m cli.call --caller livekit # on-demand: rings the hospital's outbound.call_number → PIN → Q&A
-# event-driven: outbound.dispatch_mode: app+call in the hospital file, then (Compose reads this from the shell):
-CONSUME_ARGS="--channel voice --caller livekit --transport sip" make docker-up
+# event-driven (dispatch_mode app+call, the default): consumer on SIP + SignalWire SMS fallback + phone worker
+make demo-phone-up        # a later plain `make demo-up` puts the consumer back on WebRTC
 # publish an event (§5): the phone rings → PIN → this event's alert → Q&A → "acknowledge"
 ```
 
@@ -413,12 +412,12 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | `real-samples` fails to start: bind source path does not exist | package not at `../ecg_sigma/packages` | set `ECGPKG_HOST_DIR=/abs/path/to/packages` (and `ECGPKG_NAME` if not `ecg_pkg_v2`) |
 | `pick` exits 2: `… not held out for this model` | package ≠ checkpoint's training package | use the matching package, or `--allow-mismatch` knowingly |
 | Accuracy ≈ 0, `ST_ELEVATION` predictions, `"model": "stub"` | stub fallback | [§1 table](#1-bring-up-and-confirm-the-real-model-is-loaded) |
-| Worklist empty / `cli.kb_dump --list` returns `[]` | `tests/test_graph_templates.py`, `tests/test_orchestrator.py`, `cli.kb_eval` reset the **live** Neo4j | redo §2, then republish (§5) |
+| Worklist empty / `cli.kb_dump --list` returns `[]` | `cli.kb_eval` (or tests run with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`) reset the **live** Neo4j | redo §2, then republish (§5) |
 | In-app chat gets no reply | voice worker restarted after the app connected | `$RMSAI cli.dispatch --all-inbox` |
 | Voice worker loops on `:7880` | LiveKit container not running | `docker compose -f infra/docker-compose.yml up -d livekit` |
 | Events arrive, but no speech on select and no chat reply; `make demo-check` FAILs on voice-worker | worker started before LiveKit, retried 16x and stopped (the container stays "Up") | `docker restart infra-voice-worker-1`, or `make demo-up` |
 | `[poison] … refusing to publish non-pseudonym patient ref: '106'` | `data/real` curated before pseudonymization (older `cli.real_samples`) | re-run `pick`; purge the old ids from Neo4j/Qdrant before republishing, or the same event ids end up under two patients |
-| `inbox push failed … TwirpError … 503 no response from servers` | app not connected, so the inbox room doesn't exist | log in to the app, then publish again |
+| `inbox push failed … TwirpError … 503 no response from servers` | app not connected, so the inbox room doesn't exist | log in to the app; pending events backfill on login (republishing is also safe) |
 | Neo4j `warn: null value eliminated in set function` | harmless driver notice: an `OPTIONAL MATCH` over a patient with no history rows | ignore |
 | Two consumers splitting events | a host-run `cli.consume` shares group `rmsai.relay` with the container | `docker compose -f infra/docker-compose.yml stop consumer` before running one by hand |
 | `SIP dial failed … 603: Decline` (SignalWire) | SignalWire refused the call: trial mode, Domain App credentials, or destination country | [`TELEPHONY_SETUP.md` § Troubleshooting](TELEPHONY_SETUP.md#troubleshooting) |

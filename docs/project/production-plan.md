@@ -2,7 +2,7 @@
 
 High-level plan to take the POC to a robust, scalable, multi-tenant production platform.
 Estimates are **order-of-magnitude for planning**, assuming the POC has de-risked the core loop
-(it has). See [../ARCHITECTURE.md](../../ARCHITECTURE.md) for how the system works today.
+(it has). See [ARCHITECTURE.md](../../ARCHITECTURE.md) for how the system works today.
 
 ## Where the POC is
 
@@ -72,7 +72,7 @@ leverage). Planning-grade; the saved FTE isn't free — AI-generated code raises
 | QA/automation | 2 | **High** | ~1 | ~1 | Test generation is a prime AI use case |
 | EM/PM/Architect | 3 | Low | ~0.5 | ~2.5 | Specs/docs helped; coordination is the job |
 | Clinical/Regulatory SME | 1–2 | ~None | 0 | 1–2 | Pure domain expertise; no code leverage |
-| **Total** | **~27** | — | **~7–8 FTE** | **~19–20** | Lands at the low end of the ~18–24 headline |
+| **Total** | **~27–28** | — | **~6.5–7.5 FTE** | **~19.5–21.5** | Lands in the lower half of the ~18–24 headline |
 
 Biggest wins: Backend, QA, Frontend, Data eng, Infra. ~Zero in Clinical/Regulatory and little in
 EM/PM and Security-audit — the same long poles that dominate this product's risk.
@@ -94,7 +94,7 @@ Cloud, order-of-magnitude, load-dependent.
 
 **Dev-tooling NRE (per annum): ~$30–75k/yr** (~$50k mid-case, ~20 coding seats). Prefer Max-plan
 seats over raw metered API — heavy agentic runs can otherwise spike one dev to $500–1k/mo. Against
-the ~7–8 FTE it offsets (~$1.4–1.6M/yr loaded), that's a **~30× return** and a rounding error next
+the ~6.5–7.5 FTE it offsets (~$1.3–1.5M/yr loaded), that's a **~30× return** and a rounding error next
 to a single line of the infra run-rate.
 
 ## Long poles / risks

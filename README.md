@@ -246,7 +246,7 @@ over SignalWire work end to end; phone call-in is still being tested (see
 | — | Held-out real-ECG curation (`cli.real_samples`, `PT9#####` pseudonyms) + `cli.ingest --dir` scoring | ✅ |
 | T1–T4 | Telephony split: `Config.telephony()`, `cli.sip_setup`, call paths → telephony LiveKit, phone worker (`make phone-up`) | ✅ |
 | T5 | SMS fallback on unanswered calls: SignalWire (`--notifier signalwire`, same number as the calls; `make demo-phone-up` default); a simulated SMS is recorded as `sms_simulated`, never as delivered | ✅ test SMS delivered to +91 (2026-10-13) |
-| C1–C2 | SignalWire carrier: `TELEPHONY_CARRIER`, native SIP trunk via `cli.sip_setup` (`--swml`) | ✅ outbound verified live (2026-10-12) · 🔄 call-in |
+| C1–C2 | SignalWire carrier: `TELEPHONY_CARRIER`, native SIP trunk via `cli.sip_setup` (`--swml`) | ✅ outbound (2026-10-12) and call-in (2026-10-13) verified live |
 | — | Call queue: app gets every event at once, calls one at a time in severity order, skip-if-acked, restart-safe (`orchestrator/call_queue.py`, `make demo-phone-up`) | ✅ |
 | — | Phone worker registered on the wrong LiveKit (agents CLI env override) | ✅ fixed (`fe89028`) |
 | E1–E5 | Model performance & traceability: outcome + metrics, "why shown", provenance + model id, `[event]`/`[perf]` logs, `cli.model_perf`, app tab + detail panel | ✅ |
@@ -428,11 +428,11 @@ declines and logs **why**, naming both numbers, both thresholds, and the top pas
 semantic similarity 0.17 < 0.60 AND word overlap 0.00 < 0.18 (top: vt_vf.md#Post-resuscitation)…
 ```
 
-> ⚠️ **Destructive ops to know about.** Graph/orchestrator pytest fixtures
-> (`tests/test_graph_templates.py`, `tests/test_orchestrator.py`) run against the **live** Neo4j and
-> `reset_all()` on teardown — running them wipes ingested data; **re-ingest afterwards**.
-> `cli.kb_vector index --reset` and `cli.kb_eval` rebuild the Qdrant collection. After any such wipe,
-> re-run the `ingest → consume` flow to repopulate events (and their report narratives).
+> ⚠️ **Destructive ops to know about.** Tests that would `reset_all()` the **live** Neo4j are
+> skipped unless `RMSAI_ALLOW_LIVE_GRAPH_RESET=1` (`conftest.py`); set it only against a graph you can
+> lose. `cli.kb_eval` (without `--no-seed`) resets the live Neo4j, and `cli.kb_vector index --reset`
+> rebuilds the Qdrant collection. After any such wipe, re-run the `ingest → consume` flow to
+> repopulate events (and their report narratives).
 
 ---
 
@@ -461,6 +461,7 @@ but only as a logged override.
 | `HOSPITAL_ID` | *(empty)* | scopes the app inbox room `rmsai-inbox-<id>` and selects `config/hospitals/<id>.yaml` |
 | `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` *(hospital)* | `false` / `High` | read by `should_call`, but **`cli.consume` and `cli.outbound` force `OUTBOUND_ENABLED` on** and take the threshold from `--min-criticality` (default `High`). The gate governs both the worklist push and the call |
 | `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` *(hospital)* | `0.60` | a non-normal (arrhythmia) event is only asserted *as a rhythm* if confidence is at/above this. Below it: withheld when the vitals are calm, or re-based as a **vitals-driven alert** (rhythm marked unconfirmed) when they aren't. Vitals never raise the bar |
+| `OUTBOUND_CALL_VITALS_ALERTS` *(hospital)* | `false` | phone a vitals-driven alert (rhythm below the confidence gate, vitals warrant it). `false` = worklist only; the consumer logs `no call: vitals-driven alert … reported to the app only` |
 | `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` *(hospital)* | — | destination (the default for `--number` on `cli.consume`/`cli.outbound`, and for `cli.call`) + caller ID (the SignalWire number; also the SMS sender). A real call/SMS with neither `--number` nor `OUTBOUND_CALL_NUMBER` refuses to start; a placeholder is used only for simulated runs |
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` *(hospital)* | `2` / `30` | no-answer retry policy |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
@@ -481,6 +482,7 @@ but only as a logged override.
 | `EPISODIC_RECALL` | `false` | condition free-text answers on recalled cross-session past Q&A; off keeps answers grounded in the live KB + current conversation only |
 | `STT_LANGUAGE` | `en` | force the STT language (ISO 639-1); blank/`auto` = auto-detect. Stops Whisper/Scribe "hearing" other languages on noise |
 | `ECG_CHECKPOINTS` | *(unset)* | ECG classifier checkpoint path(s), comma- or space-separated. Unset ⇒ the deterministic stub. Several paths load as one softmax-averaging ensemble; `external/ecgtranscnn/models/real_v2/fold{0..4}.pt` is the recommended artifact (run `make weights` first). Head, lead order and filter preset are read from the checkpoint |
+| `INGEST_TIME_ANCHOR` | `source` | `source` keeps the HDF5 event times; `now` shifts each patient's events so the latest is the ingest time (`cli.ingest --time-anchor`) |
 | `ECG_PLOT_ENABLED` / `PLOT_DIR` | `true` / `data/plots` | producer renders each event's ECG lead to `{PLOT_DIR}/<event_id>.png` (gitignored); path persisted as `MonitoredEvent.ecg_plot_ref` |
 | `DEID_BACKEND` | `regex` | `regex` (offline) / `presidio` / `auto` (presidio if installed, else regex) |
 
@@ -560,7 +562,7 @@ outbound-call gate, and all of its inputs are configurable (table above). It is 
    Escalation only ever raises to `High` — it never lowers an already-`Critical` event.
 3. **Call gate** (`should_call`) — dials out when `outbound_enabled` and the criticality is at or
    above `OUTBOUND_MIN_CRITICALITY` (default `High`). The event is **always persisted**; the gate
-   only governs the call.
+   governs both the worklist push and the call.
 
 **Arrhythmia confidence gate (the model must be sure — or say it isn't).** A **non-normal
 (arrhythmia)** prediction is only asserted *as a rhythm* when the model's confidence in it is at/above
@@ -569,8 +571,9 @@ patient, not on the classifier:
 
 - **vitals unremarkable** → withheld (`low_confidence_arrhythmia (45% < 60%)`). The event is still
   persisted and answerable in chat; only the alert is suppressed.
-- **vitals warrant attention** (MEWS ≥ threshold or a deteriorating trend) → the alert still goes out,
-  but **re-based on the vitals** (`vitals_alert (MEWS 4 >= threshold 3)`). The worklist row leads with
+- **vitals warrant attention** (MEWS ≥ threshold or a deteriorating trend) → the alert still goes out
+  to the app worklist (and is phoned only when the hospital sets `outbound.call_vitals_alerts: true`;
+  default `false`), but **re-based on the vitals** (`vitals_alert (MEWS 4 >= threshold 3)`). The worklist row leads with
   *Vitals alert* and the named vital, the rhythm is demoted to `unconfirmed: <type>`, and the spoken
   call alert says "Possible …, treat the rhythm as unconfirmed".
 
@@ -619,7 +622,7 @@ Settings combine in this order, each overriding the one before:
 |---|---|---|
 | `escalation` | `normal_event`, `mews_threshold`, `escalate_on_deteriorating`, `fp_override_on_vitals` | `CRITICALITY_NORMAL_EVENT`, `CRITICALITY_MEWS_THRESHOLD`, `CRITICALITY_ESCALATE_ON_DETERIORATING`, `CRITICALITY_FP_OVERRIDE_ON_VITALS` |
 | `escalation` | `fp_suppress_min_confidence`, `low_confidence_caveat` | `FP_SUPPRESS_MIN_CONFIDENCE`, `LOW_CONFIDENCE_CAVEAT` |
-| `outbound` | `dispatch_mode`, `enabled`, `min_criticality`, `min_arrhythmia_confidence` | `DISPATCH_MODE`, `OUTBOUND_ENABLED`, `OUTBOUND_MIN_CRITICALITY`, `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` |
+| `outbound` | `dispatch_mode`, `enabled`, `min_criticality`, `min_arrhythmia_confidence`, `call_vitals_alerts` | `DISPATCH_MODE`, `OUTBOUND_ENABLED`, `OUTBOUND_MIN_CRITICALITY`, `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE`, `OUTBOUND_CALL_VITALS_ALERTS` |
 | `outbound` | `call_number`, `from`, `inbound_allowed_numbers` | `OUTBOUND_CALL_NUMBER`, `OUTBOUND_FROM`, `SIP_INBOUND_ALLOWED_NUMBERS` |
 | `outbound` | `max_retries`, `retry_delay_s` | `OUTBOUND_MAX_RETRIES`, `OUTBOUND_RETRY_DELAY_S` |
 | `vitals_trends` | `alpha`, `vitals.<name>.{min_change, normal, unit}` | — (see [Vital trends](#vital-trends-when-is-a-vital-deteriorating)) |
@@ -789,7 +792,7 @@ GATEWAY_PORT=8090 make docker-up
 ECGPKG_HOST_DIR=/abs/path/to/packages docker compose -f infra/docker-compose.yml run --rm real-samples list
 ```
 
-Compose-level keys: `CONSUME_ARGS`, `GATEWAY_PORT`, `ECGPKG_HOST_DIR`, `ECGPKG_NAME`,
+Compose-level keys: `CONSUME_ARGS`, `GATEWAY_PORT`, `CONSUMER_HF_OFFLINE` / `WORKER_HF_OFFLINE` (set `0` on a fresh `hf_cache`), `ECGPKG_HOST_DIR`, `ECGPKG_NAME`,
 `APP_UID`/`APP_GID`, `LIVEKIT_WORKER_HTTP_PORT` (container), `LIVEKIT_SIP_WORKER_HTTP_PORT`
 (container), `NEO4J_USER`/`NEO4J_PASSWORD` (the neo4j container's auth) and the `*_PORT` host-port
 overrides. Changing `NEO4J_PASSWORD` in `.env` alone therefore changes what the app sends but not
@@ -805,7 +808,7 @@ git -C external/ecgtranscnn checkout bac4a01
 #    make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn   (skip it to run on the stub)
 
 # 2. Install everything (recommended for a demo). `make setup-all` = all extras
-#    (rag, deid, voice, livekit, app, pdf) + the vendored ecgtranscnn editable + the spaCy model.
+#    (rag, deid, voice, livekit, app, pdf, llm-cloud) + the vendored ecgtranscnn editable + the spaCy model.
 make setup-all
 #    Lean alternative (core + dev only): `make setup`.
 #    Re-run `make external` after ANY hand-run `uv sync` — the vendored package is gitignored, so
@@ -815,7 +818,7 @@ make setup-all
 make stores-up            # = docker compose … up -d redis neo4j qdrant livekit
 make stores-check         # which ones are actually reachable?
 
-# 4. Run tests (offline; the full suite needs the stores and resets the live Neo4j)
+# 4. Run tests (offline; the full suite needs the stores; graph-wiping tests skip unless RMSAI_ALLOW_LIVE_GRAPH_RESET=1)
 uv run pytest -q -m "not infra"
 ```
 
@@ -840,7 +843,7 @@ uv run pytest -q -m "not infra"
 | Target | What it does |
 |---|---|
 | `make setup` | `uv sync --extra dev` + `make external` (core + dev only) |
-| `make setup-all` | all extras (rag, deid, voice, livekit, app, pdf) + `make external` + spaCy `en_core_web_sm` |
+| `make setup-all` | all extras (rag, deid, voice, livekit, app, pdf, llm-cloud) + `make external` + spaCy `en_core_web_sm` |
 | `make external` | (re)install the vendored `external/ecgtranscnn` editable — run after any manual `uv sync` |
 | `make weights` | copy the `real_v2` checkpoints in from a local ecgtranscnn working copy (`ECGTRANSCNN_DIR`, default `../ecgtranscnn`) — they are gitignored, so no clone carries them |
 | `make stores-up` / `make stores-down` | start / stop **only** the backing stores (redis, neo4j, qdrant, livekit) — the target to use when you run the CLIs on the host |
@@ -865,6 +868,7 @@ uv sync --extra voice                                 # faster-whisper STT + Pip
 uv sync --extra livekit                               # LiveKit agent worker + SIP/WebRTC
 uv sync --extra app                                   # companion-app gateway (FastAPI/uvicorn)
 uv sync --extra pdf                                   # PDF uploads for cli.kb_upload (pypdf)
+uv sync --extra llm-cloud                             # anthropic / openai SDKs for cloud LLM providers
 # NOTE: any bare `uv sync` uninstalls the vendored ecgtranscnn — follow with `make external`.
 ```
 
@@ -1089,7 +1093,7 @@ Expected steady state:
 ```
 consumer       Up  (blocking on XREADGROUP)
 gateway        Up (healthy)   → http://localhost:8080/
-voice-worker   Up  (registered as rmsai-agent, health server on 8091)
+voice-worker   Up (healthy)   (registered as rmsai-agent, health server on 8091)
 livekit neo4j qdrant redis   Up (healthy)
 ```
 
@@ -1101,8 +1105,8 @@ livekit neo4j qdrant redis   Up (healthy)
 ### 3. Initialize the knowledge base
 
 Both stores start empty. The **graph** needs its schema, care protocols, and document entities; the
-**vector** store needs the clinical corpus. `cli.consume` runs `migrate` itself on startup, so
-strictly only the middle three are manual:
+**vector** store needs the clinical corpus. `cli.consume` runs `migrate` and appends `docs/` to Qdrant
+itself on startup, so strictly only `protocols` and `extract` are manual:
 
 ```bash
 $RMSAI cli.graph migrate                     # constraints + indexes   -> {"migrated": true}
@@ -1121,8 +1125,8 @@ $RMSAI cli.graph ingest --patients PT1000 PT1001 PT1002
 ```
 
 **The embedder must match the collection** (hashing=256-dim / BGE=384-dim). Every KB path defaults
-`--embedder` to `EMBEDDER` from `.env`; `cli.kb_vector` is the one exception (it defaults to
-`auto`), so pass it explicitly there. See [§3a](#3a-upload-protocols--sops--checklists-to-the-kb).
+`--embedder` to `EMBEDDER` from `.env`, except `cli.kb_vector` and `cli.kb` (default `auto`) and
+`cli.kb_eval` (default `hashing`), so pass it explicitly there. See [§3a](#3a-upload-protocols--sops--checklists-to-the-kb).
 
 ### 4. Drive the application
 
@@ -1158,9 +1162,9 @@ docker compose -f infra/docker-compose.yml logs -f consumer
 # [consume] dispatch=app: pushed inbox event … -> rmsai-inbox-h1 (kinds=[…])
 
 # with `make demo-phone-up` (SIP), each gated event is queued, then dialled in severity order:
-# [queued] PT6580/VENTRICULAR_TACHYCARDIA @ Unit1-Bed01: call 1 in queue [app worklist pushed]
-# [calls] dialling for PT6580/VENTRICULAR_TACHYCARDIA @ Unit1-Bed01 (Critical, event daf16c2d…)
-# [calls] skip PT6581/ATRIAL_FIBRILLATION @ Unit1-Bed02: already acknowledged (event …)
+# [queued] PT6580/VENTRICULAR_TACHYCARDIA @ Unit1/Unit1-Bed01: call 1 in queue [app worklist pushed]
+# [calls] dialling for PT6580/VENTRICULAR_TACHYCARDIA @ Unit1/Unit1-Bed01 (Critical, event daf16c2d…)
+# [calls] skip PT6581/ATRIAL_FIBRILLATION @ Unit1/Unit1-Bed02: already acknowledged (event …)
 ```
 
 Inspect the queue itself (event ids only; the job payloads carry pseudonyms, never names):
@@ -1205,16 +1209,17 @@ cited individually. Full detail + verification commands:
 ### 6. Test the application
 
 ```bash
-$RMSAI pytest -q                        # full suite (needs the stores up; RESETS the live Neo4j, see below)
+$RMSAI pytest -q                        # full suite (needs the stores up; graph-wiping tests skip unless RMSAI_ALLOW_LIVE_GRAPH_RESET=1)
 $RMSAI pytest -q -m "not infra"         # offline only — no containers required
-$RMSAI pytest -q tests/test_criticality.py -k fp_override    # one file / one test
+$RMSAI pytest -q tests/test_criticality.py -k vitals_driven   # one file / one test
 make test                               # host equivalent (uv run pytest -q)
 ```
 
 > **Known failures:** the offline run (`-m "not infra"`) has 3 pre-existing failures, all STT
 > configuration tests unrelated to recent work (`test_speech_check` ×1, `test_voice_config` ×2;
-> checked 2026-10-12). The full suite has also shown `test_episodic_gate` ×3 and
-> `test_graph_templates` ×3. Treat a run as green when only those fail.
+> checked 2026-10-13). The full suite has also shown `test_episodic_gate` ×3 (and
+> `test_graph_templates` ×3 when run with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`). Treat a run as green
+> when only those fail.
 
 Then the end-to-end smoke test — generate, classify, publish, consume, alert, acknowledge:
 
@@ -1231,14 +1236,15 @@ docker compose -f infra/docker-compose.yml logs --tail=40 consumer
 > `--checkpoint external/ecgtranscnn/models/noise_robust/best_model.pt` explicitly.
 
 Expect every event persisted. Gated events are dispatched with a reason: `ok`, `vitals_alert (…)`
-(rhythm unconfirmed, vitals carry it) or `fp_override (…)` (confident NORMAL_SINUS, but vitals warrant
+(rhythm unconfirmed, vitals carry it; worklist only unless `outbound.call_vitals_alerts: true`) or `fp_override (…)` (confident NORMAL_SINUS, but vitals warrant
 it; common on simulator data). The rest are skipped with a reason: `false_positive` (confident
 NORMAL_SINUS), `low_confidence_arrhythmia (…)` or `below_threshold (…)`. Per-subsystem harnesses are listed under
 [Other CLI harnesses](#other-cli-harnesses-per-subsystem).
 
-> ⚠️ **`tests/test_graph_templates.py`, `tests/test_orchestrator.py`, and `cli.kb_eval` call
-> `reset_all()` on the LIVE Neo4j.** Running the full suite wipes ingested events — that is why
-> `cli.kb_dump --list` can suddenly return `[]`. Recover by re-running step 3 then step 4.
+> ⚠️ **`cli.kb_eval` (without `--no-seed`) calls `reset_all()` on the LIVE Neo4j** — that is why
+> `cli.kb_dump --list` can suddenly return `[]`. The pytest tests that do the same
+> (`test_graph_templates.py`, `test_orchestrator.py`, `test_outbound_flow.py`, …) are skipped unless
+> `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`. Recover by re-running step 3 then step 4.
 
 ### 7. Debug and inspect
 
@@ -1329,7 +1335,7 @@ companion app `http://localhost:8080/`.
 | `[errno 98] address already in use` on 8080/8081 | a host-run gateway/worker is still up — host networking shares the port space |
 | worker retry-loops on `:7880` | the LiveKit **server** isn't running, not a worker bug |
 | `collection … has vector dim 384, but embedder … 256` | `--embedder` doesn't match what built the collection |
-| `cli.kb_dump --list` returns `[]` | the graph was wiped (full pytest run / `cli.kb_eval`) — redo steps 3–4 |
+| `cli.kb_dump --list` returns `[]` | the graph was wiped (`cli.kb_eval`, or pytest with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`) — redo steps 3–4 |
 | worklist empty | nothing is pending: every event was acknowledged or withheld (check the **Events** tab or `cli.events --status pending`). Also: `DISPATCH_MODE` without `app`, or a `[poison] … non-pseudonym patient ref` (curate real ECG with `cli.real_samples`) |
 | worklist empty, chat silent | worker not dispatched into the room → `cli.dispatch --all-inbox`; or a cached `app.js` (check the on-screen build tag) |
 | selecting a row is silent | the header shows 🔇 **Voice muted** (the default in `app+call` mode); click it. The worker logs `selected event … (app voice muted: not spoken)` |
@@ -1403,7 +1409,7 @@ Commands use `uv run` on the host; inside Docker, swap `uv run python -m` for `$
 
 ### A. Speech engines (TTS and STT)
 
-**What is configured** (`.env`; the voice worker also prints the backends at startup):
+**What is configured** (`.env`; the voice worker prints a warning at startup only for `stub` or `elevenlabs` backends):
 
 | Setting | Engine | Current demo value |
 |---|---|---|
@@ -1412,7 +1418,7 @@ Commands use `uv run` on the host; inside Docker, swap `uv run python -m` for `$
 | `WHISPER_MODEL` | faster-whisper model | `base.en` (`tiny.en` is faster, `small.en` more accurate) |
 | `STT_LANGUAGE` | pinned language, `auto` to detect | `en` |
 | `TTS_BACKEND` | `piper` (local) / `elevenlabs` (cloud) / `stub` | `elevenlabs` |
-| `ELEVENLABS_VOICE_ID` | ElevenLabs voice | `pNInz6obpgDQGcFmaJgB` (Adam, premade) |
+| `ELEVENLABS_VOICE_ID` | ElevenLabs voice | `dkgmw0OA1OcdgloYE1O0` (code default `pNInz6obpgDQGcFmaJgB`, Adam, premade) |
 | `ELEVENLABS_TTS_MODEL` | ElevenLabs TTS model | `eleven_flash_v2` |
 | `PIPER_VOICE_PATH` | Piper `.onnx` voice file | `~/.local/share/piper/en_US-lessac-medium.onnx` |
 
@@ -1648,8 +1654,9 @@ $RMSAI cli.model_perf --since 1h --dataset mitbih
   Simulator and device files carry only their device id.
 - **Time filter:** `cli.model_perf --since` uses **when the relay processed** an event
   (`processed_at`), not the recording time, which for public datasets can be decades old. The app's
-  Events tab and `cli.events --since` filter on the **event time** (re-anchored to the ingest time
-  for public datasets; see `cli.ingest`).
+  Events tab and `cli.events --since` filter on the **event time** (the HDF5 time by default; with
+  `INGEST_TIME_ANCHOR=now` or `cli.ingest --time-anchor now`, each patient's events are shifted so
+  the latest is the ingest time).
 - **Model mixing:** metrics are grouped **per model**; a summary mixing two models describes neither.
 - **Production data has no ground truth.** The performance view is for curated, labelled sets
   (`cli.real_samples`); on unlabelled data it says so.
@@ -1665,9 +1672,10 @@ $RMSAI cli.model_perf --since 1h --dataset mitbih
 ## Local-only mode (no LiveKit Cloud, no phone carrier)
 
 The default, and the quickest demo: the local LiveKit, the companion app, WebRTC calls, a simulated
-caller and simulated SMS. Telephony settings can stay in `.env`; only four explicit options use
-them, and none is a default: `--transport sip`, `--caller livekit`, `--notifier signalwire`, and
-`cli.sip_setup` / `make phone-up`.
+caller and simulated SMS. Telephony settings can stay in `.env`; only these use them:
+`cli.consume --caller livekit` with `--transport sip` (the CLI's default transport, so pass
+`--transport webrtc` to stay local; the consumer container does), `cli.call --caller livekit`,
+`--notifier signalwire`, and `cli.sip_setup` / `make phone-up`.
 
 | Path | Goes to |
 |---|---|
@@ -1694,7 +1702,7 @@ Ringing a real phone always needs the setup below. Runbook: [`DEMO.md`](DEMO.md#
 > - **Outbound:** verified end to end after the SignalWire account left trial mode. The phone
 >   rang, the PIN was heard and accepted, and the agent answered (ElevenLabs STT/TTS). Event-driven
 >   calls run with `make demo-phone-up`.
-> - **Call-in:** provisioned; not yet tested live.
+> - **Call-in:** verified (2026-10-13): dial the SignalWire number from an allowed mobile → PIN → Q&A.
 > - **SMS fallback:** SignalWire (`--notifier signalwire`, the `make demo-phone-up` default) texts
 >   from the same number that rings; a test SMS to a +91 mobile was delivered (2026-10-13). A
 >   simulated SMS is logged and recorded as `sms_simulated`, never as delivered.
@@ -1734,8 +1742,8 @@ What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-
    dialling …` / `skip …`, `[call] … -> answered`.
 1. At dial time it **stages the spoken alert in Redis** under the room name
    `rmsai-outbound-<event_id>` (TTL 15 min). `cli.call` uses `rmsai-call-<id>` and stages nothing.
-2. It **dispatches** `rmsai-agent-phone` into that room on the telephony LiveKit, before dialling, so
-   the agent is waiting when the phone answers.
+2. It **dispatches** `rmsai-agent-phone` into that room on the telephony LiveKit, in parallel with
+   the dial (the agent joins in 1-4 s while the phone rings), so it is there when the phone answers.
 3. It **dials**: `CreateSIPParticipant` on the telephony LiveKit with `LIVEKIT_SIP_TRUNK_ID`, the
    number (`--number`, else the hospital's `outbound.call_number`), caller ID `outbound.from`,
    `ringing_timeout=SIP_RINGING_TIMEOUT_S`, `max_call_duration=SIP_MAX_CALL_DURATION_S` and
@@ -1830,7 +1838,7 @@ destination's carriers; SignalWire's **Logs → Messages** shows the delivery st
 
 | Symptom | Fix |
 |---|---|
-| Events alert in the app but **no phone rings**; the consumer log shows `call answered` plus a `[webrtc] join room` token | the consumer runs `--transport webrtc` (the `make demo-up` default; the "answer" is simulated). Use `make demo-phone-up` |
+| Events alert in the app but **no phone rings**; the consumer log shows `-> answered (attempts 1)` plus a `[webrtc] join room to take the call:` token | the consumer runs `--transport webrtc` (the `make demo-up` default; the "answer" is simulated). Use `make demo-phone-up` |
 | The call connects but the caller hears **silence**; the phone worker logs `ElevenLabs API error 401 … quota` | the ElevenLabs credits ran out (TTS and STT both fail). Top up, or switch `TTS_BACKEND`/`STT_BACKEND` to piper/whisper |
 | `SIP dial failed … 603: Decline`, no call in SignalWire's voice log | SignalWire refused the INVITE: trial mode, wrong Domain App credentials, or a blocked destination country. See [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md#troubleshooting) |
 | `make phone-logs`: `registered worker … "url": "ws://localhost:7880"` | phone worker on the wrong server (fixed in `fe89028`); update and `make phone-down phone-up` |
@@ -1893,11 +1901,11 @@ infra/docker-compose.yml stop voice-worker` — so the two don't both join the s
 
 ```bash
 uv run pytest -q -m "not infra"        # offline: no containers needed
-uv run pytest -q                       # full suite: needs the stores, and resets the live Neo4j
+uv run pytest -q                       # full suite: needs the stores; graph-wiping tests skip unless RMSAI_ALLOW_LIVE_GRAPH_RESET=1
 ```
 
 Known pre-existing failures: 3 offline (speech_check, voice_config), plus episodic_gate and
-graph_templates on the full suite; see [§6 of the runbook](#6-test-the-application).
+graph_templates (only with RMSAI_ALLOW_LIVE_GRAPH_RESET=1) on the full suite; see [§6 of the runbook](#6-test-the-application).
 
 ### 2. Generate synthetic events (vendored simulator)
 
@@ -1937,9 +1945,9 @@ scanned/image PDF is rejected with that diagnosis rather than silently indexed a
 **The embedder must match the collection.** Vectors are only comparable within one embedder
 (hashing=256-dim / BGE=384-dim), so every KB path defaults `--embedder` to **`EMBEDDER`** from
 `.env` — set it once and `kb_upload`, `consume`, `outbound`, `text_chat`, and the voice worker all
-agree. A mismatch is refused with the fix rather than corrupting the store. (`cli.kb_vector` is the
-exception: it defaults to `auto`, which prefers BGE and falls back to hashing offline — pass
-`--embedder` explicitly there if `EMBEDDER=hashing`.)
+agree. A mismatch is refused with the fix rather than corrupting the store. (`cli.kb_vector` and `cli.kb`
+are the exceptions: they default to `auto`, which prefers BGE and falls back to hashing offline —
+pass `--embedder` explicitly there if `EMBEDDER=hashing`; `cli.kb_eval` defaults to `hashing`.)
 
 Each upload is **copied into a managed folder** (`KB_UPLOAD_DIR`, default `data/kb_uploads/`) and a
 corpus rebuild re-indexes it automatically, so uploads survive `index --reset`:
@@ -2144,8 +2152,8 @@ uv run python -m cli.text_chat             # inbound query by text (PIN-gated, K
 uv run python -m cli.voice                 # offline typed-text voice demo (no audio hardware)
 uv run python -m cli.consume --help        # bus consumer: --channel/--caller/--transport/--notifier/--number
 uv run python -m cli.outbound --file <f>.h5  # single-file outbound loop (--no-answer, --fail-delivery, --notifier)
-uv run python -m cli.gateway               # companion-app gateway (serves app/, /session, /ack, /events, /artifact*)
-uv run python -m cli.inbox_publish --dry-run   # push a worklist message into the inbox room
+uv run python -m cli.gateway               # companion-app gateway (serves app/, /session, /ack, /events, /event-info, /metrics, /artifact*)
+uv run python -m cli.inbox_publish --dry-run   # print a worklist message + token roundtrip (drop --dry-run to push it)
 uv run python -m cli.voice_worker dev      # agent worker; VOICE_WORKER_ROLE=phone for the phone worker
 uv run python -m cli.livekit_token --room <r>  # join token for a room (playground testing)
 uv run python -m cli.dispatch --all-inbox  # re-dispatch the agent into agent-less inbox rooms

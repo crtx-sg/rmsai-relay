@@ -7,9 +7,10 @@ needs none of this; see [README § Local-only mode](README.md#local-only-mode-no
 How it works and why: [README § Phone calls](README.md#phone-calls-livekit-cloud--signalwire)
 and the call-flow diagrams in [ARCHITECTURE.md](ARCHITECTURE.md#telephony-split--phone-calls-on-a-second-livekit).
 
-> **Status (2026-10-01):** everything below is configured on the dev accounts. The first outbound
-> test returned `603 Decline` from SignalWire with no call in SignalWire's log; the leading suspect
-> is trial mode (see [Troubleshooting](#troubleshooting)). Call-in has not been tested yet.
+> **Status (2026-10-13):** verified end to end on the dev accounts: outbound alert calls (PIN →
+> alert → Q&A → acknowledge), inbound call-in, and the SignalWire SMS fallback (a test SMS to a +91
+> number was delivered). The account had to leave trial mode, and `SIGNALWIRE_SIP_USER` must be set
+> (step 4), or SignalWire answers `603 Decline`.
 
 ---
 
@@ -67,7 +68,8 @@ not put the Cloud values there: that would move the app inbox and WebRTC to Clou
 ## 2. SignalWire account basics
 
 1. **API** (dashboard → API): note the **Space URL** (`<space>.signalwire.com`), **Project ID** and an
-   **API token**. The relay uses these for read-only checks; the call path itself doesn't.
+   **API token**. The relay uses these to send the SMS fallback (`--notifier signalwire`) and for read-only checks;
+the SIP call path itself doesn't.
 2. **Phone Numbers → Buy**: one voice-capable number. It becomes the hospital's `outbound.from` (the
    caller ID and the trunk's number).
 
@@ -111,7 +113,7 @@ sections:
     - connect:
         answer_on_bridge: true
         from: "+1XXXXXXXXXX"
-        to: "%{call.to.replace(/^sip:/i, '').replace(/@.*/, '')}"
+        to: "%{call.headers.find(h => h.name.toLowerCase() == 'x-rmsai-to').value}"
 
 # inbound: your number → LiveKit
 version: 1.0.0
@@ -121,7 +123,10 @@ sections:
         to: "sip:%{call.to}@<id>.sip.livekit.cloud;transport=tcp"
 ```
 
-- **outbound:** `to` strips the SIP URI LiveKit dialled down to the bare phone number.
+- **outbound:** with `SIGNALWIRE_SIP_USER` set (step 4; required, since a SignalWire SIP address
+  routes only its own user part), LiveKit dials `sip:<user>@<domain>` and sends the callee in an
+  `X-RMSAI-To` header, which `to` reads. Without it the script uses `call.to`, which SignalWire
+  declines with 603. Set step 4's values, then re-run `--swml`.
   `answer_on_bridge: true` keeps the LiveKit leg ringing until the phone actually answers, which is
   what makes "answered" mean answered on the relay side.
 - **inbound:** forwards the call to LiveKit Cloud, keeping the dialled number (`call.to`) as the SIP
@@ -142,6 +147,7 @@ LiveKit sends its outbound calls to a **SIP domain** that runs the outbound scri
 
 ```bash
 SIGNALWIRE_SIP_DOMAIN=<space>-public.dapp.signalwire.com
+SIGNALWIRE_SIP_USER=rmsai          # the SIP address's user part (sip:rmsai@…); the callee rides in X-RMSAI-To
 SIGNALWIRE_SIP_USERNAME=rmsai
 SIGNALWIRE_SIP_PASSWORD=<password>
 ```
@@ -168,7 +174,7 @@ This creates, in the LiveKit Cloud project:
 | inbound trunk | `rmsai-inbound-signalwire` | accepts calls *to* `outbound.from`, only *from* the allowed callers (`outbound.inbound_allowed_numbers`, else `outbound.call_number`). Never created with an empty allow-list |
 | dispatch rule | `rmsai-inbound-dispatch-signalwire` | one `rmsai-call-…` room per inbound call; dispatches `rmsai-agent-phone` |
 
-It ends with `LIVEKIT_SIP_TRUNK_ID=ST_…`. Paste that line into `.env`. **The dry run can't print it,
+It prints `LIVEKIT_SIP_TRUNK_ID=ST_…` (under "Set in .env:", before the SignalWire checklist). Paste that line into `.env`. **The dry run can't print it,
 because the id doesn't exist until the trunk is created.** Re-running updates the same objects and
 prints the same id.
 
@@ -197,8 +203,8 @@ uv run python -m cli.call --caller livekit
 # B. Inbound: call your SignalWire number from an allowed phone → PIN prompt → ask a question
 
 # C. Event-driven alert call (the consumer container on the SIP transport)
-#    hospital file: outbound.dispatch_mode: app+call ; then (Compose reads this from the shell, not .env):
-CONSUME_ARGS="--channel voice --caller livekit --transport sip --number +XXXXXXXXXXX" make docker-up
+#    hospital file: outbound.dispatch_mode: app+call (the default); then the consumer on SIP + the phone worker:
+make demo-phone-up        # = CONSUME_ARGS="--channel voice --caller livekit --transport sip --notifier signalwire" + --profile telephony
 #    publish an event (DEMO.md §5); the phone rings → PIN → spoken alert → Q&A → "acknowledge"
 ```
 
@@ -210,7 +216,7 @@ CONSUME_ARGS="--channel voice --caller livekit --transport sip --number +XXXXXXX
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `SIP dial failed … sip status: 603: Decline`, and **no call in SignalWire's voice log** | SignalWire refused the INVITE before running the script: trial mode (Domain App traffic blocked), wrong SIP credentials, or a blocked destination country | 1) Dashboard: no trial banner; add a card + fund. 2) Re-set the SIP address password, update `SIGNALWIRE_SIP_PASSWORD`, re-run `cli.sip_setup`. 3) Permit the destination country (international) |
+| `SIP dial failed … sip status: 603: Decline`, and **no call in SignalWire's voice log** | SignalWire refused the INVITE before running the script: `SIGNALWIRE_SIP_USER` unset (LiveKit dialled `sip:<number>@domain`), trial mode (Domain App traffic blocked), wrong SIP credentials, or a blocked destination country | 0) Set `SIGNALWIRE_SIP_USER` (step 4) and re-paste `--swml`'s outbound script. 1) Dashboard: no trial banner; add a card + fund. 2) Re-set the SIP address password, update `SIGNALWIRE_SIP_PASSWORD`, re-run `cli.sip_setup`. 3) Permit the destination country (international) |
 | A call **in** SignalWire's log that failed after starting | the script ran but `connect` failed (destination, caller ID, balance) | read the log entry's error in the SignalWire dashboard |
 | `registered worker … "url": "ws://localhost:7880"` for `rmsai-agent-phone` | phone worker on the wrong server | update past `fe89028`, `make phone-down phone-up` |
 | `VOICE_WORKER_ROLE=phone needs LIVEKIT_SIP_URL` | split mode not configured | step 1 |
@@ -218,7 +224,7 @@ CONSUME_ARGS="--channel voice --caller livekit --transport sip --number +XXXXXXX
 | `LIVEKIT_SIP_TRUNK_ID is not set` / `outcome=invalid` | step 6's id not pasted | step 6 |
 | `cli.call` answered but silence | the phone worker isn't running, or isn't on Cloud | step 7 |
 | Calling in rings out / is rejected | the number has no `rmsai-inbound` resource, or the caller isn't allowed | step 5; `outbound.inbound_allowed_numbers` in the hospital file |
-| `no destination: pass --number or set OUTBOUND_CALL_NUMBER` | a real call with no destination | set `outbound.call_number` in the hospital file, or pass `--number` |
+| `no destination: pass --number or set OUTBOUND_CALL_NUMBER …` | a real call with no destination | set `outbound.call_number` in the hospital file, or pass `--number` (`--to` for `cli.call`) |
 
 **Note on retries:** a SIP error such as `603` counts as "no answer", so the relay retries
 (`OUTBOUND_MAX_RETRIES`, every `OUTBOUND_RETRY_DELAY_S`) and then, with `--notifier signalwire`, sends

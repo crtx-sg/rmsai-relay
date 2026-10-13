@@ -155,7 +155,7 @@ flowchart TD
     C -- yes --> K{"crit ≥ OUTBOUND_MIN_CRITICALITY?"}
     V --> K
     K -- no --> D4["drop: below_threshold"]
-    K -- yes --> P["Alert the clinician<br/>worklist row + call per DISPATCH_MODE"]
+    K -- yes --> P["Alert the clinician<br/>worklist row + call per DISPATCH_MODE<br/>(vitals_alert: worklist only unless outbound.call_vitals_alerts)"]
 
     W["Vitals override<br/><code>MEWS ≥ CRITICALITY_MEWS_THRESHOLD</code><br/>or any vital deteriorating"] -.->|re-bases the alert| V
 
@@ -176,6 +176,8 @@ configured (`--notifier signalwire`; `simulated` sends nothing and records `sms_
 (`run_outbound(fallback_notifier=)`): delivered keeps the event `reported`, otherwise it is
 `notify_failed`. SIP dials go to the telephony LiveKit (`Config.telephony()`; see *Telephony split*
 below). The event is **always persisted**; the gate governs the *dispatch* (worklist push and call).
+A `vitals_alert` (uncertain rhythm, vitals carry it) goes to the worklist only, unless the hospital
+sets `outbound.call_vitals_alerts: true` (default `false`).
 
 **Phone calls queue; the worklist doesn't wait.** On the SIP transport a call blocks until the
 clinician hangs up, so the consumer no longer places it inline. It pushes every gated event to the
@@ -359,16 +361,17 @@ never auto-joining.
 
 A second instance with `VOICE_WORKER_ROLE=phone` (compose `voice-worker-phone`, `make phone-up`)
 registers on the **telephony** LiveKit as `rmsai-agent-phone` (`worker_config`). There, the SIP
-**callee dispatch rule** created by `cli.sip_setup` requests it into every inbound call room. It is
+**individual dispatch rule** created by `cli.sip_setup` requests it into every inbound call room. It is
 refused in single-server mode, where the app worker already handles calls.
 
 **Process vs. job — what is "always on" and what is per-event.** Distinguish the two:
 - The **worker process** (`cli.voice_worker`) is the single, **always-on** host. It registers once and
   waits; it is *not* per-event and only dies if you stop/restart it.
 - A **job** is one room's session. When a room is dispatched, the framework runs that room's
-  `_entrypoint` in its **own prewarmed subprocess** (`_prewarm` warms the VAD + Ollama there); the job
-  joins the room, runs the loop, and exits when the room ends. This subprocess join is what pays the
-  ~40s cold-start.
+  `_entrypoint` in its **own prewarmed subprocess** (`_prewarm` loads the VAD, embedder,
+  de-identifier and STT/TTS there and warms Ollama; one idle process is kept ready,
+  `IDLE_PROCESSES`); the job joins the room, runs the loop, and exits when the room ends. A second
+  concurrent call takes the slower cold path while a replacement process warms.
 
 A job's lifespan therefore equals its **room's** lifespan:
 
@@ -376,7 +379,7 @@ A job's lifespan therefore equals its **room's** lifespan:
 |---|---|
 | **per-event outbound** (`rmsai-outbound-<event_id>`) — ephemeral, closes when the call ends | **created on dispatch, torn down when the call ends** |
 | **companion-app inbox** (`rmsai-inbox-<hospital>`) — persistent while the app is connected | **long-lived** — stays as long as the inbox room/app session exists |
-| **phone call** (`rmsai-call-<id>`: on-demand `cli.call`, or an inbound call-in `rmsai-call-<CallSid>`) — ephemeral | **created on dispatch, ends with the call** |
+| **phone call** (`rmsai-call-<id>`: on-demand `cli.call`, or an inbound call-in `rmsai-call-…` named by the dispatch rule) — ephemeral | **created on dispatch, ends with the call** |
 
 So there is **no separate "shared worker" vs "per-event worker" as distinct processes** — it is one
 always-on process running many jobs (one per room), each in its own subprocess: an ephemeral room ⇒ a
@@ -391,7 +394,7 @@ On joining, `_entrypoint` reads the room name and picks the Handler:
 - otherwise → inbound KB Q&A. This is what `rmsai-call-*` phone rooms get: no staged alert ⇒ the
   PIN-gated Q&A handler.
 
-That third bullet is the seam where the **event pipeline hands off to the conversation pipeline**: the
+That second bullet is the seam where the **event pipeline hands off to the conversation pipeline**: the
 consumer placed the call and wrote *why* into Redis; the worker — a **separate process** — reads that
 alert on join and voices the right event.
 
@@ -443,7 +446,8 @@ room for both transports.)
 
 **The companion app is entirely single-room** — it uses only `rmsai-inbox-<hospital_id>` for
 everything, and never joins a per-event room:
-- **Worklist (listing)** is **push-only**: the consumer publishes each critical event as a data
+- **Worklist (listing)** is **pushed live, plus a backfill on login** (`POST /events`,
+  `status=pending`): the consumer publishes each critical event as a data
   message *directly via the LiveKit server API* (`live/inbox.py`, `RoomService.send_data`) — pushed by
   the **relay, not the voice worker**, so the list populates even with no worker present. The app's
   `DataReceived` handler feeds a pure reducer (`applyMessage`) that builds the table; acknowledgements
@@ -506,13 +510,15 @@ shared ── Redis (call queue, staged outbound alerts) · Neo4j · Qdrant · a
 
 - **`Config.telephony()`** is the config the call paths use (`cli.consume --transport sip`,
   `cli.call`, `cli.outbound --caller livekit`, the phone worker). In split mode it swaps only the
-  LiveKit URL/key/secret, the agent name, the worker health port, and disables inbox auto-redispatch.
+  LiveKit URL/key/secret, the agent name, the worker health port, clears the public URL, and
+  disables inbox auto-redispatch.
   With `LIVEKIT_SIP_URL` unset it returns the app config unchanged (single server, as before).
 - **The phone worker** (`VOICE_WORKER_ROLE=phone`) also pins `LIVEKIT_URL/API_KEY/API_SECRET` in its
   environment before starting livekit-agents' CLI, because that CLI reads those variables and would
   otherwise register on the local server (`.env`'s values) regardless of `WorkerOptions`.
 - **`cli.sip_setup`** provisions the Cloud side idempotently by name, and prints the SignalWire-side
-  scripts (`--swml`).
+  scripts (`--swml`; with `SIGNALWIRE_SIP_USER` set, the outbound script dials the `X-RMSAI-To`
+  header).
 
 | Carrier | Outbound | Inbound | LiveKit objects |
 |---|---|---|---|
@@ -535,10 +541,10 @@ sequenceDiagram
     C->>R: stage OutboundAlert (key = room rmsai-outbound-EVENT_ID, TTL 15 min)
     C->>LK: CreateAgentDispatch(room, rmsai-agent-phone)
     LK->>W: job: join room
-    W->>R: peek staged alert, select OutboundHandler
-    C->>LK: CreateSIPParticipant(trunk = LIVEKIT_SIP_TRUNK_ID, to = number, from = OUTBOUND_FROM, ringing_timeout, max_call_duration, wait_until_answered)
+    W->>R: read + consume (delete) staged alert, select OutboundHandler
+    C->>LK: CreateSIPParticipant(trunk = LIVEKIT_SIP_TRUNK_ID, to = number (request URI sip:SIGNALWIRE_SIP_USER@domain, callee in X-RMSAI-To), from = OUTBOUND_FROM, ringing_timeout, max_call_duration, wait_until_answered)
     LK->>SW: SIP INVITE over TLS + digest auth
-    SW->>SW: SWML connect (answer_on_bridge: true)
+    SW->>SW: SWML connect to X-RMSAI-To (answer_on_bridge: true)
     SW->>P: PSTN call rings
     P-->>SW: answers
     SW-->>LK: 200 OK (only now: answer_on_bridge)
@@ -549,7 +555,8 @@ sequenceDiagram
 ```
 
 On failure, `CreateSIPParticipant` raises: a ring timeout, busy, or any SIP error such as
-`603 Decline` all map to **NO_ANSWER**. `place_with_retries` re-dials `OUTBOUND_MAX_RETRIES` times,
+`603 Decline` all map to **NO_ANSWER**. `place_with_retries` re-dials `OUTBOUND_MAX_RETRIES` times (each retry re-stages the alert and
+re-dispatches the agent, since the first agent consumed it),
 `OUTBOUND_RETRY_DELAY_S` apart; then `run_outbound`'s `fallback_notifier` texts the alert (`reported`
 if delivered, else `notify_failed`). A missing trunk or an invalid number is **INVALID**: fail fast,
 no retry, no SMS. `cli.call` is the same dial into `rmsai-call-<id>` with nothing staged, so the
@@ -572,10 +579,11 @@ sequenceDiagram
     W->>P: PIN prompt → grounded answers
 ```
 
-- **Status (2026-10-12):** SignalWire outbound works end to end (the account had to leave trial
-  mode, which caused the earlier `603 Decline`): the phone rings, the PIN is accepted, the alert is
-  spoken and Q&A works, with ElevenLabs STT/TTS. `make demo-phone-up` runs event-driven calls
-  through the queue. Call-in is provisioned but not yet tested. The SMS fallback sends through
+- **Status (2026-10-13):** SignalWire outbound works end to end (the account had to leave trial
+  mode, and the dial must target the SIP address user, `SIGNALWIRE_SIP_USER`, or SignalWire answers
+  `603 Decline`): the phone rings, the PIN is accepted, the alert is spoken and Q&A works, with
+  ElevenLabs STT/TTS. `make demo-phone-up` runs event-driven calls through the queue. Call-in is
+  verified (2026-10-13). The SMS fallback sends through
   SignalWire, from the number that rang (a test SMS to +91 was delivered on 2026-10-13).
 - **Set-up:** [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md) (SignalWire) and README § Phone calls.
 

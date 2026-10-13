@@ -9,7 +9,7 @@ Phase 9 companion-app server-side glue.
 
 - `gateway.py` — FastAPI gateway (run via `cli.gateway`): `POST /session` (PIN → inbox join token;
   dispatches the agent into the inbox room; returns `LIVEKIT_PUBLIC_URL` or `LIVEKIT_URL`),
-  `POST /ack`, `POST /artifact-link`, `GET /artifact/{token}`; serves `app/`.
+  `POST /ack`, `POST /artifact-link`, `GET /artifact/{token}`, `POST /events` (event history and the worklist backfill; `kb.graph.events.list_events`), `POST /event-info` (one event's why/source/outcome), `POST /metrics` (perf view); serves `app/`.
 
 Phone calls never touch `live/`: in the telephony split, the inbox and the app stay on the local
 LiveKit.

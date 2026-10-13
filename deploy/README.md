@@ -9,7 +9,7 @@ secrets live on the public box.
 ```
 remote browser ──HTTP(S)──> PUBLIC EDGE (nginx, deploy/edge)          [public host]
                               ├─ /                       = static app (app/)
-                              └─ /session /ack /artifact /artifact-link ─► on-prem GATEWAY :8080   [private]
+                              └─ /session /ack /artifact /artifact-link /events /event-info /metrics ─► on-prem GATEWAY :8080   [private]
                  ──WebRTC───► LiveKit (public ingress, wss + TURN)                  [private/on-prem]
 ```
 
@@ -36,11 +36,14 @@ cp .env.example .env            # defaults are fine for localhost
 docker compose up -d
 ```
 
-Browse **http://localhost:8081/** → PIN → the worklist, acknowledge, inline artifacts, and chat all
-work **through the edge** (static + proxy).
+Browse **http://localhost:8081/** → PIN → the worklist, the Events tab, acknowledge, inline
+artifacts, and chat all work **through the edge** (static + proxy). The edge's port defaults to 8081,
+which is also a host-run voice worker's health port (`LIVEKIT_WORKER_HTTP_PORT`; the Docker worker
+uses 8091): if you run the worker on the host, set `EDGE_HTTP_PORT` to another port.
 
-The proxy rule covers `/session`, `/ack`, `/artifact/<token>` and `/artifact-link` (the app's
-click-to-open call), in both the HTTP and the commented TLS block. Quick endpoint check:
+The proxy rule covers `/session`, `/ack`, `/artifact/<token>`, `/artifact-link` (the app's
+click-to-open call), `/events` (worklist backfill on login + the Events tab), `/event-info` (the
+detail panel) and `/metrics`, in both the HTTP and the commented TLS block. Quick endpoint check:
 
 ```bash
 curl -s localhost:8081/session -X POST -H 'content-type: application/json' -d '{"pin":"1234"}'

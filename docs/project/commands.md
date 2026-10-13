@@ -89,7 +89,7 @@ docker compose -f infra/docker-compose.yml run --rm tools \
   a performance estimate.
 - With no `ECG_CHECKPOINTS` / `--checkpoint`, `pick` cannot check the manifest, and `cli.ingest`
   then runs the ECG **stub**.
-- Other options: `--dataset mitbih vfdb`, `--seed 42`, `--out data/real`.
+- Other options: `--dataset mitbih vfdb`, `--seed 42`, `--out data/real`, `--checkpoint <pt…>` (checkpoint(s) to check the package manifest against; default `ECG_CHECKPOINTS`).
 
 ### `uv run python -m cli.real_samples pick --pick VENTRICULAR_TACHYCARDIA:3,VENTRICULAR_FIBRILLATION:2,ATRIAL_FIBRILLATION:3,PVC:2,LBBB:1,PAC:2,NORMAL_SINUS:2`
 

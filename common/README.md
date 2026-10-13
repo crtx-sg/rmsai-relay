@@ -9,4 +9,5 @@ Frozen contracts and cross-cutting utilities. Phase 0.
 - `providers.py`: `LLMProvider`: `EchoLLM` (default), `OllamaProvider`, `AnthropicProvider`, `OpenAICompatProvider` (Gemini, OpenAI and any OpenAI-compatible API), `DeidentifyingLLM` (wraps every one); `get_llm_provider` picks by `LLM_PROVIDER`.
 - `deid.py`: de-identification (regex / presidio). `redacting_logger.py`, `audit.py`, `tracing.py`.
 - `notify.py`: SMS: `SimulatedSmsNotifier` (sends nothing, recorded as `sms_simulated`), `SignalWireSmsNotifier` (REST over stdlib HTTP).
+- `vitals_format.py`: display precision for spoken/shown vitals.
 - `criticality.py`, `protocol_loader.py` + `protocols/`, `ecg_model_stub.py`, `bed_assignment.py`, `patient_history.py`, `preflight.py`.

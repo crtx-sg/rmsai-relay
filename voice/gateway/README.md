@@ -76,6 +76,6 @@ dispatches the phone agent; with no staged alert the worker runs the PIN-gated Q
 ## Status (2026-10-13)
 
 - **Outbound:** verified end to end (event-driven via `make demo-phone-up`).
-- **Call-in:** provisioned; not yet tested live.
+- **Call-in:** verified (2026-10-13): dial the SignalWire number from an allowed mobile → PIN → Q&A.
 - **SMS fallback:** SignalWire; a test SMS to a +91 mobile was delivered.
 - **Not implemented or tested here:** other fronts (Jambonz, Asterisk, a self-hosted `livekit-sip`).

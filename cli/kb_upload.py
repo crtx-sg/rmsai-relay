@@ -22,9 +22,9 @@ PDF pages are cited individually — an answer sourced from `af_sop.pdf#page 3` 
 which page to turn to. Scanned/image PDFs have no extractable text and are rejected with that
 diagnosis rather than being indexed as empty.
 
-⚠ An uploaded document lives **only in the vector store** — it is not copied into `docs/`. So
-`cli.kb_vector index --reset`, which recreates the collection from `docs/`, drops every upload.
-Keep the source files in a folder you can re-run `--dir` against after any rebuild.
+Each upload is also copied into the managed folder `KB_UPLOAD_DIR` (default `data/kb_uploads/`),
+and `cli.kb_vector index --reset` re-indexes that folder along with `docs/`, so a rebuild keeps
+every upload. `--no-keep` indexes a file in place without the copy (a rebuild then drops it).
 """
 
 from __future__ import annotations
