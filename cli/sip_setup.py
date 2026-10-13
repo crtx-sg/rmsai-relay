@@ -1,15 +1,13 @@
-"""Provision the phone-call SIP objects on the telephony LiveKit (inbound trunk + callee rule).
+"""Provision the phone-call SIP objects on the telephony LiveKit (SignalWire trunks + call-in rule).
 
   python -m cli.sip_setup --dry-run     # print the plan (secrets and numbers masked), touch nothing
   python -m cli.sip_setup               # create or update in place
-  python -m cli.sip_setup --twiml       # Twilio: the TwiML Bin to paste (contains the password)
-  python -m cli.sip_setup --swml        # SignalWire: the outbound + inbound SWML scripts to paste
+  python -m cli.sip_setup --swml        # the outbound + inbound SWML scripts to paste into SignalWire
 
 Targets `config.telephony()`: the LiveKit Cloud project when `LIVEKIT_SIP_URL` is set, else
-`LIVEKIT_URL`. Idempotent: re-running updates the same objects by name. Calls are bridged in by
-Twilio Programmable Voice (`<Dial><Sip>`, works on a trial account), or over a native SignalWire SIP
-trunk (`TELEPHONY_CARRIER=signalwire`); see voice/sip_setup.py. The carrier-side steps are printed
-as a checklist; this CLI cannot set them.
+`LIVEKIT_URL`. Idempotent: re-running updates the same objects by name. Calls run over a native
+SignalWire SIP trunk both ways; see voice/sip_setup.py. The SignalWire-side steps are printed as a
+checklist; this CLI cannot set them.
 """
 
 from __future__ import annotations
@@ -23,7 +21,6 @@ from common.config import DEFAULT, Config
 from voice.sip_setup import (
     SipPlan,
     apply,
-    inbound_twiml_bin,
     plan,
     redacted,
     swml_inbound,
@@ -31,7 +28,7 @@ from voice.sip_setup import (
 )
 
 
-def _signalwire_checklist(config: Config) -> str:
+def _checklist(config: Config) -> str:
     return (
         "SignalWire side (dashboard):\n"
         "  1. Phone Numbers: buy a number = OUTBOUND_FROM\n"
@@ -43,24 +40,6 @@ def _signalwire_checklist(config: Config) -> str:
         "     → Phone Numbers → your number → Edit Settings → Assign Resource → rmsai-inbound\n"
         "  Test: `python -m cli.call --caller livekit` rings OUTBOUND_CALL_NUMBER; calling your "
         "SignalWire number reaches the agent's PIN prompt\n"
-        "  (the phone worker must be running: `make phone-up`)"
-    )
-
-
-def _checklist(config: Config) -> str:
-    if config.telephony_carrier == "signalwire":
-        return _signalwire_checklist(config)
-    return _twilio_checklist(config)
-
-
-def _twilio_checklist(config: Config) -> str:
-    return (
-        "Twilio side (console):\n"
-        "  1. Verified Caller IDs: your mobile (trial accounts only call/text verified numbers)\n"
-        "  2. TwiML Bins → create 'rmsai-inbound' with the XML from `python -m cli.sip_setup --twiml`\n"
-        "  3. Phone Numbers → your number (OUTBOUND_FROM) → Voice → 'A call comes in' = TwiML Bin "
-        "rmsai-inbound\n"
-        "  Test: call your Twilio number from your mobile → trial notice → PIN prompt from the agent\n"
         "  (the phone worker must be running: `make phone-up`)"
     )
 
@@ -82,10 +61,8 @@ def main(argv: list[str] | None = None, *, config: Config = DEFAULT) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dry-run", action="store_true", help="print the plan; change nothing")
-    parser.add_argument("--twiml", action="store_true",
-                        help="Twilio: print the inbound TwiML Bin (unmasked: it carries the SIP password)")
     parser.add_argument("--swml", action="store_true",
-                        help="SignalWire: print the outbound and inbound SWML scripts to paste")
+                        help="print the outbound and inbound SWML scripts to paste into SignalWire")
     args = parser.parse_args(argv)
 
     if args.swml:
@@ -98,17 +75,6 @@ def main(argv: list[str] | None = None, *, config: Config = DEFAULT) -> int:
         print(swml_outbound(config))
         print("# --- inbound: SWML script assigned to your SignalWire number ---")
         print(swml_inbound(config))
-        return 0
-
-    if args.twiml:
-        missing = [k for k, v in (("LIVEKIT_SIP_URI", config.livekit_sip_uri),
-                                  ("LIVEKIT_SIP_INBOUND_USERNAME", config.sip_inbound_username),
-                                  ("LIVEKIT_SIP_INBOUND_PASSWORD", config.sip_inbound_password))
-                   if not v]
-        if missing:
-            print(f"[sip_setup] set {', '.join(missing)} first", file=sys.stderr)
-            return 2
-        print(inbound_twiml_bin(config))
         return 0
 
     try:
@@ -147,7 +113,7 @@ def main(argv: list[str] | None = None, *, config: Config = DEFAULT) -> int:
         return 1
     for action in res.actions:
         print(f"[sip_setup] {action}")
-    if res.outbound_trunk_id:  # SignalWire, or Twilio's paid Elastic SIP path
+    if res.outbound_trunk_id:
         print(f"\nSet in .env:\n  LIVEKIT_SIP_TRUNK_ID={res.outbound_trunk_id}")
     print(_checklist(config))
     return 0

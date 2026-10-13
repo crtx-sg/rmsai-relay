@@ -4,9 +4,8 @@ Step-by-step guide to real phone calls: the relay calls a clinician's phone abou
 and a clinician calls in to ask about events. Everything else (the app, WebRTC calls, local demos)
 needs none of this; see [README § Local-only mode](README.md#local-only-mode-no-livekit-cloud-no-phone-carrier).
 
-How it works and why: [README § Phone calls](README.md#phone-calls-livekit-cloud--signalwire-or-twilio)
+How it works and why: [README § Phone calls](README.md#phone-calls-livekit-cloud--signalwire)
 and the call-flow diagrams in [ARCHITECTURE.md](ARCHITECTURE.md#telephony-split--phone-calls-on-a-second-livekit).
-The Twilio alternative is covered there too; this guide is SignalWire only.
 
 > **Status (2026-10-01):** everything below is configured on the dev accounts. The first outbound
 > test returned `603 Decline` from SignalWire with no call in SignalWire's log; the leading suspect
@@ -241,9 +240,3 @@ empty log after a `603` means the INVITE was refused at the door.
 - **SMS:** the SMS fallback sends through SignalWire's Messages API (`--notifier signalwire`, the
   `make demo-phone-up` default) from the same number, which must be SMS-capable (Phone Numbers →
   your number). Sent texts appear under **Logs → Messages**.
-
-## Switching carriers
-
-`TELEPHONY_CARRIER=twilio|signalwire` selects which objects `cli.sip_setup` creates. Each carrier's
-objects have their own names, so both can exist in one LiveKit project. Only the trunk id in
-`LIVEKIT_SIP_TRUNK_ID` decides which carrier outbound calls use.

@@ -9,7 +9,7 @@ phase plan, contracts, and config keys see [README.md](README.md).
 *The diagram is generated: `uv run python docs/make_arch_diagram.py` rewrites `architecture.png`.*
 
 **What runs where:** the Docker services, the cloud services (LiveKit Cloud, SignalWire,
-ElevenLabs, Twilio), the Presidio guard in front of cloud TTS, and the numbered event → worklist →
+ElevenLabs), the Presidio guard in front of cloud TTS, and the numbered event → worklist →
 phone-call path.
 
 ![rmsai-relay deployment: Docker services, cloud services and call flow](deployment.png)
@@ -172,7 +172,7 @@ version of this flow, with the measured per-vital numbers behind the override, i
 If the gate passes, the consumer dispatches per `DISPATCH_MODE`: it pushes the event to the
 **companion app** worklist (`app`), and/or places a **LiveKit** outbound call (SIP phone or WebRTC
 room) or sends an SMS (`call`). If a voice call goes unanswered after its retries and a notifier is
-configured (`--notifier signalwire|twilio`; `simulated` sends nothing and records `sms_simulated`), the alert is texted instead
+configured (`--notifier signalwire`; `simulated` sends nothing and records `sms_simulated`), the alert is texted instead
 (`run_outbound(fallback_notifier=)`): delivered keeps the event `reported`, otherwise it is
 `notify_failed`. SIP dials go to the telephony LiveKit (`Config.telephony()`; see *Telephony split*
 below). The event is **always persisted**; the gate governs the *dispatch* (worklist push and call).
@@ -246,8 +246,7 @@ clinical condition link is always the prediction.
 
 Runs in the **LiveKit agent worker** (`voice/livekit_agent.py`). LiveKit carries the audio (WebRTC
 for browser, SIP for phone). In split mode (`LIVEKIT_SIP_URL` set) phone rooms live on a second
-LiveKit (LiveKit Cloud), reached through the carrier: a native SignalWire SIP trunk, or Twilio's
-TwiML `<Dial><Sip>` bridge. Browser and inbox rooms stay on the local server. One turn, in order:
+LiveKit (LiveKit Cloud), reached through the carrier, a native SignalWire SIP trunk. Browser and inbox rooms stay on the local server. One turn, in order:
 
 1. **Caller speaks** → audio streams into the LiveKit room.
 2. **STT** (speech → text). Swappable via `STT_BACKEND`: self-hosted **faster-whisper** (`base.en`)
@@ -430,9 +429,7 @@ run the same worker loop — they differ only in **who initiates the audio conne
 - **SIP (phone) — relay-initiated.** Selected by `cli.consume --transport sip` (the compose consumer
   defaults to `webrtc`). The dial and the agent dispatch both go to `config.telephony()`. The dial is
   `LiveKitCaller.place_call` → `create_outbound_sip_call` through the outbound trunk
-  (`LIVEKIT_SIP_TRUNK_ID`): **SignalWire** (`TELEPHONY_CARRIER=signalwire`) or Twilio's paid Elastic
-  SIP path. A Twilio trial has no outbound trunk (its Calls-API bridge is deferred). The destination
-  is `--number`, else `OUTBOUND_CALL_NUMBER`. Full flow: *Telephony split* below.
+  (`LIVEKIT_SIP_TRUNK_ID`) to **SignalWire**. The destination is `--number`, else `OUTBOUND_CALL_NUMBER`. Full flow: *Telephony split* below.
 - **WebRTC (browser) — clinician-initiated.** The relay only **stages the alert and prints a join
   link/token** (or pushes it to the app); the clinician clicks and joins from a browser. No dialing,
   no trunk, no phone (`caller_factory` is a no-op `SimulatedCaller`).
@@ -503,7 +500,7 @@ chat and WebRTC stay local:
 ```
 local LiveKit ── app inbox (rmsai-inbox-*) · WebRTC outbound rooms ── worker rmsai-agent
 LiveKit Cloud ── phone rooms (rmsai-outbound-*, rmsai-call-*) ─────── worker rmsai-agent-phone
-                 ▲ carrier: SignalWire (native SIP trunk) | Twilio (TwiML bridge / paid Elastic SIP)
+                 ▲ carrier: SignalWire (native SIP trunk both ways; also the SMS fallback)
 shared ── Redis (call queue, staged outbound alerts) · Neo4j · Qdrant · audit log
 ```
 
@@ -514,14 +511,12 @@ shared ── Redis (call queue, staged outbound alerts) · Neo4j · Qdrant · a
 - **The phone worker** (`VOICE_WORKER_ROLE=phone`) also pins `LIVEKIT_URL/API_KEY/API_SECRET` in its
   environment before starting livekit-agents' CLI, because that CLI reads those variables and would
   otherwise register on the local server (`.env`'s values) regardless of `WorkerOptions`.
-- **`cli.sip_setup`** provisions the Cloud side per `TELEPHONY_CARRIER`, idempotently by name, and
-  prints the carrier-side script (`--swml` for SignalWire, `--twiml` for Twilio).
+- **`cli.sip_setup`** provisions the Cloud side idempotently by name, and prints the SignalWire-side
+  scripts (`--swml`).
 
 | Carrier | Outbound | Inbound | LiveKit objects |
 |---|---|---|---|
 | **SignalWire** | outbound trunk → Domain App (TLS, digest) → SWML `connect` → PSTN | number's SWML `connect` → inbound trunk (number + allowed callers) | `rmsai-outbound-signalwire`, `rmsai-inbound-signalwire`, individual rule `rmsai-inbound-dispatch-signalwire` |
-| **Twilio trial** | — (Calls-API bridge deferred) | TwiML Bin `<Dial><Sip>` (digest) → inbound trunk → callee rule | `rmsai-inbound-twilio`, callee rule `rmsai-inbound-dispatch` |
-| **Twilio paid** | outbound trunk → Elastic SIP termination | as trial | + `rmsai-outbound-twilio` |
 
 #### Outbound alert — SignalWire
 
@@ -566,17 +561,12 @@ worker runs the PIN-gated Q&A.
 sequenceDiagram
     autonumber
     participant P as caller's phone (allowed number)
-    participant CR as carrier number
+    participant CR as SignalWire number
     participant LK as LiveKit Cloud
     participant W as phone worker (local)
     P->>CR: call
-    alt SignalWire
-        CR->>LK: SWML connect → sip:OUR_NUMBER@LIVEKIT_SIP_URI (transport=tcp)
-        LK->>LK: inbound trunk matches called number + allowed caller<br/>individual rule → new room rmsai-call-…
-    else Twilio
-        CR->>LK: TwiML Dial/Sip → sip:rmsai-call-CALLSID@LIVEKIT_SIP_URI (digest)
-        LK->>LK: inbound trunk checks digest + allowed caller<br/>callee rule → room rmsai-call-CALLSID
-    end
+    CR->>LK: SWML connect → sip:OUR_NUMBER@LIVEKIT_SIP_URI (transport=tcp)
+    LK->>LK: inbound trunk matches called number + allowed caller<br/>individual rule → new room rmsai-call-…
     LK->>W: rule dispatches rmsai-agent-phone
     W->>W: no staged alert → PIN-gated Q&A handler
     W->>P: PIN prompt → grounded answers
@@ -585,8 +575,8 @@ sequenceDiagram
 - **Status (2026-10-12):** SignalWire outbound works end to end (the account had to leave trial
   mode, which caused the earlier `603 Decline`): the phone rings, the PIN is accepted, the alert is
   spoken and Q&A works, with ElevenLabs STT/TTS. `make demo-phone-up` runs event-driven calls
-  through the queue. SignalWire call-in is not yet tested. Twilio call-in is set up; its outbound
-  bridge is deferred. The SMS fallback sends through SignalWire, from the number that rang.
+  through the queue. Call-in is provisioned but not yet tested. The SMS fallback sends through
+  SignalWire, from the number that rang (a test SMS to +91 was delivered on 2026-10-13).
 - **Set-up:** [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md) (SignalWire) and README § Phone calls.
 
 ## The models, at a glance
@@ -604,8 +594,8 @@ sequenceDiagram
 | **De-identification** | Presidio (NER) or regex | `common/deid.py` | `DEID_BACKEND` |
 | **Graph DB** | Neo4j | `kb/graph/` | — |
 | **Vector DB** | Qdrant | `kb/vector/` | — |
-| **Voice transport** | local LiveKit (app + WebRTC); a second LiveKit (Cloud) for SIP in split mode; carrier SignalWire (SIP trunk, SWML) or Twilio (TwiML bridge / Elastic SIP) | `voice/`, `voice/sip_setup.py` | `LIVEKIT_SIP_URL` |
-| **SMS** | SignalWire or Twilio Messages REST (Twilio-compatible, stdlib HTTP) | `common/notify.py` | `--notifier` |
+| **Voice transport** | local LiveKit (app + WebRTC); a second LiveKit (Cloud) for SIP in split mode; carrier SignalWire (SIP trunk, SWML) | `voice/`, `voice/sip_setup.py` | `LIVEKIT_SIP_URL` |
+| **SMS** | SignalWire Messages REST API (stdlib HTTP) | `common/notify.py` | `--notifier` |
 
 ---
 
@@ -614,7 +604,7 @@ sequenceDiagram
 - **Self-hosted for PHI, cloud only for synthetic.** Everything that touches real patient data runs
   locally (whisper, piper, ollama, neo4j, qdrant). Cloud models (ElevenLabs, Anthropic/OpenAI) are
   permitted only on synthetic data (hard rules #4/#5). Transport vendors (LiveKit Cloud, the
-  phone carrier — SignalWire or Twilio — and its SMS) carry live call audio and alert text: in development only synthetic or public data
+  phone carrier SignalWire, for calls and SMS) carry live call audio and alert text: in development only synthetic or public data
   may flow through them, and production needs BAAs or self-hosted SIP.
 - **One interface per model.** `ECGModel`, `LLMProvider`, `STTAdapter`/`TTSAdapter`, `EventStore`,
   etc. Any single model swaps by config without touching the flow.

@@ -30,7 +30,7 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
    and a Qdrant vector store (clinical-protocol passages + report narrative).
 4. **Report** critical events to the companion-app worklist (all at once) and/or by an outbound
    voice call: WebRTC, or a real phone call via LiveKit Cloud + SignalWire
-   ([Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)). Phone calls queue in Redis and
+   ([Phone calls](#phone-calls-livekit-cloud--signalwire)). Phone calls queue in Redis and
    go out one at a time, most severe first. A text message is the alternative channel, and the SMS
    fallback covers a call that goes unanswered.
 5. **Converse** — after a shared-PIN gate, the clinician asks follow-up questions answered from the
@@ -193,7 +193,7 @@ A few design points that aren't obvious from the diagram:
 | LLM | behind `LLMProvider`: `EchoLLM` (offline, code default), **Ollama** (self-hosted, `LLM_PROVIDER=ollama`), or a cloud model for synthetic data: Anthropic Claude, Google Gemini, or any OpenAI-compatible API ([Choosing the LLM](#choosing-the-llm)) |
 | De-identification | Regex (default) or **Presidio** + spaCy (`deid` extra), fail-closed before any model call |
 | Speech | self-hosted **faster-whisper** STT + **Piper** TTS + **silero** VAD; optional cloud **ElevenLabs** STT/TTS for benchmarking on synthetic data only (`STT_BACKEND`/`TTS_BACKEND=elevenlabs`). Code default is `stub` |
-| Telephony / WebRTC | local **LiveKit** (agent worker, app inbox, browser WebRTC); optional second **LiveKit Cloud** project for phone calls (`LIVEKIT_SIP_URL`) with a carrier: **SignalWire** (native SIP trunk, SWML) or **Twilio** (Programmable Voice TwiML `<Dial><Sip>` bridge, or paid Elastic SIP); **Twilio SMS** over stdlib HTTP |
+| Telephony / WebRTC | local **LiveKit** (agent worker, app inbox, browser WebRTC); optional second **LiveKit Cloud** project for phone calls (`LIVEKIT_SIP_URL`) with **SignalWire** as the carrier (native SIP trunk both ways, SWML) and its SMS API for the missed-call fallback, over stdlib HTTP |
 | EMR | **HAPI FHIR** (`emr/`, stub → real in Phase 8) |
 | Orchestration | LangGraph-style turn orchestrator (`orchestrator/`) |
 | Infra | Docker Compose (`infra/docker-compose.yml`) — **everything runs as a service**: the backing stores (neo4j, qdrant, redis, livekit; profiled: mosquitto, model-server/ollama, hapi-fhir) *and* the app itself (consumer, voice-worker, gateway; profiled: `tools` + `real-samples` one-shot runners, `telephony` phone worker) from one shared image (`infra/Dockerfile`) with the source bind-mounted |
@@ -223,7 +223,7 @@ LiveKit Cloud + SignalWire setup.
 Built leaf-up, one phase at a time; a phase is "done" only when its CLI test passes. Phases **0–8
 are complete** and the companion app (9a) ships; live media (9b) is deferred. Outbound phone calls
 over SignalWire work end to end; phone call-in is still being tested (see
-[Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)).
+[Phone calls](#phone-calls-livekit-cloud--signalwire)).
 
 | Phase | Scope | Status |
 |-------|-------|--------|
@@ -245,10 +245,7 @@ over SignalWire work end to end; phone call-in is still being tested (see
 | — | Real-ECG model `real_v2` (13-class 5-fold ensemble) + ecg_sigma HDF5 reader | ✅ |
 | — | Held-out real-ECG curation (`cli.real_samples`, `PT9#####` pseudonyms) + `cli.ingest --dir` scoring | ✅ |
 | T1–T4 | Telephony split: `Config.telephony()`, `cli.sip_setup`, call paths → telephony LiveKit, phone worker (`make phone-up`) | ✅ |
-| T5 | SMS fallback on unanswered calls; working Twilio SMS (`--notifier twilio`) | ✅ |
-| T6 | SignalWire SMS fallback (`--notifier signalwire`, same number as the calls; `make demo-phone-up` default); a simulated SMS is recorded as `sms_simulated`, never as delivered | ✅ code · 🔄 live delivery to +91 |
-| T2b | Twilio trial bridge: inbound trunk + callee rule + TwiML Bin (`cli.sip_setup --twiml`) | ✅ code · 🔄 live call-in test |
-| T3b | Outbound phone alerts via the Twilio Calls API (Twilio trial only) | 🔜 deferred: SignalWire covers outbound |
+| T5 | SMS fallback on unanswered calls: SignalWire (`--notifier signalwire`, same number as the calls; `make demo-phone-up` default); a simulated SMS is recorded as `sms_simulated`, never as delivered | ✅ test SMS delivered to +91 (2026-10-13) |
 | C1–C2 | SignalWire carrier: `TELEPHONY_CARRIER`, native SIP trunk via `cli.sip_setup` (`--swml`) | ✅ outbound verified live (2026-10-12) · 🔄 call-in |
 | — | Call queue: app gets every event at once, calls one at a time in severity order, skip-if-acked, restart-safe (`orchestrator/call_queue.py`, `make demo-phone-up`) | ✅ |
 | — | Phone worker registered on the wrong LiveKit (agents CLI env override) | ✅ fixed (`fe89028`) |
@@ -463,7 +460,7 @@ but only as a logged override.
 | `HOSPITAL_ID` | *(empty)* | scopes the app inbox room `rmsai-inbox-<id>` and selects `config/hospitals/<id>.yaml` |
 | `OUTBOUND_ENABLED` / `OUTBOUND_MIN_CRITICALITY` *(hospital)* | `false` / `High` | read by `should_call`, but **`cli.consume` and `cli.outbound` force `OUTBOUND_ENABLED` on** and take the threshold from `--min-criticality` (default `High`). The gate governs both the worklist push and the call |
 | `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` *(hospital)* | `0.60` | a non-normal (arrhythmia) event is only asserted *as a rhythm* if confidence is at/above this. Below it: withheld when the vitals are calm, or re-based as a **vitals-driven alert** (rhythm marked unconfirmed) when they aren't. Vitals never raise the bar |
-| `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` *(hospital)* | — | destination (the default for `--number` on `cli.consume`/`cli.outbound`, and for `cli.call`) + caller ID (the carrier's number; also the Twilio SMS sender). A real call/SMS with neither `--number` nor `OUTBOUND_CALL_NUMBER` refuses to start; a placeholder is used only for simulated runs |
+| `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` *(hospital)* | — | destination (the default for `--number` on `cli.consume`/`cli.outbound`, and for `cli.call`) + caller ID (the SignalWire number; also the SMS sender). A real call/SMS with neither `--number` nor `OUTBOUND_CALL_NUMBER` refuses to start; a placeholder is used only for simulated runs |
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` *(hospital)* | `2` / `30` | no-answer retry policy |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
@@ -478,9 +475,8 @@ but only as a logged override.
 | `STT_BACKEND` / `TTS_BACKEND` | `stub` / `stub` | `whisper`/`piper` (self-hosted) or `elevenlabs` (cloud, synthetic data only) |
 | `LIVEKIT_AGENT_NAME` / `LIVEKIT_CALL_ROOM_PREFIX` | `rmsai-agent` / `rmsai-call-` | the app worker's dispatch name; prefix of on-demand and inbound phone-call rooms |
 | `SIP_RINGING_TIMEOUT_S` / `SIP_MAX_CALL_DURATION_S` | `30` / `600` | call safety rails (unanswered ring time; hard cap on a call) |
-| `LIVEKIT_SIP_*`, `TWILIO_SIP_*`, `LIVEKIT_SIP_TRUNK_ID` | *(empty)* | phone calls (who may call in is per hospital: `outbound.inbound_allowed_numbers`): see [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio) |
+| `LIVEKIT_SIP_*`, `LIVEKIT_SIP_TRUNK_ID` | *(empty)* | phone calls (who may call in is per hospital: `outbound.inbound_allowed_numbers`): see [Phone calls](#phone-calls-livekit-cloud--signalwire) |
 | `SIGNALWIRE_SPACE` / `_PROJECT_ID` / `_API_TOKEN` | *(empty)* | real SMS via SignalWire (`--notifier signalwire`), sent from `outbound.from`: the text channel and the unanswered-call fallback |
-| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | *(empty)* | real SMS via Twilio (`--notifier twilio`; needs a Twilio number as `outbound.from`) |
 | `EPISODIC_RECALL` | `false` | condition free-text answers on recalled cross-session past Q&A; off keeps answers grounded in the live KB + current conversation only |
 | `STT_LANGUAGE` | `en` | force the STT language (ISO 639-1); blank/`auto` = auto-detect. Stops Whisper/Scribe "hearing" other languages on noise |
 | `ECG_CHECKPOINTS` | *(unset)* | ECG classifier checkpoint path(s), comma- or space-separated. Unset ⇒ the deterministic stub. Several paths load as one softmax-averaging ensemble; `external/ecgtranscnn/models/real_v2/fold{0..4}.pt` is the recommended artifact (run `make weights` first). Head, lead order and filter preset are read from the checkpoint |
@@ -776,7 +772,7 @@ gateway with `GATEWAY_PORT`). `--profile telemetry` adds mosquitto. The legacy `
 still selects those three. Two more profiles hold on-demand services: `--profile tools` (`tools`,
 the one-shot CLI runner, and `real-samples`, see [real ECG](#curating-a-held-out-real-ecg-demo-set-clireal_samples);
 `docker compose run` enables it implicitly) and `--profile telephony` (`voice-worker-phone`, started
-by `make phone-up`, see [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)).
+by `make phone-up`, see [Phone calls](#phone-calls-livekit-cloud--signalwire)).
 
 #### Two `.env` readers
 
@@ -876,7 +872,7 @@ uv sync --extra pdf                                   # PDF uploads for cli.kb_u
 `INBOX_SPEAK_ON_SELECT` (voice the event on worklist select), `LIVEKIT_URL` / `LIVEKIT_API_KEY` /
 `LIVEKIT_API_SECRET` + `HOSPITAL_ID` for the app and WebRTC calls (`HOSPITAL_ID` also selects
 `config/hospitals/<id>.yaml`: dispatch mode, phone numbers, alert thresholds), and the
-telephony block for phone calls (see [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)).
+telephony block for phone calls (see [Phone calls](#phone-calls-livekit-cloud--signalwire)).
 
 **Swappable speech backends.** STT/TTS sit behind `STTAdapter`/`TTSAdapter` (`voice/adapters.py`),
 selected by `STT_BACKEND` / `TTS_BACKEND`: self-hosted **whisper**/**piper** (set them explicitly;
@@ -1669,7 +1665,7 @@ $RMSAI cli.model_perf --since 1h --dataset mitbih
 
 The default, and the quickest demo: the local LiveKit, the companion app, WebRTC calls, a simulated
 caller and simulated SMS. Telephony settings can stay in `.env`; only four explicit options use
-them, and none is a default: `--transport sip`, `--caller livekit`, `--notifier signalwire|twilio`, and
+them, and none is a default: `--transport sip`, `--caller livekit`, `--notifier signalwire`, and
 `cli.sip_setup` / `make phone-up`.
 
 | Path | Goes to |
@@ -1691,16 +1687,16 @@ To make it impossible to reach Cloud, comment out `LIVEKIT_SIP_URL`: that forces
 the phone worker refuses to start, and SIP paths fail against the local LiveKit (no SIP service).
 Ringing a real phone always needs the setup below. Runbook: [`DEMO.md`](DEMO.md#local-only-mode-no-livekit-cloud-no-phone-carrier).
 
-## Phone calls (LiveKit Cloud + SignalWire or Twilio)
+## Phone calls (LiveKit Cloud + SignalWire)
 
-> **Status (2026-10-12):**
-> - **SignalWire:** outbound verified end to end after the account left trial mode. The phone
+> **Status (2026-10-13):**
+> - **Outbound:** verified end to end after the SignalWire account left trial mode. The phone
 >   rang, the PIN was heard and accepted, and the agent answered (ElevenLabs STT/TTS). Event-driven
->   calls run with `make demo-phone-up`. Call-in not yet tested.
-> - **Twilio trial bridge:** call-in set up; event-driven outbound not implemented.
-> - **SMS fallback:** SignalWire (`--notifier signalwire`, the `make demo-phone-up` default) sends
->   from the same number that rings; Twilio SMS also works. A simulated SMS is logged and recorded
->   as `sms_simulated`, never as delivered.
+>   calls run with `make demo-phone-up`.
+> - **Call-in:** provisioned; not yet tested live.
+> - **SMS fallback:** SignalWire (`--notifier signalwire`, the `make demo-phone-up` default) texts
+>   from the same number that rings; a test SMS to a +91 mobile was delivered (2026-10-13). A
+>   simulated SMS is logged and recorded as `sms_simulated`, never as delivered.
 >
 > WebRTC calls and every [local-only mode](#local-only-mode-no-livekit-cloud-no-phone-carrier) need none of
 > this. Step-by-step SignalWire setup: **[`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)**.
@@ -1713,16 +1709,16 @@ URL/key/secret, the agent name (`rmsai-agent-phone`), the worker health port (`8
 inbox auto-redispatch. Redis (staged alerts), the stores and the numbers are shared. With
 `LIVEKIT_SIP_URL` unset everything behaves as a single server, exactly as before.
 
-**The carrier** (`TELEPHONY_CARRIER`) decides how calls cross between the phone network and LiveKit
-Cloud. `cli.sip_setup` creates the matching LiveKit objects:
+**The carrier is SignalWire**, a native SIP trunk both ways (`TELEPHONY_CARRIER=signalwire`, the
+default and only value):
 
-| | **SignalWire** (`signalwire`), recommended | **Twilio** (`twilio`, the default) |
-|---|---|---|
-| Mechanism | native SIP trunk both ways | trial: Programmable Voice TwiML `<Dial><Sip>` bridge into LiveKit; paid: Elastic SIP trunk |
-| Outbound (relay → phone) | LiveKit outbound trunk → SignalWire Domain App → SWML `connect` → PSTN | trial: 🔜 not implemented (Calls API bridge); paid: LiveKit outbound trunk → Elastic SIP |
-| Inbound (phone → agent) | number's SWML `connect` → LiveKit inbound trunk (matched on the number + allowed callers) → individual rule | TwiML Bin → inbound trunk (digest auth + allowed callers) → callee rule |
-| Account requirement | **out of trial mode** (trial blocks Domain App traffic) | trial works for inbound; only Verified Caller IDs |
-| Carrier-side config | two SWML scripts (`cli.sip_setup --swml`) + a Domain App SIP address | a TwiML Bin (`cli.sip_setup --twiml`) on the number |
+| | SignalWire |
+|---|---|
+| Outbound (relay → phone) | LiveKit outbound trunk → SignalWire Domain App → SWML `connect` → PSTN |
+| Inbound (phone → agent) | number's SWML `connect` → LiveKit inbound trunk (matched on the number + allowed callers) → individual rule |
+| SMS | SignalWire Messages API, from the same number |
+| Account requirement | **out of trial mode** (trial blocks Domain App traffic) |
+| Carrier-side config | two SWML scripts (`cli.sip_setup --swml`) + a Domain App SIP address |
 
 ### Call flow (technical)
 
@@ -1743,28 +1739,25 @@ What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-
    number (`--number`, else the hospital's `outbound.call_number`), caller ID `outbound.from`,
    `ringing_timeout=SIP_RINGING_TIMEOUT_S`, `max_call_duration=SIP_MAX_CALL_DURATION_S` and
    `wait_until_answered`.
-4. LiveKit Cloud sends the SIP INVITE through the outbound trunk.
-   - **SignalWire:** over TLS with digest credentials to the Domain App, whose SWML `connect`
-     (`answer_on_bridge`) rings the PSTN number and answers the LiveKit leg only when the phone does.
-   - **Twilio (paid):** the same, through Elastic SIP termination.
+4. LiveKit Cloud sends the SIP INVITE through the outbound trunk, over TLS with digest credentials
+   to the Domain App, whose SWML `connect` (`answer_on_bridge`) rings the PSTN number and answers
+   the LiveKit leg only when the phone does.
 5. **Answered:** the phone joins the room as a participant. The worker finds the staged alert
    (`OutboundHandler`): PIN, then the spoken alert, then grounded Q&A (wake word), then
-   "acknowledge" sets the event `acknowledged`.
-6. **Not answered, or a SIP error** (any failure, including `603`, counts as no answer): the relay
-   retries `OUTBOUND_MAX_RETRIES` times, `OUTBOUND_RETRY_DELAY_S` apart. Then, with
-   `--notifier signalwire` (the `make demo-phone-up` default) or `twilio`, it texts the alert
-   (status stays `reported` if delivered, else `notify_failed`). With the default `simulated`
-   nothing is sent: the log says `[sms] SIMULATED, not sent` and the event records
-   `sms_simulated` / `notify_failed`. An invalid or unset trunk or number fails fast with no retry.
+   "acknowledge" sets the event `acknowledged`. "This event" in a question means the called event.
+6. **Not answered, or a SIP error** (any failure, including `408` or `603`, counts as no answer):
+   the relay re-stages the alert, re-dispatches the agent and retries `OUTBOUND_MAX_RETRIES` times,
+   `OUTBOUND_RETRY_DELAY_S` apart. Then, with `--notifier signalwire` (the `make demo-phone-up`
+   default), it texts the alert (status stays `reported` if delivered, else `notify_failed`). With
+   the default `simulated` nothing is sent: the log says `[sms] SIMULATED, not sent` and the event
+   records `sms_simulated` / `notify_failed`. An invalid or unset trunk or number fails fast with
+   no retry.
 
 **Inbound call-in:**
-1. **SignalWire:** the number's SWML `connect`s to `sip:<number>@<LIVEKIT_SIP_URI>;transport=tcp`. The
-   inbound trunk matches the called number, accepts only allowed callers, and the **individual** rule
-   creates a `rmsai-call-…` room per call.
-2. **Twilio:** the TwiML Bin dials `sip:rmsai-call-{{CallSid}}@<LIVEKIT_SIP_URI>` with digest
-   credentials. The **callee** rule names the room exactly that.
-3. Either way, the rule dispatches `rmsai-agent-phone`. The room has no staged alert, so the worker
-   runs the **PIN-gated Q&A** handler.
+1. The SignalWire number's SWML `connect`s to `sip:<number>@<LIVEKIT_SIP_URI>;transport=tcp`.
+2. The inbound trunk matches the called number and accepts only allowed callers; the
+   **individual** rule creates a `rmsai-call-…` room per call and dispatches `rmsai-agent-phone`.
+3. The room has no staged alert, so the worker runs the **PIN-gated Q&A** handler.
 
 ### Configure (`.env`)
 
@@ -1772,59 +1765,41 @@ What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-
 |---|---|
 | `LIVEKIT_SIP_URL` / `LIVEKIT_SIP_API_KEY` / `LIVEKIT_SIP_API_SECRET` | the LiveKit Cloud project (Settings → Keys) |
 | `LIVEKIT_SIP_URI` | its SIP host (Settings → SIP URI), without `sip:`, e.g. `abc123.sip.livekit.cloud` |
-| `TELEPHONY_CARRIER` | `signalwire` or `twilio` (default) |
-| `outbound.from` *(hospital file)* | the carrier's number (E.164): caller ID, trunk number, and the SMS sender |
+| `outbound.from` *(hospital file)* | the SignalWire number (E.164): caller ID, trunk number, and the SMS sender |
 | `outbound.call_number` / `outbound.inbound_allowed_numbers` *(hospital file)* | default call destination; who may call in (the explicit list, else the on-call number, else nobody) |
 | `LIVEKIT_SIP_TRUNK_ID` | the outbound trunk's `ST_…` id, printed by `cli.sip_setup` (not by `--dry-run`) |
 | `LIVEKIT_SIP_AGENT_NAME` / `LIVEKIT_SIP_WORKER_HTTP_PORT` | phone worker identity; defaults `rmsai-agent-phone` / `8082` |
-| **SignalWire:** `SIGNALWIRE_SPACE` / `_PROJECT_ID` / `_API_TOKEN` | API (read-only checks) |
-| **SignalWire:** `SIGNALWIRE_SIP_DOMAIN` / `_SIP_USERNAME` / `_SIP_PASSWORD` | the outbound script's Domain App SIP address and its credentials |
-| **Twilio:** `LIVEKIT_SIP_INBOUND_USERNAME` / `_PASSWORD` | digest credentials the TwiML presents to the inbound trunk |
-| **Twilio paid:** `TWILIO_SIP_TERMINATION_URI` / `_USERNAME` / `_PASSWORD` | Elastic SIP termination: all three or none |
-| **SignalWire:** `SIGNALWIRE_SPACE` / `_PROJECT_ID` / `_API_TOKEN` | also the SMS sender (`--notifier signalwire`); the number must be SMS-capable |
-| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | real SMS (`--notifier twilio`) |
+| `SIGNALWIRE_SPACE` / `_PROJECT_ID` / `_API_TOKEN` | the SignalWire API: SMS (`--notifier signalwire`) and read-only checks |
+| `SIGNALWIRE_SIP_DOMAIN` / `_SIP_USER` / `_SIP_USERNAME` / `_SIP_PASSWORD` | the outbound script's Domain App SIP address, its user part, and its credentials |
 
 ### Provision and connect
 
 ```bash
-uv run python -m cli.sip_setup --swml      # SignalWire: the two SWML scripts to paste
-uv run python -m cli.sip_setup --twiml     # Twilio: the TwiML Bin to paste (unmasked password)
+uv run python -m cli.sip_setup --swml      # the two SWML scripts to paste into SignalWire
 uv run python -m cli.sip_setup --dry-run   # masked plan; PROBLEM lines name any missing key (exit 2)
 uv run python -m cli.sip_setup             # create/update in the Cloud project; prints LIVEKIT_SIP_TRUNK_ID
 make phone-up && make phone-logs           # "registered worker" url must be the Cloud URL
 uv run python -m cli.call --caller livekit # first live test: rings the hospital's outbound.call_number
 ```
 
-| Carrier | LiveKit objects (idempotent, by name) |
-|---|---|
-| SignalWire | outbound trunk `rmsai-outbound-signalwire` (TLS, digest) · inbound trunk `rmsai-inbound-signalwire` · individual rule `rmsai-inbound-dispatch-signalwire` |
-| Twilio | inbound trunk `rmsai-inbound-twilio` (digest + allow-list) · callee rule `rmsai-inbound-dispatch` · outbound trunk `rmsai-outbound-twilio` (paid only) |
-
-Each carrier's objects have their own names, so both can exist in one project; the trunk id in
-`LIVEKIT_SIP_TRUNK_ID` decides which carrier outbound calls use. Carrier-side steps: SignalWire in
-[`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md); Twilio:
-1. **Verified Caller IDs**: add your mobile (trial accounts only call and text verified numbers).
-2. **TwiML Bins**: create `rmsai-inbound` with the `--twiml` output.
-3. **Phone Numbers → your number → Voice Configuration**: "A call comes in" = TwiML Bin
-   `rmsai-inbound`, then **Save configuration**. Saving the Bin alone attaches it to nothing.
+LiveKit objects (idempotent, by name): outbound trunk `rmsai-outbound-signalwire` (TLS, digest) ·
+inbound trunk `rmsai-inbound-signalwire` · individual rule `rmsai-inbound-dispatch-signalwire`.
+SignalWire-side steps: [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md).
 
 **Security.**
-- **SignalWire outbound:** the Domain App's credentials authorize calls on your balance; keep them in
-  `.env`.
-- **SignalWire inbound:** restricted by the called number and the allowed-caller list (SWML presents
-  no credentials).
-- **Twilio inbound:** digest credentials plus the allow-list; the TwiML Bin holds the password, so
-  treat it as a secret.
+- **Outbound:** the Domain App's credentials authorize calls on your balance; keep them in `.env`.
+- **Inbound:** restricted by the called number and the allowed-caller list (SWML presents no
+  credentials).
 - **Everywhere:** the worker's PIN gate applies on top.
 
-**PHI.** Call audio passes through the carrier and LiveKit Cloud (and ElevenLabs, if it is the
-STT/TTS backend), and the SMS fallback sends the pseudonymized alert text through SignalWire (or Twilio). Use
+**PHI.** Call audio passes through SignalWire and LiveKit Cloud (and ElevenLabs, if it is the
+STT/TTS backend), and the SMS fallback sends the pseudonymized alert text through SignalWire. Use
 synthetic or public data only until BAAs or self-hosted SIP are in place.
 
 ### SMS fallback
 
-`--notifier simulated|signalwire|twilio` on `cli.consume` and `cli.outbound` selects the SMS
-backend for the text channel **and** for voice calls that go unanswered after retries.
+`--notifier simulated|signalwire` on `cli.consume` and `cli.outbound` selects the SMS backend for
+the text channel **and** for voice calls that go unanswered after retries.
 
 **When it fires:** the call is not answered after `1 + max_retries` attempts (ring timeout, busy,
 or any SIP error such as `408` or `603`). An answered call, including one taken by voicemail,
@@ -1839,21 +1814,16 @@ sends no SMS. An invalid number or missing trunk fails fast and is never texted.
 | rejected / network error | `sms_failed` | `notify_failed` |
 | `--notifier simulated` (nothing sent; log: `[sms] SIMULATED, not sent`) | `sms_simulated` | `notify_failed` |
 
-Each attempt is audited as `sms_fallback`. Both real senders use the Twilio-compatible Messages
-REST API over stdlib HTTP (no SDK). A rejection returns "not delivered" with the provider's code
-logged and the number masked; it never crashes the event. A send logs
-`[sms] sent via signalwire to +9198…1234 (message <sid>)`.
+Each attempt is audited as `sms_fallback`. The SignalWire sender uses its REST Messages API over
+stdlib HTTP (no SDK) and needs `SIGNALWIRE_SPACE`, `SIGNALWIRE_PROJECT_ID`, `SIGNALWIRE_API_TOKEN`
+and an SMS-capable `outbound.from`. A send logs `[sms] sent via signalwire to +9198…1234 (message
+<sid>)`; a rejection returns "not delivered" with SignalWire's code logged and the number masked,
+and never crashes the event. `make demo-phone-up` uses it by default
+(`DEMO_PHONE_NOTIFIER=simulated` to send nothing). Each message costs about $0.18 per segment to
+India; an alert text is typically 2 segments.
 
-- **SignalWire** (`--notifier signalwire`, the default of `make demo-phone-up`; set
-  `DEMO_PHONE_NOTIFIER=simulated` to send nothing): needs `SIGNALWIRE_SPACE`,
-  `SIGNALWIRE_PROJECT_ID`, `SIGNALWIRE_API_TOKEN` and an SMS-capable `outbound.from`. The text
-  comes from the number that rang.
-- **Twilio** (`--notifier twilio`): needs `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and a Twilio
-  number as `outbound.from`, so it doesn't fit a SignalWire carrier setup. Trial accounts only text
-  verified numbers (`21608`).
-- **International delivery:** texts from a US number to non-US mobiles (e.g. India) may be
-  filtered by the destination's carriers; check the provider's message log when one doesn't
-  arrive.
+**International delivery:** texts from a US number to non-US mobiles may be filtered by the
+destination's carriers; SignalWire's **Logs → Messages** shows the delivery status.
 
 ### Troubleshooting
 
@@ -1863,14 +1833,12 @@ logged and the number masked; it never crashes the event. A send logs
 | The call connects but the caller hears **silence**; the phone worker logs `ElevenLabs API error 401 … quota` | the ElevenLabs credits ran out (TTS and STT both fail). Top up, or switch `TTS_BACKEND`/`STT_BACKEND` to piper/whisper |
 | `SIP dial failed … 603: Decline`, no call in SignalWire's voice log | SignalWire refused the INVITE: trial mode, wrong Domain App credentials, or a blocked destination country. See [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md#troubleshooting) |
 | `make phone-logs`: `registered worker … "url": "ws://localhost:7880"` | phone worker on the wrong server (fixed in `fe89028`); update and `make phone-down phone-up` |
-| The Twilio number plays Twilio's greeting ("Thanks for calling…") | the number's "A call comes in" isn't the TwiML Bin, or wasn't saved |
 | `[sip_setup] PROBLEM: …` | fill the key it names; re-run `--dry-run` |
 | `voice-worker-phone` exits: `VOICE_WORKER_ROLE=phone needs LIVEKIT_SIP_URL` | set the `LIVEKIT_SIP_*` keys, then `make phone-up` |
-| `[call] … outcome=invalid` / `LIVEKIT_SIP_TRUNK_ID is not set` | run `cli.sip_setup` (not `--dry-run`) and paste the id; on the Twilio trial there is no outbound trunk |
+| `[call] … outcome=invalid` / `LIVEKIT_SIP_TRUNK_ID is not set` | run `cli.sip_setup` (not `--dry-run`) and paste the id |
 | `no destination: pass --number or set OUTBOUND_CALL_NUMBER` | a real call/SMS needs a destination: pass `--number`, or set `outbound.call_number` in the hospital file |
-| `--notifier signalwire needs …` / `--notifier twilio needs …` | set the keys it names in `.env`, and `outbound.from` in the hospital file |
-| a call went unanswered but no SMS arrived | the consumer log says `[sms] SIMULATED, not sent` (the consumer runs without `--notifier`: use `make demo-phone-up`), `rejected (…)` (the provider's code), or `sent via signalwire` (then check SignalWire's message log; carrier filtering abroad) |
-| `[sms] … rejected (400) code 21608` | trial account: verify the destination number in Twilio |
+| `--notifier signalwire needs …` | set the keys it names in `.env`, and `outbound.from` in the hospital file |
+| a call went unanswered but no SMS arrived | the consumer log says `[sms] SIMULATED, not sent` (the consumer runs without `--notifier`: use `make demo-phone-up`), `rejected (…)` (SignalWire's code), or `sent via signalwire` (then check SignalWire's **Logs → Messages**; carrier filtering abroad) |
 
 ## End-to-end testing
 
@@ -2037,16 +2005,15 @@ then asks grounded questions.
 
 ```bash
 uv run python -m cli.call                    # simulated: whole path, no telephony
-uv run python -m cli.call --caller livekit   # real SIP via LIVEKIT_SIP_TRUNK_ID (SignalWire, or Twilio paid)
+uv run python -m cli.call --caller livekit   # real SIP via LIVEKIT_SIP_TRUNK_ID (SignalWire)
 uv run python -m cli.call --caller livekit --to +15551234567 --no-dispatch   # trunk test only
 ```
 
 In split mode (`LIVEKIT_SIP_URL` set) the dial and the dispatch go to the telephony LiveKit, so the
 phone worker must be running (`make phone-up`). `--caller livekit` needs an outbound trunk
-(`LIVEKIT_SIP_TRUNK_ID`) and a caller ID (the hospital's `outbound.from`). `cli.sip_setup` creates the trunk with
-`TELEPHONY_CARRIER=signalwire`, or on Twilio's paid Elastic SIP path. **A Twilio trial has no
-outbound trunk**: the call fails fast as invalid (exit 2). See
-[Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio). Exit code is 0 answered / 1 no-answer / 2 invalid.
+(`LIVEKIT_SIP_TRUNK_ID`) and a caller ID (the hospital's `outbound.from`). `cli.sip_setup` creates the
+trunk; without one the call fails fast as invalid (exit 2). See
+[Phone calls](#phone-calls-livekit-cloud--signalwire). Exit code is 0 answered / 1 no-answer / 2 invalid.
 
 ### 4. Bus path: producer → Redis Stream → consumer
 
@@ -2136,14 +2103,12 @@ uv run python -m cli.consume --channel voice --caller livekit --transport sip --
     --number +1XXXXXXXXXX --notifier signalwire
 ```
 
-Prerequisites (details in [Phone calls](#phone-calls-livekit-cloud--signalwire-or-twilio)):
+Prerequisites (details in [Phone calls](#phone-calls-livekit-cloud--signalwire)):
 - The hospital's `outbound.dispatch_mode` includes `call`. `outbound.enabled` does not matter (`cli.consume` forces it on).
 - A destination: `--number`, else the hospital's `outbound.call_number` (a real call refuses to start with neither).
 - In split mode, the phone worker is running (`make phone-up`), not the step-5A app worker.
-- `LIVEKIT_SIP_TRUNK_ID`: SignalWire (`TELEPHONY_SETUP.md`) or Twilio's paid Elastic SIP path; a
-  Twilio trial has none.
-- `--notifier signalwire` texts the alert from the same number if the call goes unanswered
-  (`--notifier twilio` needs a Twilio number as `outbound.from`).
+- `LIVEKIT_SIP_TRUNK_ID`: the SignalWire outbound trunk (`TELEPHONY_SETUP.md`).
+- `--notifier signalwire` texts the alert from the same number if the call goes unanswered.
 
 ### Recommended smoke test (clean, single pass)
 
@@ -2183,7 +2148,7 @@ uv run python -m cli.inbox_publish --dry-run   # push a worklist message into th
 uv run python -m cli.voice_worker dev      # agent worker; VOICE_WORKER_ROLE=phone for the phone worker
 uv run python -m cli.livekit_token --room <r>  # join token for a room (playground testing)
 uv run python -m cli.dispatch --all-inbox  # re-dispatch the agent into agent-less inbox rooms
-uv run python -m cli.sip_setup --dry-run   # telephony trunks + dispatch rule (--swml / --twiml print the carrier scripts)
+uv run python -m cli.sip_setup --dry-run   # telephony trunks + dispatch rule (--swml prints the SignalWire scripts)
 uv run python -m cli.model_perf --events   # model performance from the graph (TP/FP/FN/TN, CIs, per class, why)
 uv run python -m cli.events --status pending   # every stored event, filtered; --ask "<q>" shows what the agent would say
 ```

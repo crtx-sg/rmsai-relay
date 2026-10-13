@@ -135,7 +135,7 @@ box(31, 11, 113, 9, "optional profiles",
 el = box(153, 92, 34, 13.5, "ElevenLabs", "STT Scribe · TTS flash\n(STT_BACKEND / TTS_BACKEND)", C_VENDOR, ec=CLOUD)
 lkc = box(153, 77, 34, 14, "LiveKit Cloud", "SIP service · phone rooms\nrmsai-outbound-* / rmsai-call-*", C_LK, ec=CLOUD)
 sw = box(153, 59, 34, 13, "SignalWire", "SIP trunk (TLS, digest)\nDomain App SWML → PSTN", C_VENDOR, ec=CLOUD)
-tw = box(153, 45, 34, 11, "SignalWire SMS", "missed-call fallback\n(or Twilio: --notifier)", C_VENDOR, ec=CLOUD)
+tw = box(153, 45, 34, 11, "SignalWire SMS", "missed-call fallback\nsame number as the calls", C_VENDOR, ec=CLOUD)
 cl = box(153, 26, 34, 14, "Cloud LLM (optional)", "Anthropic · Gemini · OpenAI-compat\nLLM_PROVIDER, prompts de-identified", C_VENDOR, ec=CLOUD, ls=DASH)
 
 # =============================================================================================

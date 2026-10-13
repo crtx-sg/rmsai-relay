@@ -176,7 +176,7 @@ def test_signalwire_dials_the_address_user_and_carries_the_callee_in_a_header():
 
 
 def test_request_is_unchanged_without_signalwire_user():
-    for cfg in (_CFG, replace(_SWC, signalwire_sip_user=""), replace(_SWC, telephony_carrier="twilio")):
+    for cfg in (_CFG, replace(_SWC, signalwire_sip_user=""), replace(_SWC, telephony_carrier="other")):
         kw = build_sip_participant_kwargs(room="r", number="+1555", config=cfg)
         assert "sip_request_uri" not in kw and "headers" not in kw
 

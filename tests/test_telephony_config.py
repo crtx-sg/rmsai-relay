@@ -68,19 +68,20 @@ def test_from_env_parses_telephony_keys(monkeypatch):
     env = {
         "LIVEKIT_SIP_URL": "wss://voiceapptest.livekit.cloud",
         "LIVEKIT_SIP_API_KEY": "APIcloud", "LIVEKIT_SIP_API_SECRET": "cloud-secret",
-        "TWILIO_SIP_TERMINATION_URI": "rmsai.pstn.twilio.com",
-        "TWILIO_SIP_USERNAME": "relay", "TWILIO_SIP_PASSWORD": "pw",
+        "SIGNALWIRE_SIP_DOMAIN": "rmsai.dapp.signalwire.com",
+        "SIGNALWIRE_SIP_USERNAME": "relay", "SIGNALWIRE_SIP_PASSWORD": "pw",
         "SIP_INBOUND_ALLOWED_NUMBERS": "+15550001111, +15550002222",
     }
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     cfg = Config.from_env()
     assert cfg.telephony_split and cfg.sip_agent_name == "rmsai-agent-phone"
-    assert cfg.twilio_sip_termination_uri == "rmsai.pstn.twilio.com"
+    assert cfg.telephony_carrier == "signalwire"  # the default, and the only carrier
+    assert cfg.signalwire_sip_domain == "rmsai.dapp.signalwire.com"
     assert cfg.sip_inbound_allowed_numbers == ("+15550001111", "+15550002222")
     assert cfg.telephony().livekit_url == "wss://voiceapptest.livekit.cloud"
 
 
 def test_new_secrets_stay_out_of_repr():
-    text = repr(replace(_SPLIT, twilio_sip_password="twilio-pw"))
-    assert "cloud-secret" not in text and "twilio-pw" not in text
+    text = repr(replace(_SPLIT, signalwire_sip_password="sw-pw", signalwire_api_token="sw-tok"))
+    assert "cloud-secret" not in text and "sw-pw" not in text and "sw-tok" not in text

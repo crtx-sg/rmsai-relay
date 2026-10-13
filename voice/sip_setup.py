@@ -1,33 +1,7 @@
-"""Provision the telephony server's SIP objects for phone calls bridged in by Twilio Programmable Voice.
+"""Provision the telephony server's SIP objects for phone calls through SignalWire.
 
-Target is `config.telephony()`, i.e. the LiveKit Cloud project in split mode. Twilio's trial blocks
-Elastic SIP Trunking, so calls reach LiveKit the other way round: Twilio places or receives the
-PSTN leg itself and its TwiML `<Dial><Sip>` bridges the answered call **into** LiveKit as an inbound
-SIP call. The SIP user part names the room:
-
-    outbound  relay → Twilio Calls API → your mobile answers → TwiML
-              <Dial><Sip>sip:rmsai-outbound-<event_id>@<LIVEKIT_SIP_URI></Sip>   (P3b)
-    inbound   your mobile → Twilio number → TwiML Bin (printed by `cli.sip_setup --twiml`)
-              <Dial><Sip>sip:rmsai-call-{{CallSid}}@<LIVEKIT_SIP_URI></Sip>
-    both      → inbound trunk (digest auth + caller allow-list) → callee dispatch rule
-              → room named exactly by the user part → agent `sip_agent_name`
-
-So one inbound trunk and one **callee** rule serve both directions. The outbound room is exactly the
-one the relay staged the alert for (`randomize=False`); the inbound one is unique per call via
-Twilio's `{{CallSid}}` template.
-
-The rule dispatches the agent. In bridge mode the relay must therefore NOT also dispatch it
-explicitly, or two agents join the room (see P3b).
-
-Security: the trunk only accepts INVITEs carrying `sip_inbound_username/password`, and only from the
-allowed callers (`inbound_allowed_numbers` for call-ins, plus `OUTBOUND_FROM`, the caller ID on
-bridged outbound calls). The worker's PIN gate applies on top.
-
-OPTIONAL paid path: when `TWILIO_SIP_*` is set (Elastic SIP Trunking), an outbound trunk
-(`rmsai-outbound-twilio`) is also created, so upgrading later needs no code change.
-
-**SignalWire** (`TELEPHONY_CARRIER=signalwire`) is a native SIP trunk both ways, per LiveKit's and
-SignalWire's documented integration:
+Target is `config.telephony()`, i.e. the LiveKit Cloud project in split mode. SignalWire is a
+native SIP trunk both ways, per LiveKit's and SignalWire's documented integration:
 
     outbound  LiveKit outbound trunk (TLS, digest creds) → SignalWire Domain App
               (`SIGNALWIRE_SIP_DOMAIN`) → SWML `connect` → PSTN       (swml_outbound)
@@ -36,8 +10,11 @@ SignalWire's documented integration:
               → individual dispatch rule → `rmsai-call-…` room → `sip_agent_name`
 
 Outbound needs no bridge: the existing `LiveKitCaller` dial path uses the outbound trunk. Its id is
-`LIVEKIT_SIP_TRUNK_ID`. The SignalWire objects have their own names, so both carriers' objects can
-coexist in one project.
+`LIVEKIT_SIP_TRUNK_ID`.
+
+Security: SWML `connect` presents no SIP credentials, so the inbound trunk only accepts calls to
+our number from the allowed callers (`inbound_allowed_numbers`). The worker's PIN gate applies on
+top.
 
 Idempotent by fixed name: an existing object is replaced in place, a missing one is created.
 `plan()` is pure (plain dicts); `apply()` takes any object shaped like the SDK's `SipService`.
@@ -46,23 +23,19 @@ Idempotent by fixed name: an existing object is replaced in place, a missing one
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from xml.sax.saxutils import quoteattr
 
 from common.config import DEFAULT, Config
 from voice.outbound import is_valid_number, mask_number
 
-CARRIERS = ("twilio", "signalwire")
-OUTBOUND_TRUNK_NAME = "rmsai-outbound-twilio"
-INBOUND_TRUNK_NAME = "rmsai-inbound-twilio"
-DISPATCH_RULE_NAME = "rmsai-inbound-dispatch"
-SW_OUTBOUND_TRUNK_NAME = "rmsai-outbound-signalwire"
-SW_INBOUND_TRUNK_NAME = "rmsai-inbound-signalwire"
-SW_DISPATCH_RULE_NAME = "rmsai-inbound-dispatch-signalwire"
+CARRIERS = ("signalwire",)
+OUTBOUND_TRUNK_NAME = "rmsai-outbound-signalwire"
+INBOUND_TRUNK_NAME = "rmsai-inbound-signalwire"
+DISPATCH_RULE_NAME = "rmsai-inbound-dispatch-signalwire"
 
 
 @dataclass
 class SipPlan:
-    outbound: dict | None = None  # only on the paid Elastic-SIP path
+    outbound: dict | None = None
     inbound: dict | None = None
     dispatch: dict | None = None  # `trunk_ids` is filled in by `apply` once the inbound id is known
     problems: list[str] = field(default_factory=list)  # blocking: nothing is applied
@@ -87,30 +60,6 @@ def _host(uri: str) -> str:
     """`sip:abc.sip.livekit.cloud` / `abc.sip.livekit.cloud` → `abc.sip.livekit.cloud`."""
     host = uri.strip()
     return host[4:] if host.lower().startswith("sip:") else host
-
-
-def sip_target(room: str, config: Config = DEFAULT) -> str:
-    """The SIP URI Twilio dials to land a call in `room` on the telephony server."""
-    return f"sip:{room}@{_host(config.livekit_sip_uri)}"
-
-
-def dial_sip_twiml(room: str, config: Config = DEFAULT, *, caller_id: str | None = None) -> str:
-    """TwiML that bridges the answered Twilio call into `room` (digest auth to the inbound trunk).
-
-    `room` may carry a Twilio template (`{{CallSid}}`) when used in a TwiML Bin.
-    """
-    cid = f" callerId={quoteattr(caller_id)}" if caller_id else ""
-    return (
-        f"<Response><Dial{cid}>"
-        f"<Sip username={quoteattr(config.sip_inbound_username)} "
-        f"password={quoteattr(config.sip_inbound_password)}>{sip_target(room, config)}</Sip>"
-        f"</Dial></Response>"
-    )
-
-
-def inbound_twiml_bin(config: Config = DEFAULT) -> str:
-    """The TwiML Bin for the Twilio number's "A call comes in" handler: one room per call."""
-    return dial_sip_twiml(f"{config.call_room_prefix}{{{{CallSid}}}}", config)
 
 
 def swml_outbound(config: Config = DEFAULT) -> str:
@@ -164,12 +113,6 @@ def plan(config: Config = DEFAULT) -> SipPlan:
     if config.telephony_carrier not in CARRIERS:
         return SipPlan(problems=[f"TELEPHONY_CARRIER={config.telephony_carrier!r}: expected one of "
                                  f"{', '.join(CARRIERS)}"])
-    if config.telephony_carrier == "signalwire":
-        return _plan_signalwire(config)
-    return _plan_twilio(config)
-
-
-def _plan_signalwire(config: Config) -> SipPlan:
     p = SipPlan()
     tel = config.telephony()
     if not config.outbound_from:
@@ -190,7 +133,7 @@ def _plan_signalwire(config: Config) -> SipPlan:
 
     numbers = [config.outbound_from] if config.outbound_from else []
     p.outbound = {
-        "name": SW_OUTBOUND_TRUNK_NAME,
+        "name": OUTBOUND_TRUNK_NAME,
         "address": _host(config.signalwire_sip_domain),
         "numbers": numbers,
         "auth_username": config.signalwire_sip_username,
@@ -203,76 +146,15 @@ def _plan_signalwire(config: Config) -> SipPlan:
                        "and an unrestricted inbound number is never created")
         return p
     p.inbound = {
-        "name": SW_INBOUND_TRUNK_NAME,
+        "name": INBOUND_TRUNK_NAME,
         "numbers": numbers,          # the called number SignalWire's SWML forwards (call.to)
         "allowed_numbers": allowed,  # who may call in
         "max_call_duration_s": config.sip_max_call_duration_s,
     }
     p.dispatch = {
-        "name": SW_DISPATCH_RULE_NAME,
+        "name": DISPATCH_RULE_NAME,
         "kind": "individual",  # one room per call, <prefix>…
         "room_prefix": config.call_room_prefix,
-        "agent_name": tel.livekit_agent_name,
-        "hide_phone_number": True,
-    }
-    return p
-
-
-def _plan_twilio(config: Config) -> SipPlan:
-    p = SipPlan()
-    tel = config.telephony()
-
-    if not config.outbound_from:
-        p.problems.append("OUTBOUND_FROM is empty: set it to your Twilio number (E.164). It is the "
-                          "caller ID on bridged calls and must be an allowed caller on the trunk")
-    elif not _e164(config.outbound_from):
-        p.problems.append(f"OUTBOUND_FROM {mask_number(config.outbound_from)} is not E.164 (+<digits>)")
-    if not config.livekit_sip_uri:
-        p.problems.append("LIVEKIT_SIP_URI is empty (LiveKit Cloud → Settings → SIP URI, "
-                          "e.g. abc123.sip.livekit.cloud)")
-    for key, val in (("LIVEKIT_SIP_INBOUND_USERNAME", config.sip_inbound_username),
-                     ("LIVEKIT_SIP_INBOUND_PASSWORD", config.sip_inbound_password)):
-        if not val:
-            p.problems.append(f"{key} is empty (choose one; Twilio's TwiML presents it to LiveKit)")
-    bad = [n for n in config.inbound_allowed_numbers if not _e164(n)]
-    if bad:
-        p.problems.append(f"SIP_INBOUND_ALLOWED_NUMBERS / OUTBOUND_CALL_NUMBER not E.164: "
-                          f"{', '.join(mask_number(n) for n in bad)}")
-
-    # Paid path only: all three TWILIO_SIP_* or none.
-    elastic = (config.twilio_sip_termination_uri, config.twilio_sip_username,
-               config.twilio_sip_password)
-    if any(elastic) and not all(elastic):
-        p.problems.append("TWILIO_SIP_TERMINATION_URI/USERNAME/PASSWORD: set all three (Elastic "
-                          "SIP Trunking, paid) or none (Programmable Voice bridge)")
-    numbers = [config.outbound_from] if config.outbound_from else []
-    if all(elastic):
-        p.outbound = {
-            "name": OUTBOUND_TRUNK_NAME,
-            "address": _host(config.twilio_sip_termination_uri),
-            "numbers": numbers,
-            "auth_username": config.twilio_sip_username,
-            "auth_password": config.twilio_sip_password,
-        }
-    else:
-        p.notes.append("no outbound trunk: calls are placed by the Twilio Calls API and bridged in")
-
-    allowed = list(dict.fromkeys([*config.inbound_allowed_numbers, *numbers]))
-    if not config.inbound_allowed_numbers:
-        p.notes.append("no call-in number allowed (OUTBOUND_CALL_NUMBER / SIP_INBOUND_ALLOWED_NUMBERS "
-                       "empty): only bridged outbound calls will be accepted")
-    p.inbound = {
-        "name": INBOUND_TRUNK_NAME,
-        "allowed_numbers": allowed,
-        "auth_username": config.sip_inbound_username,
-        "auth_password": config.sip_inbound_password,
-        "max_call_duration_s": config.sip_max_call_duration_s,
-    }
-    p.dispatch = {
-        "name": DISPATCH_RULE_NAME,
-        "kind": "callee",  # room = user part of the dialled SIP URI, exactly
-        "room_prefix": "",
-        "randomize": False,
         "agent_name": tel.livekit_agent_name,
         "hide_phone_number": True,
     }
@@ -329,17 +211,12 @@ def _dispatch_info(spec: dict, inbound_trunk_id: str):
     from livekit.protocol.room import RoomConfiguration  # noqa: PLC0415
     from livekit.protocol.sip import (  # noqa: PLC0415
         SIPDispatchRule,
-        SIPDispatchRuleCallee,
         SIPDispatchRuleIndividual,
         SIPDispatchRuleInfo,
     )
 
-    if spec["kind"] == "callee":
-        rule = SIPDispatchRule(dispatch_rule_callee=SIPDispatchRuleCallee(
-            room_prefix=spec["room_prefix"], randomize=spec["randomize"]))
-    else:
-        rule = SIPDispatchRule(dispatch_rule_individual=SIPDispatchRuleIndividual(
-            room_prefix=spec["room_prefix"]))
+    rule = SIPDispatchRule(dispatch_rule_individual=SIPDispatchRuleIndividual(
+        room_prefix=spec["room_prefix"]))
     return SIPDispatchRuleInfo(
         name=spec["name"],
         trunk_ids=[inbound_trunk_id],

@@ -11,12 +11,7 @@ import pytest
 from common.audit import AuditLog
 from common.config import DEFAULT
 from common.interfaces import ECGModel
-from common.notify import (
-    SignalWireSmsNotifier,
-    SimulatedSmsNotifier,
-    TwilioSmsNotifier,
-    notifier_from_env,
-)
+from common.notify import SignalWireSmsNotifier, SimulatedSmsNotifier, notifier_from_env
 from inference.pipeline import process_window
 from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
@@ -124,63 +119,6 @@ def test_invalid_number_is_never_texted(tmp_path):
     assert status == "notify_failed"
 
 
-# ------------------------------------------------------------------ Twilio sender (offline) ---
-
-def _twilio(status, body, calls):
-    def post(url, form, headers):
-        calls.append((url, form, headers))
-        return status, body
-    return TwilioSmsNotifier("ACsid", "tok", "+15550001000", post_fn=post)
-
-
-def test_twilio_posts_the_message_form():
-    calls = []
-    assert _twilio(201, '{"sid": "SM1"}', calls).send("+15551234567", "hello")
-    (url, form, headers), = calls
-    assert url == "https://api.twilio.com/2010-04-01/Accounts/ACsid/Messages.json"
-    assert form == {"To": "+15551234567", "From": "+15550001000", "Body": "hello"}
-    assert headers["Authorization"].startswith("Basic ")
-
-
-def test_twilio_rejection_returns_false_with_masked_reason(capsys):
-    body = '{"code": 21608, "message": "The number is unverified. Trial accounts cannot send..."}'
-    assert not _twilio(400, body, []).send("+15551234567", "hello")
-    err = capsys.readouterr().err
-    assert "21608" in err and "unverified" in err
-    assert "+15551234567" not in err and "4567" in err  # masked
-
-
-def test_twilio_network_error_returns_false():
-    def boom(*_a):
-        raise OSError("network unreachable")
-    n = TwilioSmsNotifier("ACsid", "tok", "+15550001000", post_fn=boom)
-    assert n.send("+15551234567", "hello") is False
-
-
-def test_twilio_skips_invalid_destination():
-    calls = []
-    assert not _twilio(201, "{}", calls).send("bogus", "hello") and calls == []
-
-
-def test_notifier_from_env_names_missing_twilio_keys(monkeypatch):
-    for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"):
-        monkeypatch.delenv(k, raising=False)
-    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACsid")
-    with pytest.raises(ValueError, match=r"TWILIO_AUTH_TOKEN, outbound\.from"):
-        notifier_from_env("twilio", config=replace(_CFG, outbound_from=""))
-    assert isinstance(notifier_from_env("simulated"), SimulatedSmsNotifier)
-    assert notifier_from_env("simulated", deliver=False).deliver is False
-
-
-def test_the_sender_comes_from_the_hospital_config(monkeypatch):
-    # The number moved to config/hospitals/<id>.yaml; an env-only lookup refused to start.
-    monkeypatch.delenv("OUTBOUND_FROM", raising=False)
-    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACsid")
-    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "tok")
-    n = notifier_from_env("twilio", config=replace(_CFG, outbound_from="+15550001000"))
-    assert isinstance(n, TwilioSmsNotifier) and n._from == "+15550001000"
-
-
 # -------------------------------------------------------------- SignalWire sender (offline) ---
 
 _SW_CFG = replace(_CFG, signalwire_space="example.signalwire.com", signalwire_project_id="proj-1",
@@ -224,3 +162,39 @@ def test_signalwire_rejection_returns_false(capsys):
 def test_notifier_from_env_names_missing_signalwire_keys():
     with pytest.raises(ValueError, match="SIGNALWIRE_API_TOKEN"):
         notifier_from_env("signalwire", config=replace(_SW_CFG, signalwire_api_token=""))
+
+
+def _sw(status, body, calls):
+    def post(url, form, headers):
+        calls.append((url, form, headers))
+        return status, body
+    return SignalWireSmsNotifier("example.signalwire.com", "proj-1", "tok", "+12015550100",
+                                 post_fn=post)
+
+
+def test_signalwire_rejection_masks_the_number(capsys):
+    assert not _sw(400, '{"code": 21211, "message": "Invalid To"}', []).send("+15551234567", "hi")
+    err = capsys.readouterr().err
+    assert "21211" in err and "+15551234567" not in err and "4567" in err
+
+
+def test_signalwire_network_error_returns_false():
+    def boom(*_a):
+        raise OSError("network unreachable")
+    n = SignalWireSmsNotifier("example", "proj-1", "tok", "+12015550100", post_fn=boom)
+    assert n.send("+15551234567", "hello") is False
+
+
+def test_signalwire_skips_invalid_destination():
+    calls = []
+    assert not _sw(201, "{}", calls).send("bogus", "hello") and calls == []
+
+
+def test_the_sender_comes_from_the_hospital_config(monkeypatch):
+    # The number lives in config/hospitals/<id>.yaml; an env-only lookup refused to start.
+    monkeypatch.delenv("OUTBOUND_FROM", raising=False)
+    assert notifier_from_env("signalwire", config=_SW_CFG)._from == "+12015550100"
+    with pytest.raises(ValueError, match=r"outbound\.from"):
+        notifier_from_env("signalwire", config=replace(_SW_CFG, outbound_from=""))
+    assert isinstance(notifier_from_env("simulated"), SimulatedSmsNotifier)
+    assert notifier_from_env("simulated", deliver=False).deliver is False

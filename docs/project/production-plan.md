@@ -10,8 +10,7 @@ Proves the full loop end-to-end on **one node** (Docker Compose), **one hospital
 (synthetic data plus held-out public-dataset ECG, pseudonymized): HDF5/MQTT → ECG classification
 (`real_v2`) → graph + vector KB → criticality-gated dispatch (companion-app worklist, voice call, SMS)
 → grounded voice/text Q&A. Single-instance Redis stream, Neo4j, Qdrant; self-hosted LiveKit (app +
-WebRTC) + Ollama, with phone calls on a LiveKit Cloud project via a SignalWire SIP trunk or a Twilio
-bridge (in progress).
+WebRTC) + Ollama, with phone calls on a LiveKit Cloud project via a SignalWire SIP trunk.
 **Not yet:** multi-tenancy, HA, RBAC, observability, compliance, or **continuous streaming telemetry**
 (live MQTT→WebRTC waveforms/vitals were deferred out of POC Phase 9, the companion-app phase).
 
@@ -104,7 +103,7 @@ to a single line of the infra run-rate.
 - Clinical validation of the ECG model + LLM guardrails.
 - PHI compliance sign-off.
 - **PHI constraint = self-hosted STT/LLM only** (no cloud AI on real data) — this drives the GPU cost.
-- **Telephony vendors** (LiveKit Cloud, the carrier: SignalWire or Twilio, and Twilio SMS) carry
+- **Telephony vendors** (LiveKit Cloud, and SignalWire for calls and SMS) carry
   live call audio and alert text: they need BAAs, or a self-hosted `livekit-sip` plus a carrier trunk, before any PHI.
 
 **De-risk with a 2–3 hospital pilot before GA.**

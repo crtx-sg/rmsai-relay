@@ -17,9 +17,9 @@ This is the demo path. The README has the background: [Setup](README.md#setup),
 ## Local-only mode (no LiveKit Cloud, no phone carrier)
 
 The default. Everything below (§0–§5B) runs on your machine: the local LiveKit, the app, WebRTC calls,
-a simulated caller and simulated SMS. The telephony settings in `.env` (`LIVEKIT_SIP_*`, `SIGNALWIRE_*`, `TWILIO_*`)
+a simulated caller and simulated SMS. The telephony settings in `.env` (`LIVEKIT_SIP_*`, `SIGNALWIRE_*`)
 can stay there. They are only used by four explicit options, none of them a default:
-`--transport sip`, `--caller livekit`, `--notifier signalwire|twilio`, and `cli.sip_setup` / `make phone-up`.
+`--transport sip`, `--caller livekit`, `--notifier signalwire`, and `cli.sip_setup` / `make phone-up`.
 
 | Mode | Set | What you get |
 |---|---|---|
@@ -342,9 +342,8 @@ Full detail: [README §5](README.md#5-real-webrtc-audio-loop-browser-no-phone).
 
 Phone calls run on a **second LiveKit** (a LiveKit Cloud project, `LIVEKIT_SIP_URL`), because a
 LiveKit SIP bridge only connects calls into rooms on its own server. The app, inbox and WebRTC stay
-on the local LiveKit. The recommended carrier for demos is **SignalWire**
-(`TELEPHONY_CARRIER=signalwire`): a native SIP trunk both ways. It needs an account out of trial
-mode. The Twilio trial path (inbound only) is in the README.
+on the local LiveKit. The carrier is **SignalWire**: a native SIP trunk both ways, which also sends
+the missed-call SMS. It needs an account out of trial mode.
 
 | Direction | Status |
 |---|---|
@@ -424,7 +423,6 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | Two consumers splitting events | a host-run `cli.consume` shares group `rmsai.relay` with the container | `docker compose -f infra/docker-compose.yml stop consumer` before running one by hand |
 | `SIP dial failed … 603: Decline` (SignalWire) | SignalWire refused the call: trial mode, Domain App credentials, or destination country | [`TELEPHONY_SETUP.md` § Troubleshooting](TELEPHONY_SETUP.md#troubleshooting) |
 | `make phone-logs`: `registered worker … "url": "ws://localhost:7880"` | phone worker on the wrong LiveKit (fixed in `fe89028`) | update, then `make phone-down phone-up` |
-| Calling a Twilio number plays Twilio's greeting ("Thanks for calling…") | (Twilio path) the number isn't using the TwiML Bin | the number's Voice Configuration → TwiML Bin `rmsai-inbound` → **Save configuration** |
 | `voice-worker-phone` exits: `VOICE_WORKER_ROLE=phone needs LIVEKIT_SIP_URL` | telephony split not configured | set `LIVEKIT_SIP_URL/API_KEY/API_SECRET` in `.env`, then `make phone-up` |
 | `CONSUME_ARGS` in `.env` has no effect | Compose doesn't read the repo-root `.env` | pass it inline: `CONSUME_ARGS="…" make docker-up` |
 | Code edit not picked up | — | `make docker-restart` (source is bind-mounted); rebuild only for dependency / vendored changes |

@@ -47,10 +47,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="voice channel: 'simulated' (offline) or 'livekit' (real SIP via LiveKit Cloud)")
     parser.add_argument("--no-answer", action="store_true", help="simulate the call not answering")
     parser.add_argument("--fail-delivery", action="store_true", help="simulate text delivery failure")
-    parser.add_argument("--notifier", choices=["simulated", "signalwire", "twilio"], default="simulated",
+    parser.add_argument("--notifier", choices=["simulated", "signalwire"], default="simulated",
                         help="SMS backend for the text channel and the unanswered-call fallback: "
                              "'simulated' sends nothing (recorded as sms_simulated); "
-                             "'signalwire' / 'twilio' send real SMS from outbound.from")
+                             "'signalwire' sends real SMS from outbound.from")
     parser.add_argument("--number", default=None,
                         help="destination (E.164); default OUTBOUND_CALL_NUMBER. A placeholder is used "
                              "only for simulated runs with neither set")

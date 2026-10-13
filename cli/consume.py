@@ -68,10 +68,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--transport", choices=["sip", "webrtc"], default="sip",
                         help="livekit voice: 'sip' dials a phone; 'webrtc' stages the alert + prints "
                              "a join token (test the audio loop from a browser, no phone).")
-    parser.add_argument("--notifier", choices=["simulated", "signalwire", "twilio"], default="simulated",
+    parser.add_argument("--notifier", choices=["simulated", "signalwire"], default="simulated",
                         help="SMS backend: text-channel delivery, and the voice channel's fallback "
                              "when a call goes unanswered. 'simulated' sends nothing (logged and "
-                             "recorded as sms_simulated); 'signalwire' / 'twilio' send real SMS "
+                             "recorded as sms_simulated); 'signalwire' sends real SMS "
                              "from the hospital's outbound.from number")
     parser.add_argument("--number", default=None,
                         help="destination (E.164); default OUTBOUND_CALL_NUMBER. A placeholder is used "
