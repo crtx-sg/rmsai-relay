@@ -62,3 +62,28 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(pytest.mark.skip(
                     reason=f"wipes the LIVE Neo4j graph (reset_all); set {_ALLOW_LIVE_GRAPH_RESET}=1 "
                            "to run it against a graph you can lose"))
+
+
+# The module list above was not enough either: tests/test_outbound_flow.py's `env` fixture (and the
+# fixtures in test_orchestrator, test_event_flow, test_graph_ingest, test_graph_extract, test_eval,
+# test_outbound_cli) also `reset_all()` the live graph. Running such a file directly, without
+# `-m "not infra"`, emptied the demo graph mid-demo (2026-10-13): every patient, bed, event and KB
+# entity. So guard the wipe itself: during a test session `reset_all()` skips the test unless the
+# explicit opt-in is set, whichever file, marker or `-k` selected it.
+@pytest.fixture(autouse=True, scope="session")
+def _no_live_graph_reset():
+    if os.environ.get(_ALLOW_LIVE_GRAPH_RESET) == "1":
+        yield
+        return
+    from kb.graph.driver import GraphDriver
+
+    def _refuse(self):
+        pytest.skip(f"would wipe the LIVE Neo4j graph (reset_all); set {_ALLOW_LIVE_GRAPH_RESET}=1 "
+                    "to run it against a graph you can lose")
+
+    original = GraphDriver.reset_all
+    GraphDriver.reset_all = _refuse
+    try:
+        yield
+    finally:
+        GraphDriver.reset_all = original
