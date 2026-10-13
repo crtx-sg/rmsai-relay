@@ -223,3 +223,85 @@ truth → outcome for labelled events, and the event id.
   the phone alert doesn't hear the event twice. The choice is remembered per dispatch mode in the
   browser. The worker log shows `selected event … (app voice muted: not spoken)` for a muted
   selection.
+
+## Knowledge graph (Neo4j)
+
+The graph's node and edge types are described in the README's **Knowledge-base data model**
+section. Every query below is read-only, except `cli.graph chain`, which rebuilds edges.
+
+### Neo4j Browser (visual tree)
+
+Open **http://localhost:7474** (user `neo4j`, password `rmsai_dev_pw`), paste a query, and
+double-click any node in the result to expand its neighbours.
+
+```cypher
+// whole schema: one node per label, one edge per relationship type
+CALL db.schema.visualization()
+
+// one patient's tree, 2 hops (events → report/actions/condition, bed → unit, history)
+MATCH path = (p:Patient {id: 'PT998224'})-[*1..2]->(n)
+RETURN path
+
+// a patient's event history in time order (FOLLOWED_BY chain)
+MATCH path = (:Patient {id: 'PT998224'})-[:HAD_EVENT]->(first)-[:FOLLOWED_BY*0..]->(e)
+WHERE NOT ()-[:FOLLOWED_BY]->(first)
+RETURN path
+
+// one event and everything around it
+MATCH path = (e:MonitoredEvent {id: 'feb5d443-b28b-5644-9857-049bed4e3d43'})-[*1..2]-(n)
+RETURN path
+
+// clinical knowledge: guidelines → conditions / treatments
+MATCH path = (g:Guideline)-[:APPLIES_TO|RECOMMENDS]->(n)
+RETURN path LIMIT 100
+```
+
+### Terminal (`cypher-shell`)
+
+```bash
+C="docker exec infra-neo4j-1 cypher-shell -u neo4j -p rmsai_dev_pw"
+
+# schema as text: from-label, relationship, to-label, count
+$C "MATCH (a)-[r]->(b) RETURN labels(a)[0] AS from, type(r) AS rel, labels(b)[0] AS to, count(*) AS n ORDER BY from, rel"
+
+# one patient's tree, 2 levels
+$C "MATCH (p:Patient {id:'PT998224'})-[r1]->(n1) OPTIONAL MATCH (n1)-[r2]->(n2)
+    RETURN type(r1) AS rel, labels(n1)[0] AS node, coalesce(n1.id, n1.label, n1.name) AS id,
+           type(r2) AS rel2, labels(n2)[0] AS child, coalesce(n2.id, n2.label, n2.name) AS child_id"
+
+# every patient's event chain, with the gap between events
+$C "MATCH (p:Patient)-[:HAD_EVENT]->(a)-[f:FOLLOWED_BY]->(b)
+    RETURN p.id AS patient, a.event_type AS first, b.event_type AS next, round(f.gap_s, 1) AS gap_s"
+
+# node counts by label
+$C "MATCH (n) RETURN labels(n)[0] AS label, count(*) AS n ORDER BY n DESC"
+```
+
+The password is the dev default (`NEO4J_PASSWORD`); use yours if you changed it.
+
+### Project CLIs
+
+```bash
+uv run python -m cli.kb_dump --list              # recent event ids
+uv run python -m cli.kb_dump <event_id>          # one event: graph node + report file + vector chunks
+uv run python -m cli.events --patient PT998224   # the patient's events, as the app shows them
+uv run python -m cli.graph template <name>       # any operational query template
+uv run python -m cli.graph chain                 # rebuild the FOLLOWED_BY chains (backfill; writes)
+```
+
+### What the tree looks like
+
+```
+Patient ─HAD_EVENT→ MonitoredEvent ─FOLLOWED_BY→ (the patient's next event)
+   │                    ├─HAS_REPORT→ Report
+   │                    ├─HAS_ACTION→ ActionItem
+   │                    ├─OF_CONDITION→ Condition
+   │                    └─AT_BED→ Bed ─IN_UNIT→ Unit
+   ├─ASSIGNED_TO→ Bed
+   ├─HAS_DIAGNOSIS→ Condition ─INDICATES→ Treatment
+   ├─PRESCRIBED→ Treatment ─MANAGES→ Condition
+   ├─PRESENTS→ Symptom
+   └─HAD_SURGERY→ Surgery
+Guideline ─APPLIES_TO→ Condition,  ─RECOMMENDS→ Treatment
+CareProtocol ─HAS_STEP→ ProtocolStep ─RECOMMENDS→ Treatment
+```
