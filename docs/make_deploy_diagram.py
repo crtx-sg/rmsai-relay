@@ -110,8 +110,11 @@ phone = box(195, 56, 16, 18, "Phone", "PSTN call\n(PIN → alert\n→ Q&A → ac
 gw = box(31, 76, 21, 25, "gateway", ":8080  cli.gateway\n\nPIN /session · /ack\n/events · /metrics\n/artifact links\naudit log", C_APP)
 vw = box(54, 76, 21, 25, "voice-worker", "agent rmsai-agent\n:8091 (local LiveKit)\n\ninbox room + WebRTC\ncalls: STT → PIN →\norchestrator → TTS", C_APP)
 ing = box(77, 76, 21, 25, "tools  (one-shot)", "cli.ingest --emit bus\n\nHDF5 → SignalWindow\n→ ECGTransCovNet\n→ MEWS / trends\n→ DeviceEvent", C_APP, ls=DASH)
-con = box(100, 76, 21, 25, "consumer", "cli.consume\n\npersist · gate\nworklist push\ncall queue +\nCallDispatcher", C_APP)
-vwp = box(123, 76, 21, 25, "voice-worker-phone", "agent rmsai-agent-phone\n:8082 · profile telephony\n\nphone calls on\nLiveKit Cloud", C_APP, fs=7.6)
+con = box(100, 76, 21, 25, "consumer", "cli.consume\nmain thread:\npersist · gate\nworklist push\nZADD call queue", C_APP, fs=7.4)
+# the dispatcher is a thread inside the consumer process, not the voice worker
+disp = box(101.4, 77.2, 18.2, 8.6, "CallDispatcher thread",
+           "ZPOPMIN · stage alert\ndial · wait for hang-up", fc="#ede9fe", ec="#6d28d9", fs=6.2)
+vwp = box(123, 76, 21, 25, "voice-worker-phone", "rmsai-agent-phone · :8082\nanswers; never dials\n\nper turn:\nSTT → PIN/wake gate\n→ orchestrator → TTS", C_APP, fs=7.2)
 
 # --- backing stores ----------------------------------------------------------------------------
 lk = box(31, 42, 21, 20, "livekit", ":7880 / 7881 / 7882udp\n\nlocal media server\ninbox room\nWebRTC call rooms", C_LK)
@@ -175,9 +178,10 @@ step(78.5, 74, "3")
 label(61, 72.6, "worklist push (server API)", fs=6.4, bg=C_HOST)
 
 # ④ dispatcher: queue in redis, stage alert, then dispatch + dial on LiveKit Cloud
-path([(112.5, con["t"]), (112.5, 108), (148, 108), (148, 86), (lkc["x"], 86)], color=VOICE)
-step(110, 108, "4", VOICE)
-label(114, 110.2, "ZPOPMIN → stage alert → SIP dial",
+path([(disp["r"], disp["cy"]), (122, disp["cy"]), (122, 108), (148, 108), (148, 86),
+      (lkc["x"], 86)], color=VOICE)
+step(119, 108, "4", VOICE)
+label(121.5, 110.2, "dispatch agent + SIP dial",
       color=VOICE, fs=7, ha="left")
 
 # ⑤ LiveKit Cloud ↔ SignalWire ↔ phone
@@ -196,12 +200,15 @@ path([(126, vwp["y"]), (126, 69), (92, 69), (92, red["t"])], color=BUS, style=DA
 label(121, 69, "staged alert", color=BUS, fs=6.6, bg=C_HOST)
 
 # both workers → ElevenLabs through the Presidio guard (TTS text); STT sends raw audio
-guard = box(100, 114, 34, 6, "Presidio de-id (text to speak)", fc=C_GUARD, ec="#a16207", fs=6.8)
+guard = box(100, 114, 34, 6, "Presidio de-id → TTS (text to speak)", fc=C_GUARD, ec="#a16207", fs=6.8)
 path([(64.5, vw["t"]), (64.5, 117), (guard["x"], 117)], color=CLOUD)
 arrow((131, vwp["t"]), (131, guard["y"]), color=CLOUD)
 path([(guard["r"], 117), (178, 117), (178, el["t"])], color=CLOUD)
 label(67, 118.8, "TTS text from both workers", color=CLOUD, fs=6.8, ha="left")
-label(170, 94.6, "STT sends raw audio: synthetic speech only", color=CLOUD, fs=6.6)
+# STT: the phone worker sends the caller's raw audio (no de-id possible) and gets text back
+arrow((vwp["r"], 97.5), (el["x"], 97.5), color=CLOUD, style=DASH, both=True)
+label(148.6, 100.4, "STT", color=CLOUD, fs=6.6, bg=C_CLOUD)
+label(170, 94.6, "STT gets raw audio: synthetic speech only", color=CLOUD, fs=6.6)
 
 # SMS fallback; optional cloud LLM instead of Ollama
 path([(119, con["y"]), (119, 72.2), (149.2, 72.2), (149.2, 50.5), (tw["x"], 50.5)], color=DATA, style=DASH)
@@ -219,9 +226,9 @@ caption = (
     "①  cli.ingest classifies the HDF5 event and XADDs it to the Redis stream.   "
     "②  consumer reads it, persists to Neo4j + Qdrant and runs the alert gate.   "
     "③  every gated event is pushed to the app worklist at once (LiveKit server API → inbox room).\n"
-    "④  the call is queued (Redis ZSET, most severe first); the dispatcher stages the alert and dials via LiveKit Cloud, one call at a time.   "
+    "④  the call is queued (Redis ZSET, most severe first); the consumer's CallDispatcher thread stages the alert and dials via LiveKit Cloud, one call at a time.\n"
     "⑤  SignalWire rings the phone.   "
-    "⑥  the phone worker speaks PIN → alert → Q&A (ElevenLabs STT/TTS, Ollama LLM, KB).\n"
+    "⑥  the phone worker answers: per turn, caller audio → STT (ElevenLabs) → PIN/wake gate → orchestrator (KB, Ollama) → Presidio → TTS (ElevenLabs) → audio back.\n"
     "⑦  \"acknowledge\" (phone) or Ack (app) sets the event's status in Neo4j; a queued call for an acknowledged event is skipped.   "
     "In the app, the voice-worker serves the inbox room the same way over the local LiveKit."
 )
