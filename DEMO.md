@@ -19,7 +19,7 @@ This is the demo path. The README has the background: [Setup](README.md#setup),
 The default. Everything below (§0–§5B) runs on your machine: the local LiveKit, the app, WebRTC calls,
 a simulated caller and simulated SMS. The telephony settings in `.env` (`LIVEKIT_SIP_*`, `SIGNALWIRE_*`, `TWILIO_*`)
 can stay there. They are only used by four explicit options, none of them a default:
-`--transport sip`, `--caller livekit`, `--notifier twilio`, and `cli.sip_setup` / `make phone-up`.
+`--transport sip`, `--caller livekit`, `--notifier signalwire|twilio`, and `cli.sip_setup` / `make phone-up`.
 
 | Mode | Set | What you get |
 |---|---|---|
@@ -348,9 +348,9 @@ mode. The Twilio trial path (inbound only) is in the README.
 
 | Direction | Status |
 |---|---|
-| Event **out** (relay → your phone → PIN → alert → Q&A → acknowledge) | configured; first test returned `603 Decline` (trial mode suspected) |
+| Event **out** (relay → your phone → PIN → alert → Q&A → acknowledge) | works (verified 2026-10-12, after leaving trial mode) |
 | Call **in** (your phone → SignalWire number → PIN → Q&A) | configured; not tested yet |
-| SMS fallback when an alert call is unanswered | works with Twilio SMS (`--notifier twilio`); use `--notifier simulated` with SignalWire |
+| SMS fallback when an alert call is unanswered | SignalWire SMS from the same number (`--notifier signalwire`, the `make demo-phone-up` default); live delivery not yet confirmed |
 
 Full step-by-step setup: **[`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)**. Once set up:
 

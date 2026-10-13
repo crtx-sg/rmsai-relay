@@ -38,7 +38,8 @@ class OutboundResult:
     dropped: bool = False  # call dropped mid-alert
     status: str = "reported"
     transcript: list[str] = field(default_factory=list)  # what the agent said/sent
-    fallback: str | None = None  # unanswered call: "sms_delivered" | "sms_failed" | None (not tried)
+    # unanswered call: "sms_delivered" | "sms_failed" | "sms_simulated" (nothing sent) | None
+    fallback: str | None = None
 
 
 def should_call(event: DeviceEvent, config: Config = DEFAULT) -> tuple[bool, str]:
@@ -135,7 +136,13 @@ def run_outbound(
         if fallback_notifier is not None and outcome != CallOutcome.INVALID:
             text = "Missed call from RMS relay. " + spoken_report(event, bed=bed, config=config)
             delivered = fallback_notifier.send(config.outbound_call_number, text)
-            fallback = "sms_delivered" if delivered else "sms_failed"
+            if delivered and getattr(fallback_notifier, "simulated", False):
+                # Nothing left the host: recording "delivered" told the app and the log that the
+                # clinician had been texted when no one had (observed 2026-10-13).
+                delivered = False
+                fallback = "sms_simulated"
+            else:
+                fallback = "sms_delivered" if delivered else "sms_failed"
             audit.write(actor="system", action="sms_fallback", subject=event.window.patient_ref,
                         outcome=fallback)
             if delivered:
@@ -249,7 +256,8 @@ def run_text_notify(
     alert = spoken_report(event, bed=bed, config=config)
     delivered = notifier.send(to, alert)
     audit.write(actor="system", action="text_notify", subject=event.window.patient_ref,
-                outcome="delivered" if delivered else "failed")
+                outcome=("simulated" if getattr(notifier, "simulated", False) else "delivered")
+                if delivered else "failed")
     if not delivered:
         set_event_status(driver, uuid, "notify_failed")
         return OutboundResult(called=True, decision_reason=reason, channel="text",

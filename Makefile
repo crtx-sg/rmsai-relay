@@ -100,7 +100,10 @@ demo-up:
 # the consumer with `--transport sip`, so reportable events ring OUTBOUND_CALL_NUMBER instead of
 # staging a WebRTC room. Compose doesn't read the repo .env for CONSUME_ARGS, hence it is set here.
 # A later plain `make demo-up` recreates the consumer back on WebRTC.
-DEMO_PHONE_CONSUME_ARGS := --channel voice --caller livekit --transport sip
+# SMS fallback for an unanswered call: SignalWire texts from the same number that rings
+# (DEMO_PHONE_NOTIFIER=simulated to send nothing).
+DEMO_PHONE_NOTIFIER ?= signalwire
+DEMO_PHONE_CONSUME_ARGS := --channel voice --caller livekit --transport sip --notifier $(DEMO_PHONE_NOTIFIER)
 demo-phone-up:
 	CONSUME_ARGS="$(DEMO_PHONE_CONSUME_ARGS)" $(DOCKER_USER) $(COMPOSE) --profile telephony \
 		up -d --wait --wait-timeout 180

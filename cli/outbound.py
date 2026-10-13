@@ -47,9 +47,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="voice channel: 'simulated' (offline) or 'livekit' (real SIP via LiveKit Cloud)")
     parser.add_argument("--no-answer", action="store_true", help="simulate the call not answering")
     parser.add_argument("--fail-delivery", action="store_true", help="simulate text delivery failure")
-    parser.add_argument("--notifier", choices=["simulated", "twilio"], default="simulated",
+    parser.add_argument("--notifier", choices=["simulated", "signalwire", "twilio"], default="simulated",
                         help="SMS backend for the text channel and the unanswered-call fallback: "
-                             "'simulated' records it; 'twilio' sends real SMS")
+                             "'simulated' sends nothing (recorded as sms_simulated); "
+                             "'signalwire' / 'twilio' send real SMS from outbound.from")
     parser.add_argument("--number", default=None,
                         help="destination (E.164); default OUTBOUND_CALL_NUMBER. A placeholder is used "
                              "only for simulated runs with neither set")
@@ -66,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from voice.outbound import resolve_destination  # noqa: PLC0415
 
-    real = args.caller == "livekit" or args.notifier == "twilio"
+    real = args.caller == "livekit" or args.notifier != "simulated"
     try:
         destination = resolve_destination(args.number, Config.from_env().outbound_call_number,
                                           real=real)
@@ -111,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     from common.notify import notifier_from_env  # noqa: PLC0415
 
     try:
-        notifier = notifier_from_env(args.notifier, deliver=not args.fail_delivery)
+        notifier = notifier_from_env(args.notifier, deliver=not args.fail_delivery, config=config)
     except ValueError as exc:
         parser.error(str(exc))
 

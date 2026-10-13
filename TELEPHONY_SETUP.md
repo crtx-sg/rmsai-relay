@@ -222,7 +222,7 @@ CONSUME_ARGS="--channel voice --caller livekit --transport sip --number +XXXXXXX
 | `no destination: pass --number or set OUTBOUND_CALL_NUMBER` | a real call with no destination | set `outbound.call_number` in the hospital file, or pass `--number` |
 
 **Note on retries:** a SIP error such as `603` counts as "no answer", so the relay retries
-(`OUTBOUND_MAX_RETRIES`, every `OUTBOUND_RETRY_DELAY_S`) and then, with `--notifier twilio`, sends
+(`OUTBOUND_MAX_RETRIES`, every `OUTBOUND_RETRY_DELAY_S`) and then, with `--notifier signalwire`, sends
 the SMS fallback, even when the cause is configuration. Fix configuration errors before running
 event-driven calls.
 
@@ -238,8 +238,9 @@ empty log after a `603` means the INVITE was refused at the door.
 - **Data:** call audio passes through SignalWire and LiveKit Cloud (and ElevenLabs, if it is the
   STT/TTS backend). Synthetic or public data only until BAAs or self-hosted SIP are in place
   (CLAUDE.md rules 4/5).
-- **SMS:** the SMS fallback currently sends through Twilio (`--notifier twilio`); SignalWire messaging
-  is not wired in.
+- **SMS:** the SMS fallback sends through SignalWire's Messages API (`--notifier signalwire`, the
+  `make demo-phone-up` default) from the same number, which must be SMS-capable (Phone Numbers →
+  your number). Sent texts appear under **Logs → Messages**.
 
 ## Switching carriers
 

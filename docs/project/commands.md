@@ -143,7 +143,7 @@ above the counts asked for (the smallest is LBBB with 81), so expect no shortfal
 | Target | Consumer transport | Phone worker (`rmsai-agent-phone`) | Reportable events… |
 |---|---|---|---|
 | `make demo-up` | `--transport webrtc` (compose default) | not started | stage a WebRTC room and print a join token. **No phone rings.** The log still says `call answered`, because a simulated caller "answers". |
-| `make demo-phone-up` | `--transport sip` | started (`telephony` profile) | dial `OUTBOUND_CALL_NUMBER` through LiveKit Cloud + SignalWire, one call at a time. |
+| `make demo-phone-up` | `--transport sip --notifier signalwire` | started (`telephony` profile) | dial `OUTBOUND_CALL_NUMBER` through LiveKit Cloud + SignalWire, one call at a time; an unanswered call is texted from the same number. |
 
 Both targets finish with `infra/demo-check.sh`. Running `make demo-up` after `demo-phone-up`
 recreates the consumer back on WebRTC. Vitals-driven alerts (rhythm below the confidence bar)

@@ -1,4 +1,4 @@
-"""P5: an unanswered alert call falls back to SMS; the Twilio sender never crashes an event."""
+"""P5: an unanswered alert call falls back to SMS; the SMS senders never crash an event."""
 
 from __future__ import annotations
 
@@ -11,7 +11,12 @@ import pytest
 from common.audit import AuditLog
 from common.config import DEFAULT
 from common.interfaces import ECGModel
-from common.notify import SimulatedSmsNotifier, TwilioSmsNotifier, notifier_from_env
+from common.notify import (
+    SignalWireSmsNotifier,
+    SimulatedSmsNotifier,
+    TwilioSmsNotifier,
+    notifier_from_env,
+)
 from inference.pipeline import process_window
 from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
@@ -58,8 +63,14 @@ def _run(outcomes, notifier, tmp_path, config=_CFG):
 
 # ------------------------------------------------------------------------ run_outbound path ---
 
+class _RealSms(SimulatedSmsNotifier):
+    """Stands in for a real sender: records the message, and its "delivered" counts."""
+
+    simulated = False
+
+
 def test_unanswered_call_texts_the_alert_and_stays_reported(tmp_path):
-    sms = SimulatedSmsNotifier()
+    sms = _RealSms()
     result, status, audits = _run([CallOutcome.NO_ANSWER] * 3, sms, tmp_path)
     assert result.outcome == "no_answer" and result.attempts == 3  # retries happened first
     assert result.fallback == "sms_delivered"
@@ -68,6 +79,17 @@ def test_unanswered_call_texts_the_alert_and_stays_reported(tmp_path):
     assert to == "+15551234567" and text.startswith("Missed call from RMS relay.")
     assert "atrial fibrillation" in text.lower()
     assert any(a["action"] == "sms_fallback" and a["outcome"] == "sms_delivered" for a in audits)
+
+
+def test_a_simulated_sms_is_never_recorded_as_delivered(tmp_path, capsys):
+    # `make demo-phone-up` ran without --notifier: after three unanswered dials the event read
+    # "sms_delivered" / reported in the log and the app though no text was sent (2026-10-13).
+    result, status, audits = _run([CallOutcome.NO_ANSWER] * 3, SimulatedSmsNotifier(), tmp_path)
+    assert result.fallback == "sms_simulated"
+    assert result.status == status == "notify_failed"  # nobody was reached
+    assert any(a["action"] == "sms_fallback" and a["outcome"] == "sms_simulated" for a in audits)
+    out = capsys.readouterr().out
+    assert "SIMULATED, not sent" in out and "+15551234567" not in out  # says so, number masked
 
 
 def test_fallback_delivery_failure_is_notify_failed(tmp_path):
@@ -141,10 +163,64 @@ def test_twilio_skips_invalid_destination():
 
 
 def test_notifier_from_env_names_missing_twilio_keys(monkeypatch):
-    for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "OUTBOUND_FROM"):
+    for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACsid")
-    with pytest.raises(ValueError, match="TWILIO_AUTH_TOKEN, OUTBOUND_FROM"):
-        notifier_from_env("twilio")
+    with pytest.raises(ValueError, match=r"TWILIO_AUTH_TOKEN, outbound\.from"):
+        notifier_from_env("twilio", config=replace(_CFG, outbound_from=""))
     assert isinstance(notifier_from_env("simulated"), SimulatedSmsNotifier)
     assert notifier_from_env("simulated", deliver=False).deliver is False
+
+
+def test_the_sender_comes_from_the_hospital_config(monkeypatch):
+    # The number moved to config/hospitals/<id>.yaml; an env-only lookup refused to start.
+    monkeypatch.delenv("OUTBOUND_FROM", raising=False)
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACsid")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "tok")
+    n = notifier_from_env("twilio", config=replace(_CFG, outbound_from="+15550001000"))
+    assert isinstance(n, TwilioSmsNotifier) and n._from == "+15550001000"
+
+
+# -------------------------------------------------------------- SignalWire sender (offline) ---
+
+_SW_CFG = replace(_CFG, signalwire_space="example.signalwire.com", signalwire_project_id="proj-1",
+                  signalwire_api_token="PTtok", outbound_from="+12015550100")
+
+
+def test_signalwire_posts_to_the_space_laml_messages_api(capsys):
+    calls = []
+
+    def post(url, form, headers):
+        calls.append((url, form, headers))
+        return 201, '{"sid": "SMsw1"}'
+
+    n = notifier_from_env("signalwire", config=_SW_CFG)
+    assert isinstance(n, SignalWireSmsNotifier) and not n.simulated
+    n._post = post
+    assert n.send("+15551234567", "Missed call from RMS relay. Alert for PT1.")
+    (url, form, headers), = calls
+    assert url == ("https://example.signalwire.com/api/laml/2010-04-01/Accounts/proj-1/"
+                   "Messages.json")
+    assert form == {"To": "+15551234567", "From": "+12015550100",
+                    "Body": "Missed call from RMS relay. Alert for PT1."}
+    assert headers["Authorization"].startswith("Basic ")
+    out = capsys.readouterr().out
+    assert "sent via signalwire" in out and "SMsw1" in out and "+15551234567" not in out
+
+
+def test_signalwire_space_may_be_a_bare_name():
+    n = SignalWireSmsNotifier("example", "proj-1", "tok", "+12015550100", post_fn=lambda *a: (201, "{}"))
+    assert n._url.startswith("https://example.signalwire.com/api/laml/")
+
+
+def test_signalwire_rejection_returns_false(capsys):
+    body = '{"code": 21211, "message": "Invalid To phone number"}'
+    n = SignalWireSmsNotifier("example.signalwire.com", "proj-1", "tok", "+12015550100",
+                              post_fn=lambda *a: (400, body))
+    assert n.send("+15551234567", "hello") is False
+    assert "21211" in capsys.readouterr().err
+
+
+def test_notifier_from_env_names_missing_signalwire_keys():
+    with pytest.raises(ValueError, match="SIGNALWIRE_API_TOKEN"):
+        notifier_from_env("signalwire", config=replace(_SW_CFG, signalwire_api_token=""))
