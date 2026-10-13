@@ -267,10 +267,28 @@ archived report narrative. Key nodes/edges:
   `MonitoredEvent` (persisted `DeviceEvent` with inline vitals snapshot + criticality + lifecycle
   status + `signal_ref` (HDF5 pointer), `ecg_plot_ref` (rendered PNG), `hr_history` (HR series for
   the trend query)), `ActionItem`, `Report`, `CareProtocol`/`ProtocolStep`.
-- **Edges:** `HAS_DIAGNOSIS`, `CO_MORBID_WITH` (derived from cohort co-occurrence, carries
-  confidence/count/window), `PRESENTS`, `HAD_SURGERY`, `PRESCRIBED`, `MANAGES`, `ASSIGNED_TO`
-  (Patient→Bed), `IN_UNIT`, `HAD_EVENT`, `AT_BED`, `OF_CONDITION`, `FOLLOWED_BY` (per-patient chain
-  ordered by `event_timestamp`), `HAS_ACTION`, `HAS_REPORT`, `APPLIES_TO`, `HAS_STEP`.
+- **Edges:**
+  - patient record: `HAS_DIAGNOSIS`, `PRESENTS`, `HAD_SURGERY`, `PRESCRIBED`, `ASSIGNED_TO`
+    (Patient→Bed), `IN_UNIT` (Bed→Unit);
+  - events: `HAD_EVENT` (Patient→MonitoredEvent), `AT_BED`, `OF_CONDITION` (the *predicted*
+    condition), `HAS_ACTION`, `HAS_REPORT`, and `FOLLOWED_BY`: each patient's events chained in
+    time order (event → next event by `timestamp`, ties broken by event id), with `gap_s` (seconds
+    between them) on the edge;
+  - clinical knowledge: `MANAGES` (Treatment→Condition), `INDICATES` (Condition→Treatment),
+    `APPLIES_TO` / `RECOMMENDS` (Guideline or ProtocolStep → Condition / Treatment), `HAS_STEP`
+    (CareProtocol→ProtocolStep);
+  - `CO_MORBID_WITH` (derived from cohort co-occurrence, carries confidence/count/window): only
+    after `cli.graph ingest` seeds a patient cohort.
+
+The `FOLLOWED_BY` chain is rebuilt for the patient on every persisted event, so it stays right when
+events arrive out of order or are replayed. For events persisted before it existed, backfill once
+with `cli.graph chain`. To walk a patient's history in the Neo4j Browser:
+
+```cypher
+MATCH path = (:Patient {id: 'PT998224'})-[:HAD_EVENT]->(first)-[:FOLLOWED_BY*0..]->(e)
+WHERE NOT ()-[:FOLLOWED_BY]->(first)
+RETURN path
+```
 
 **Care protocols** are curated external YAML (`common/protocols/care_protocols.yaml`), matched on
 `event_type` + vital conditions + min severity (most-specific-wins, with a default fallback), loaded
@@ -2143,6 +2161,7 @@ uv run python -m cli.kb_route --llm "..."  # which path a question takes (regex 
 uv run python -m cli.call --caller livekit # ring the on-call number on demand (no event needed)
 uv run python -m cli.inbox_probe --ptt     # probe in-app chat/PTT without the browser
 uv run python -m cli.graph migrate         # graph schema migrate / seed
+uv run python -m cli.graph chain           # rebuild every patient's FOLLOWED_BY event chain (backfill)
 uv run python -m cli.kb "..."              # hybrid (vector + graph) KB query
 uv run python -m cli.kb_dump <event_id>    # dump one event: graph node + report file + vector chunks
 uv run python -m cli.kb_eval               # vector vs hybrid over the gold question set

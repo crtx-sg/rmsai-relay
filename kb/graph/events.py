@@ -2,8 +2,8 @@
 
 Idempotent MERGE by `uuid` (dedupe across MQTT+HDF5 + replays). Links the event to patient, bed,
 and condition, stores the inline vitals snapshot + criticality + lifecycle status, and attaches
-`ActionItem`s from care guidance. Phase 4 extends this (report archival, FOLLOWED_BY chaining);
-Phase 2B uses it to seed the operational-query test set.
+`ActionItem`s from care guidance, and keeps each patient's events chained in time order
+(`FOLLOWED_BY`). Phase 2B uses it to seed the operational-query test set.
 """
 
 from __future__ import annotations
@@ -99,7 +99,42 @@ def persist_monitored_event(
             priority=item.get("priority", "medium"), status=item.get("status", "outstanding"),
         )
 
+    link_patient_events(driver, patient_id)
     return uuid
+
+
+def link_patient_events(driver: GraphDriver, patient_id: str) -> None:
+    """Rebuild one patient's `FOLLOWED_BY` chain: each event → the next by `timestamp`.
+
+    Rebuilt rather than appended, so it stays right when events arrive out of time order (a
+    backlog, a replay, two recordings for one patient) and stays idempotent. Equal timestamps
+    tie-break on the event id. Each edge carries `gap_s`, the seconds between the two events.
+    """
+    driver.run_write(
+        "MATCH (:Patient {id:$pid})-[:HAD_EVENT]->(:MonitoredEvent)-[f:FOLLOWED_BY]->() DELETE f",
+        pid=patient_id,
+    )
+    driver.run_write(
+        """
+        MATCH (:Patient {id:$pid})-[:HAD_EVENT]->(e:MonitoredEvent)
+        WITH e ORDER BY e.timestamp, e.id
+        WITH collect(e) AS evs
+        UNWIND range(0, size(evs) - 2) AS i
+        WITH evs[i] AS a, evs[i + 1] AS b
+        MERGE (a)-[f:FOLLOWED_BY]->(b)
+        SET f.gap_s = b.timestamp - a.timestamp
+        """,
+        pid=patient_id,
+    )
+
+
+def link_all_patient_events(driver: GraphDriver) -> int:
+    """Rebuild every patient's chain (backfill for graphs persisted before chaining). Returns the
+    number of patients with events."""
+    rows = driver.run_read("MATCH (p:Patient)-[:HAD_EVENT]->() RETURN DISTINCT p.id AS pid")
+    for row in rows:
+        link_patient_events(driver, row["pid"])
+    return len(rows)
 
 
 def persist_report(

@@ -110,8 +110,9 @@ markdown report.
 
 **Step 4 · Persist** (`orchestrator/bus_consumer.py`). The event is published to a **Redis stream**
 (the bus); a consumer writes it to:
-- **Neo4j** (graph): `Patient → HAD_EVENT → MonitoredEvent → HAS_REPORT`, plus conditions, beds, and
-  action items — the "who / what / when / relationships" store.
+- **Neo4j** (graph): `Patient → HAD_EVENT → MonitoredEvent → HAS_REPORT`, plus conditions, beds,
+  action items, and `FOLLOWED_BY` (each patient's events chained in time order, rebuilt on every
+  persist) — the "who / what / when / relationships" store.
 - **Qdrant** (vector): the report narrative is embedded and stored for semantic search, alongside the
   clinical corpus. Embeddings come from **BGE** (`bge-small-en-v1.5`, the `rag` extra) or a
   deterministic **hashing** embedder for offline/test runs. The choice is not cosmetic: only BGE

@@ -4,6 +4,7 @@
   python -m cli.graph ingest --patients PT1000 PT1001 PT1002    # synthetic cohort -> graph
   python -m cli.graph extract --dir docs                        # document entities -> shared nodes
   python -m cli.graph protocols                                 # load care protocols
+  python -m cli.graph chain                                     # rebuild FOLLOWED_BY event chains
   python -m cli.graph lookup "critical events in the last 24 hours"
   python -m cli.graph template outstanding_action_items
 """
@@ -17,6 +18,7 @@ import time
 from cli.gen_synthetic import build_cohort
 from common.config import DEFAULT
 from kb.graph.driver import GraphDriver
+from kb.graph.events import link_all_patient_events
 from kb.graph.extract import extract_dir
 from kb.graph.ingest import derive_comorbidity, ingest_patient_record
 from kb.graph.lookup import lookup
@@ -40,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     p_ext.add_argument("--dir", default="docs")
 
     sub.add_parser("protocols", help="load care protocols into the graph")
+    sub.add_parser("chain", help="rebuild every patient's FOLLOWED_BY event chain (backfill)")
 
     p_look = sub.add_parser("lookup", help="natural-language operational query")
     p_look.add_argument("query")
@@ -64,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(extract_dir(driver, args.dir)))
         elif args.cmd == "protocols":
             print(json.dumps({"protocols_loaded": load_protocol_file(driver, _PROTOCOLS)}))
+        elif args.cmd == "chain":
+            print(json.dumps({"patients_chained": link_all_patient_events(driver)}))
         elif args.cmd == "lookup":
             result = lookup(driver, args.query, now=time.time())
             print(json.dumps(result, default=str, indent=2))
