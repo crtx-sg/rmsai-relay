@@ -168,7 +168,10 @@ class OutboundHandler(OrchestratorHandler):
 
     def _on_authenticated(self, session_id: str) -> str:
         # Scope every subsequent turn to this patient, then speak the alert that prompted the call.
-        self.working.set_authenticated(session_id, patient_ref=self.alert.patient_ref)
+        # `event_ref`: "this event" on the call is the alerted event, not the patient's latest
+        # (a VF call answered vitals from a VT event 0.4s newer, observed 2026-10-13).
+        self.working.set_authenticated(session_id, patient_ref=self.alert.patient_ref,
+                                       event_ref=self.alert.event_id)
         print(f"[voice] speaking event alert for {self.alert.patient_ref} "
               f"(event {self.alert.event_id})", flush=True)
         # Built from structured fields only (pseudonym, bed, rhythm, vitals): safe to log (rule 6).

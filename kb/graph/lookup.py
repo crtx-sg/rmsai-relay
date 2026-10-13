@@ -178,11 +178,15 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         if patient_ref:
             return "mews_at_patient_last_event", {"patient_id": patient_ref}
 
-    # T5 — vitals at the event: a named bed wins (an explicit target beats the session's), then the
-    # selected worklist event, then the session patient's latest.
+    # T5 — vitals at the event: a named bed wins (an explicit target beats the session's), then a
+    # named rhythm for the session patient, then the selected/called event, then the patient's
+    # latest.
     if _VITALS.search(q) and "trend" not in q:
         if bed:
             return "vitals_for_bed_last_event", {"bed": bed}
+        if etype and patient_ref:
+            return "vitals_at_patient_event_of_type", {
+                "patient_id": patient_ref, "event_type": etype, "event_uuid": event_ref}
         if event_ref:
             return "vitals_at_selected_event", {"event_uuid": event_ref}
         if patient_ref:

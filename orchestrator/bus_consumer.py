@@ -274,10 +274,11 @@ def _place_live_call(
     """
     w = event.window
     room = f"rmsai-outbound-{w.event_id}"
-    alert_store.put(OutboundAlert(
+    alert = OutboundAlert(
         session_id=room, patient_ref=w.patient_ref, event_id=w.event_id,
         spoken_alert=spoken_report(event, bed=bed_label, config=config), bed=bed_label,
-    ))
+    )
+    alert_store.put(alert)
     # Dispatch the agent into this room — in the background, WHILE the call is dialled. The
     # dispatch (duplicate-agent check + create on LiveKit Cloud) took ~4s and used to delay the
     # dial; the agent joins in 1-4s while the phone rings for 10s+, and the worker's greeting
@@ -292,6 +293,13 @@ def _place_live_call(
             print(f"[consume] agent dispatch ({why}) to {room} failed: "
                   f"{type(exc).__name__}: {exc}", flush=True)
 
+    def _restage(a: OutboundAlert) -> None:
+        try:
+            alert_store.put(a)
+        except Exception as exc:  # noqa: BLE001 - the redial still connects; only the alert is lost
+            print(f"[consume] re-staging the alert for {room} failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
     dispatcher = threading.Thread(target=_dispatch, args=("first",), daemon=True)
     dispatcher.start()
     print(f"[consume] alert staged in Redis; placing call (agent dispatching in parallel) -> "
@@ -300,8 +308,11 @@ def _place_live_call(
         event, driver=driver, orchestrator=orchestrator, caller=caller_factory(room),
         utterances=utterances, config=config, bed=bed_label, live_audio=True,
         fallback_notifier=notifier,
-        # A retry needs the agent again: after an unanswered attempt the room closed and it left.
-        before_retry=lambda: _dispatch("retry"),
+        # A retry needs the agent AND the alert again: after an unanswered attempt the room closed
+        # and the agent left, and the agent consumed the staged alert when it joined. Without the
+        # re-stage the redial's agent found no alert and greeted the clinician as an inbound KB
+        # call, with no word about the event (observed 2026-10-13, after a 408 SIP timeout).
+        before_retry=lambda: (_restage(alert), _dispatch("retry")),
     )
     dispatcher.join(timeout=10)
     # One call at a time: wait for the clinician to hang up before the next call can dial.

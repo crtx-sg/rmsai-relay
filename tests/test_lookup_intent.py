@@ -181,10 +181,23 @@ def test_vitals_intent_prefers_the_selected_event_over_the_patients_latest():
     assert match_intent("what were the vitals at the event for the patient in Bed Unit1-Bed01?",
                         now=NOW, patient_ref="PT7878", event_ref="evt-9") == (
         "vitals_for_bed_last_event", {"bed": "Unit1-Bed01"})
-    # No selection (SIP call, CLI) -> unchanged behaviour.
+    # No selection (CLI, inbound call) -> the patient's latest.
     assert match_intent("what were the vitals at the time of the event?", now=NOW,
                         patient_ref="PT7878") == (
         "vitals_at_patient_last_event", {"patient_id": "PT7878"})
+
+
+def test_vitals_for_a_named_rhythm_pick_that_event():
+    # On a VF call, "vitals at the time of the VT" must answer from the patient's VT event, and
+    # "...of ventricular fibrillation" from the called event (preferred when it is of that type).
+    assert match_intent("what were the vitals at the time of the VT?", now=NOW,
+                        patient_ref="PT998224", event_ref="evt-vf") == (
+        "vitals_at_patient_event_of_type",
+        {"patient_id": "PT998224", "event_type": "VENTRICULAR_TACHYCARDIA", "event_uuid": "evt-vf"})
+    assert match_intent("can you tell me the vitals at the time of ventricular fibrillation?",
+                        now=NOW, patient_ref="PT998224") == (
+        "vitals_at_patient_event_of_type",
+        {"patient_id": "PT998224", "event_type": "VENTRICULAR_FIBRILLATION", "event_uuid": None})
 
 
 def test_vitals_intent_requires_patient_scope():

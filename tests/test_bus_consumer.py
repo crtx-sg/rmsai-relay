@@ -176,6 +176,27 @@ def test_retry_redispatches_the_agent(patched, monkeypatch):
     assert dispatched == [room, room]  # first attempt + the retry
 
 
+def test_retry_restages_the_alert(patched, monkeypatch):
+    # The worker deletes the staged alert when it joins. After a 408 SIP timeout the redial's agent
+    # found no alert and greeted the clinician as an inbound KB call, saying nothing about the event
+    # (2026-10-13). A retry must stage the alert again, before re-dispatching the agent.
+    store, order = _FakeAlertStore(), []
+    store.put = lambda alert: (store.staged.append(alert.session_id), order.append("stage"))
+
+    def _voice_with_retry(ev, **kw):
+        kw["before_retry"]()
+        return OutboundResult(called=True, decision_reason="ok", outcome="answered", attempts=2,
+                              status="reported")
+
+    monkeypatch.setattr(bus_consumer, "run_outbound", _voice_with_retry)
+    res = _run(event_to_dict(_event(_Afib())), patched, channel="voice",
+               caller_factory=lambda room: object(),
+               dispatch_fn=lambda room: order.append("dispatch"), alert_store=store)
+    room = f"rmsai-outbound-{res.event_uuid}"
+    assert store.staged == [room, room]  # staged for the first attempt and again for the retry
+    assert order[-2:] == ["stage", "dispatch"]  # the retry's agent finds the alert waiting
+
+
 def test_next_event_waits_for_the_answered_call_to_end(patched):
     waited = []
     res = _run(event_to_dict(_event(_Afib())), patched, channel="voice",

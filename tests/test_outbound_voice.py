@@ -70,11 +70,13 @@ class _FakeWorking:
     def get_or_create(self, sid):
         return self.states.setdefault(sid, _State())
 
-    def set_authenticated(self, sid, *, patient_ref=None):
+    def set_authenticated(self, sid, *, patient_ref=None, event_ref=None):
         s = self.get_or_create(sid)
         s.authenticated = True
         if patient_ref:
             s.patient_ref = patient_ref
+        if event_ref:
+            s.event_ref = event_ref
 
 
 class _Result:
@@ -130,6 +132,9 @@ def test_outbound_handler_pin_then_alert_then_followup(tmp_path):
     # correct PIN -> speak THIS event's alert (not the generic greeting) + bind the patient
     assert h.respond("one two three four", session_id="room1") == alert.spoken_alert
     assert working.get_or_create("room1").patient_ref == "PT1155"
+    # ...and the called event: "this event" is the alerted one, not the patient's latest (a VF call
+    # answered vitals from a newer VT for the same patient, 2026-10-13)
+    assert working.get_or_create("room1").event_ref == "E1"
     # a follow-up routes to the orchestrator, scoped to the session
     assert h.respond("what were the vitals", session_id="room1") == "answer:what were the vitals"
     assert orch.calls == [("room1", "what were the vitals")]

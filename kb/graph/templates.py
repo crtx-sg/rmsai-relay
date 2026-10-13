@@ -100,6 +100,18 @@ TEMPLATES: dict[str, str] = {
                e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
                e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
     """,
+    # Vitals at the patient's event of a named type ("vitals at the time of the VT"): the scoped
+    # event when it is of that type, else the patient's latest of that type.
+    "vitals_at_patient_event_of_type": """
+        MATCH (p:Patient {id: $patient_id})-[:HAD_EVENT]->(e:MonitoredEvent {event_type: $event_type})
+        WITH p, e ORDER BY coalesce(e.uuid = $event_uuid, false) DESC, e.timestamp DESC LIMIT 1
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
+        RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
+               e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
+               e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+    """,
     # MEWS for the selected worklist event / the session patient's latest event. The score and the
     # vitals that contributed to it live in the event's stored explanation (`why_json`, written for
     # every event at persist time); the answer renderer reads them from there and never voices the
