@@ -150,7 +150,7 @@ _DEFINITIONAL = re.compile(
     r"formula|criteria|protocol|guideline|escalat\w*|threshold|when should)\b",
     re.IGNORECASE,
 )
-# The worklist: pending (unacknowledged) High/Critical events. "work list" is how STT splits it.
+# The worklist: every pending (unacknowledged) event. "work list" is how STT splits it.
 _WORKLIST = re.compile(
     r"\b(work\s*-?\s*list|pending (?:alarms?|events?|alerts?)|un-?acknowledged|"
     r"outstanding (?:alarms?|events?|alerts?)|open (?:alarms?|alerts?))\b", re.IGNORECASE)

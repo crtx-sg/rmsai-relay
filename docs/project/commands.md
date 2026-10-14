@@ -109,7 +109,7 @@ This runs on the host, so the package is `$ECGPKG_DIR` if set, otherwise
    `manifest_sha256`, the command stops with exit 2 unless `--allow-mismatch` is passed.
    Without this check, "held out" would mean nothing.
 3. **Select:** for each label, gets the `test`-split candidates, sorts them by (file, event key)
-   and samples N with `random.Random(42)`. The same package, arguments and seed always give the
+   and samples N with `random.Random(--seed)` (default 42). The same package, arguments and seed always give the
    same events. If a label has too few candidates, the command takes what exists and prints a
    shortfall instead of failing.
 4. **Pseudonymise:** each source `subject_id` maps to a stable `PT9#####` pseudonym (sha256-based).
@@ -157,7 +157,9 @@ make phone-logs   # expect "caller answered" then "speaking greeting"
 ```
 
 In SIP mode the consumer pushes **every** gated event, plus vitals alerts, to the app as soon as it
-arrives. Calls go to a Redis call queue (`rmsai:calls:*`) and are placed one at a time, highest
+arrives. Calls go to a Redis call queue (`rmsai:calls:*`) and are placed one at a time across the whole
+system (a single call slot, `rmsai:calls:active`, with a 60 s lease, so two consumers never ring
+twice), highest
 criticality first and first-come within a level. A queued call is skipped if the event was
 acknowledged (in the app) or resolved while it waited. Calls still waiting survive a consumer
 restart. Console lines: `[queued] … call N in queue`, `[calls] dialling …`/`skip …`,
@@ -175,7 +177,7 @@ it before the call. Ctrl-C stops it.
 ## Event history (`cli.events`)
 
 Lists every persisted event from the graph (alerted or not), newest first, with optional filters.
-Read-only. It uses the same query and the same **pending** definition (alerted AND not
+Read-only except `--reopen`. It uses the same query and the same **pending** definition (alerted AND not
 acknowledged/resolved) as the companion app and the voice agent, so it's the way to check a spoken
 answer.
 
@@ -190,6 +192,10 @@ uv run python -m cli.events --min-criticality Critical --json
 # how a voice/chat question resolves: normalized text, graph query + params, rows, the answer
 uv run python -m cli.events --ask "say all unacked events in bed 02"
 uv run python -m cli.events --ask "unacknowledged events for this patient" --as-patient PT998224 --spoken
+
+# demo reset (writes): set acknowledged/resolved events back to reported, so a re-ingest alerts again
+uv run python -m cli.events --reopen
+uv run python -m cli.events --reopen <event-id> <event-id>
 ```
 
 Voice and chat event listings ("unacknowledged events on bed 2", "acknowledged events for this
@@ -199,7 +205,8 @@ short id. A listing whose target can't be resolved ("events for Mr Smith") is de
 hint, not guessed. The worker log shows `[orchestrator] graph query event_history {…} -> N row(s)`,
 and `make phone-transcript` includes that line.
 
-`--status`: `any` (default), `pending`, `acknowledged`, `resolved`, `withheld`. `--since` filters on
+`--status`: `any` (default), `pending`, `acknowledged`, `resolved`, `withheld`. Other filters:
+`--unit Unit1`, `--model <id>`, `--dataset mitbih`, `--limit N`. `--since` filters on
 event time. Each row shows time (UTC), patient, bed, type, confidence, criticality, status (or the
 reason it was withheld), whether it was a vitals alert, what was delivered (app/call/SMS),
 truth → outcome for labelled events, and the event id.
@@ -303,5 +310,5 @@ Patient ─HAD_EVENT→ MonitoredEvent ─FOLLOWED_BY→ (the patient's next eve
    ├─PRESENTS→ Symptom
    └─HAD_SURGERY→ Surgery
 Guideline ─APPLIES_TO→ Condition,  ─RECOMMENDS→ Treatment
-CareProtocol ─HAS_STEP→ ProtocolStep ─RECOMMENDS→ Treatment
+CareProtocol ─APPLIES_TO→ Condition, ─HAS_STEP→ ProtocolStep ─RECOMMENDS→ Treatment
 ```

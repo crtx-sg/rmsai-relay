@@ -55,9 +55,11 @@ in a room with nobody in it.
    the hospital's `outbound.call_number` (`config/hospitals/<HOSPITAL_ID>.yaml`), with `wait_until_answered` (`cli/consume.py: livekit_voice_wiring`).
 
 `cli.call --caller livekit` is the same dial into `rmsai-call-<id>` with no staged alert, so the
-worker runs the PIN-gated Q&A. Any SIP error counts as **no answer**: retried
-(`outbound.max_retries`, re-staging the alert each time), then the SMS fallback
-(`--notifier signalwire`). A missing trunk or number fails fast.
+worker runs the PIN-gated Q&A. Any SIP error counts as **no answer** and is retried
+(`outbound.max_retries`). On the event path (`cli.consume`) each retry re-stages the alert
+and re-dispatches the agent, and when all retries fail the SMS fallback is sent
+(`--notifier signalwire`), unless the event was acknowledged meanwhile. `cli.call` just
+exits 1. A missing trunk or number fails fast.
 
 ## Inbound (call-in)
 

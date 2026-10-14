@@ -93,8 +93,9 @@ class OrchestratorHandler(Handler):
     def is_authenticated(self, session_id: str) -> bool:
         """Whether this session passed the PIN gate — i.e. is in the post-alert Q&A phase.
 
-        The LiveKit worker uses this to scope wake-word gating to follow-up audio only (PIN entry,
-        the spoken alert, and the verbal ack run before this is True and are never gated).
+        The LiveKit worker uses this to scope wake-word gating to follow-up audio only (PIN entry
+        and the spoken alert run before this is True; a reply to the alert (an ack, a "no") is let
+        through the gate by `is_ack_reply`).
         """
         return self.working.get_or_create(session_id).authenticated
 

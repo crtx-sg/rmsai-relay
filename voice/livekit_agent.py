@@ -35,6 +35,7 @@ from common.config import DEFAULT, Config
 from .adapters import STTAdapter, TTSAdapter, build_stt, build_tts, speakable
 from .handlers import Handler, build_handler, build_outbound_handler
 from .livekit_cloud import is_configured
+from .outbound import is_ack_reply
 from .outbound_alert import OutboundAlertStore
 
 # LiveKit plugins register themselves at import time, and that registration MUST run on the main
@@ -421,8 +422,9 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
     authenticated), an audio turn is only answered if it starts with the wake word or arrives within
     `awake_window_s` of the last wake word. Set `wake_required=False` (config `AUDIO_WAKE_REQUIRED`)
     to answer every authenticated audio turn — the escape hatch when STT mishears the brand word.
-    PIN entry, the spoken alert, and the verbal ack run before auth and are never gated; text-chat
-    turns bypass this hook entirely.
+    PIN entry and the spoken alert run before auth and are never gated; a reply to the alert
+    ("acknowledged", "not yet") passes without the wake word (`is_ack_reply`); text-chat turns
+    bypass this hook entirely.
     """
     from livekit.agents import Agent, StopResponse  # noqa: PLC0415
 
@@ -470,6 +472,8 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             if not (is_auth and is_auth(self._session_id)):
                 return
             text = (new_message.text_content or "").strip()
+            if is_ack_reply(text):
+                return  # answering the alert ("acknowledged", "not yet") needs no wake word
             action, question, self._awake_until = gate_audio_turn(
                 text, wake_word=wake_word, wake_required=wake_required,
                 awake_until=self._awake_until, now=time.monotonic(), awake_window_s=awake_window_s,

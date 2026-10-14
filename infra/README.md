@@ -45,6 +45,7 @@ does **not** read the repo-root `.env` for `${…}` settings. The app containers
 themselves, but Compose-level knobs must be exported in the shell or passed inline
 (`CONSUME_ARGS="…" make docker-up`): `CONSUME_ARGS`, `ECGPKG_HOST_DIR`, `ECGPKG_NAME`,
 `GATEWAY_PORT`, `APP_UID/GID`, `LIVEKIT_WORKER_HTTP_PORT`, `LIVEKIT_SIP_WORKER_HTTP_PORT`,
+`CONSUMER_HF_OFFLINE`, `WORKER_HF_OFFLINE` (default 1; set to 0 for the first run on a fresh `hf_cache`),
 `NEO4J_USER/PASSWORD` and the `*_PORT` overrides. A value in a service's `environment:` overrides the
 same key in `.env`; changing `NEO4J_PASSWORD` only in `.env` breaks auth against the container.
 

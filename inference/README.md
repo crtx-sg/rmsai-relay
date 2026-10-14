@@ -11,8 +11,10 @@ trained on ecg_sigma `ecgpkg` v2. Run `make weights` first; checkpoints are giti
 
 The **head, lead order and filter preset are read from the checkpoint** (`load_models` →
 `LoadedModel.class_spec.names` / `.leads` / `.filter_preset`), never hard-coded. `EcgTransConvModel`
-validates both against this repo at load time and raises on mismatch, so `get_ecg_model` falls back
-to the stub loudly rather than emitting silently mislabelled predictions.
+validates both against this repo at load time and raises on mismatch. `cli.ingest` / `cli.outbound`
+call `get_ecg_model(..., required=True)`, so missing or mismatched checkpoints raise `ModelLoadError`
+and the run stops, rather than publishing stub predictions as real alerts. Only `--checkpoint` with
+no value (or no `ECG_CHECKPOINTS`) uses the stub.
 
 **16 is the vocabulary, 13 is the active head.** `common/event_types.CLASS_NAMES` lists all 16
 `Condition` names; `real_v2`'s 13 are exactly the first 13 of them, in the same order. Everything

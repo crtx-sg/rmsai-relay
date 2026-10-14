@@ -1,3 +1,5 @@
 # memory
 
-Three memory tiers: working (Redis), episodic (Qdrant; Mem0-swappable), semantic (=2A). Phase 3.
+Two memory tiers live here: working (`working.py`, Redis `rmsai:session:{sid}`, 24 h TTL renewed on
+every save, latest 50 turns kept) and episodic (`episodic.py`, Qdrant `rmsai_episodic`;
+Mem0-swappable). The semantic tier is the KB itself (`kb/`, `cli.kb`). Phase 3.

@@ -152,7 +152,7 @@ def process_bus_event(
     trace = _trace(event, config)
     if prior in CLOSED_STATUSES:
         # A replay or redelivery of an event the clinician already closed: keep the status, and
-        # don't push or call again (`cli.events reopen` resets a demo).
+        # don't push or call again (`cli.events --reopen` resets a demo).
         print(f"[consume] event {w.event_id} already {prior}; not re-alerted", flush=True)
         return ConsumeResult(
             event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,

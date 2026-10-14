@@ -304,3 +304,15 @@ def test_renderers_handle_missing_fields():
         "No medications are recorded for this patient."
     assert _answer_action_items([{"patient": "PT1", "action": None}]) == \
         "No action items are recorded for this event."
+
+
+# --- docs review: replies to the alert pass the wake gate (as the README always said) -------------
+
+@pytest.mark.parametrize("text, passes", [
+    ("acknowledged", True), ("Acknowledge this event", True), ("yes", True), ("not yet", True),
+    ("acknowledge bed two", True), ("don't acknowledge yet", True),
+    ("is bed two acknowledged", False), ("what is the heart rate", False)])
+def test_alert_replies_skip_the_wake_word(text, passes):
+    from voice.outbound import is_ack_reply
+
+    assert is_ack_reply(text) is passes

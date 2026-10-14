@@ -248,6 +248,16 @@ def is_plain_no(text: str) -> bool:
         and tokens <= _ACK_NO | _ACK_YES | _ACK_FILLER | {"yet", "wait", "hold", "on"}
 
 
+def is_ack_reply(text: str) -> bool:
+    """A reply to the alert ("acknowledged", "yes", "not yet", "acknowledge bed two"), not a
+    question. These pass the wake-word gate: the clinician answers the alert, they don't address
+    the agent, so "hey vios, acknowledge" must not be required."""
+    if is_plain_no(text) or parse_ack(text) == "yes":
+        return True
+    return bool(re.search(r"\back(?:nowledge[ds]?)?\b", text, re.IGNORECASE)) \
+        and parse_ack(text) != "no" and not is_question(text)
+
+
 def parse_ack(text: str) -> str:
     """Classify a verbal acknowledgment as 'yes' | 'no' | 'unclear' (G4).
 

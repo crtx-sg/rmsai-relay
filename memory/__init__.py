@@ -1,4 +1,4 @@
-"""Three-tier memory: working (Redis session), episodic (Qdrant interactions), semantic (2A index)."""
+"""Memory: working (Redis session) and episodic (Qdrant interactions); the semantic tier is the KB."""
 
 from __future__ import annotations
 

@@ -32,10 +32,16 @@ The two never call each other directly — they hand off through **Neo4j** (grap
 adds **asynchronous / cross-process** decoupling at three specific seams:
 - **Event bus** (Redis Stream `rmsai.events`) — *within* the event pipeline: the producer
   (`cli.ingest --emit bus`, `XADD`) is fully decoupled from the consumer (`bus_consumer`, which
-  drains, persists, and dispatches). Producer and consumer run independently.
-- **Call queue** (sorted set `rmsai:calls:queue` + hash `rmsai:calls:jobs`) — *within* the consumer,
-  on the SIP transport: the worklist push happens at once, while phone calls wait here and are placed
-  one at a time, most severe first. A stream can't do this, because a stream is strictly FIFO.
+  drains, persists, and dispatches). Producer and consumer run independently. A message is acked
+  only once it is handled; a failed one stays pending and is retried (`XAUTOCLAIM` after
+  `--retry-idle-ms`, default 10 min, which also takes over a crashed consumer's messages), and after
+  `--max-attempts` (default 3) it moves to `rmsai.events.dead`. The stream is capped at ~100k
+  entries (`MAXLEN`).
+- **Call queue** (sorted set `rmsai:calls:queue` + hash `rmsai:calls:jobs`, plus the system-wide
+  call slot `rmsai:calls:active`, a 60 s lease renewed during the call) — *within* the consumer, on
+  the SIP transport: the worklist push happens at once, while phone calls wait here and are placed
+  one at a time across every consumer, most severe first. A stream can't do this, because a stream
+  is strictly FIFO.
 - **OutboundAlert store** (Redis key `rmsai:outbound_alert:{sid}`, TTL) — *between* the pipelines:
   the consumer that places a call writes the "who/why we're calling" context; the **voice worker is a
   separate process** and reads it on joining the LiveKit room. With the call queue it is written at
@@ -78,7 +84,8 @@ patient history, and window geometry. There is deliberately **no diagnosis yet**
 rule: the reader never guesses `event_type`). The reader accepts both the simulator's layout and
 ecg_sigma real-ECG HDF5 (metadata as datasets or attributes). `cli.ingest --dir` ingests every
 `*.h5` in a folder and, when events carry a ground-truth label, prints a scored accuracy summary
-(`"model": "stub"` warns loudly if no checkpoint loaded).
+(`"model": "stub"` appears only when no checkpoint is configured; a configured checkpoint that fails
+to load stops `cli.ingest` with an error).
 
 For real ECG, `cli.real_samples pick` (`ingest/real_samples.py`) curates small labelled sets from an
 ecg_sigma `ecgpkg` **test split** (subjects the model never trained on) into `data/real/`, re-keying
@@ -93,9 +100,11 @@ package. Runbook: [`DEMO.md`](DEMO.md).
   `argmax`, yielding **one arrhythmia class** (e.g. `ATRIAL_FIBRILLATION`, `NORMAL_SINUS`) plus a
   **confidence** in `[0, 1]`. The vocabulary is 16 names; the *head* is whatever the checkpoint
   carries and is read from it — `real_v2` predicts 13 of the 16, the simulator checkpoints all 16.
-- If a checkpoint is missing, or its head/leads do not match this repo, it falls back to
-  `StubECGModel` so everything downstream still runs. See `inference/README.md` for the input
-  contract and the per-class reliability caveats.
+- With no checkpoint configured it uses `StubECGModel`. If configured checkpoints are missing, or
+  their head/leads do not match this repo, `cli.ingest` and `cli.outbound` stop with an error
+  (`ModelLoadError`) rather than publish stub predictions as real alerts; `--checkpoint` with no
+  value runs the stub on purpose. See `inference/README.md` for the input contract and the
+  per-class reliability caveats.
 
 **Step 3 · Vitals + false-positive gate** (`inference/pipeline.py`). Separately — and **not ML** — the
 pipeline computes the **MEWS** score (Modified Early Warning Score: a **rule-based clinical rubric**,
@@ -178,18 +187,22 @@ configured (`--notifier signalwire`; `simulated` sends nothing and records `sms_
 `notify_failed`. SIP dials go to the telephony LiveKit (`Config.telephony()`; see *Telephony split*
 below). The event is **always persisted**; the gate governs the *dispatch* (worklist push and call).
 A `vitals_alert` (uncertain rhythm, vitals carry it) goes to the worklist only, unless the hospital
-sets `outbound.call_vitals_alerts: true` (default `false`).
+sets `outbound.call_vitals_alerts: true` (default `false`). An event's status is set only when it is
+first persisted, so a replay or redelivery of an event already acknowledged or resolved keeps that
+status and is neither pushed nor called again (`cli.events --reopen` reopens events for a demo).
 
 **Phone calls queue; the worklist doesn't wait.** On the SIP transport a call blocks until the
 clinician hangs up, so the consumer no longer places it inline. It pushes every gated event to the
 worklist as soon as it arrives, then queues the call (`orchestrator/call_queue.py`). The queue is a
 Redis sorted set `rmsai:calls:queue` plus a job hash `rmsai:calls:jobs`, ordered highest criticality
-first and first-come within a level. One `CallDispatcher` thread places the calls one at a time
-(`bus_consumer.run_queued_call`):
+first and first-come within a level. One `CallDispatcher` thread per consumer places calls, and only
+while it holds the single system-wide call slot (`rmsai:calls:active`), so there is one call at a
+time across every consumer process (`bus_consumer.run_queued_call`):
 - It skips an event that was acknowledged or resolved while it waited.
 - It stages the spoken alert at dial time, so a call that waited never finds it expired.
-- A job leaves the hash only when its call has finished, so a consumer restart re-queues an
-  unfinished call (`CallQueue.recover`).
+- A job leaves the hash only when its call has finished; an unfinished job is re-queued on consumer
+  start and whenever the slot is claimed (`CallQueue.recover`), but never the job another process
+  is dialling.
 
 WebRTC and the text channel never block, so they dispatch inline as before.
 
@@ -202,25 +215,27 @@ sequenceDiagram
     participant A as companion app (inbox room)
     participant Q as Redis call queue
     participant D as CallDispatcher thread
-    B->>C: XREADGROUP event
+    B->>C: XREADGROUP event (and XAUTOCLAIM retries, idle ≥ --retry-idle-ms)
     C->>G: persist MonitoredEvent (+ report narrative to Qdrant)
     C->>C: should_call gate passes
     C->>A: push the worklist row now
     C->>Q: HSETNX jobs[event_id] + ZADD queue (score = severity band + enqueue ms)
     C->>B: XACK (the queue now holds the pending call)
     Note over C,A: the next event is read straight away: every row appears without waiting for a call
-    D->>Q: ZPOPMIN (most severe, then oldest)
+    D->>Q: claim the call slot (SET rmsai:calls:active NX, 60 s lease) + ZPOPMIN
+    Note over D,Q: no other consumer dials while the slot is held; the lease is renewed during the call
     D->>G: status of the event?
     alt acknowledged or resolved while it waited
         D->>D: skip ([calls] skip …)
     else still open
         D->>D: stage OutboundAlert, dispatch agent, SIP dial, wait for hang-up
     end
-    D->>Q: HDEL jobs[event_id] (only now)
+    D->>Q: HDEL jobs[event_id] + release the slot (only now)
 ```
 
-A job leaves the hash only after its call is over, so a consumer that dies mid-call re-queues it
-on start (`CallQueue.recover`). A failing call is logged and dropped, never retried forever; the
+A job leaves the hash only after its call is over, so a call whose consumer died mid-call has its job
+re-queued, on any consumer's start or once its lease lapses and another dispatcher claims the slot
+(`CallQueue.recover`). A failing call is logged and dropped, never retried forever; the
 retries and SMS fallback inside one call still apply. The demo Redis keeps no snapshot
 (`--save ""`), so the queue survives a **consumer** restart but not a Redis restart or
 `make docker-down`. The events themselves are safe in Neo4j; only their pending calls are lost.
@@ -255,8 +270,11 @@ LiveKit (LiveKit Cloud), reached through the carrier, a native SignalWire SIP tr
 2. **STT** (speech → text). Swappable via `STT_BACKEND`: self-hosted **faster-whisper** (`base.en`)
    or cloud **ElevenLabs Scribe**.
 3. **VAD** (**Silero**) detects end-of-speech so the turn is complete.
-4. **Wake-word gate** (follow-ups only): after the first alert, an audio turn must open with
-   "hey vios" — unless `AUDIO_WAKE_REQUIRED=false`. The companion app's push-to-talk bypasses this.
+4. **Wake-word gate** (follow-ups only): after the first alert, an audio turn must open with the
+   wake word (`AUDIO_WAKE_WORD`, default "hey vios") or arrive within `AUDIO_WAKE_WINDOW_S`
+   (default 30 s) of the last one, unless `AUDIO_WAKE_REQUIRED=false`. The companion app's
+   push-to-talk bypasses this. A short piece that ends mid-phrase ("What was the…") is held and
+   joined to the next one, as is a piece whose answer was cut off before any of it was heard.
 5. **PIN gate**: no patient data is spoken until the caller authenticates (fail-closed).
 6. **The Handler is "the LLM node" — but it is not an LLM.** LiveKit's `AgentSession` pipeline
    expects an LLM step; a **stub LLM** satisfies that gate, but `llm_node` is overridden to call our
@@ -264,26 +282,29 @@ LiveKit (LiveKit Cloud), reached through the carrier, a native SignalWire SIP tr
 
 **Inside the orchestrator turn** (`orchestrator/orchestrator.py`, `handle_turn`):
 1. **Input guardrail** — refuse unsafe / out-of-scope requests *before* any retrieval or model call.
-2. **Route the question** — three paths, cheapest first, because they answer very differently:
+2. **Route the question** — after the direct replies ("repeat that", thank-you/goodbye, "what does a
+   MEWS of N mean"), three paths, cheapest first, because they answer very differently:
 
 ```mermaid
 flowchart TD
     Q["Clinician's question"] --> R{"match_intent<br/>regex hits?"}
     R -- yes --> T["Graph template<br/><code>run_template</code> → exact patient data"]
-    R -- no --> EL{"an event listing<br/>with an unresolvable target?"}
+    R -- no --> EL{"an event listing or a bed<br/>with an unresolvable target?"}
     EL -- yes --> DH["Decline with a hint<br/>(patient / bed / type / status)"]
     EL -- no --> O{"looks operational?<br/>+ KB_LLM_ROUTER"}
-    O -- "no (a documents question)" --> H["Hybrid retrieval"]
+    O -- "no (a documents question, or an emergency)" --> H["Hybrid retrieval<br/>(event reports excluded)"]
     O -- yes --> L["LLM picks a template<br/>from a fixed menu"]
     L -- "valid choice" --> T
-    L -- "no match / invalid" --> H
-    H --> G{"relevance gate:<br/>graph fact, OR similarity ≥ KB_MIN_RELEVANCE,<br/>OR word overlap ≥ 0.18"}
+    L -- "no match / invalid" --> PS{"about this patient / event?"}
+    PS -- yes --> PH["Decline with a hint<br/>(what can be asked)"]
+    PS -- no --> H
+    H --> G{"relevance gate:<br/>graph fact, OR similarity ≥ KB_MIN_RELEVANCE,<br/>OR word overlap ≥ 0.18<br/>AND a topic word in a passage (or similarity ≥ 0.70)"}
     G -- yes --> A["Cited answer via the LLM"]
     G -- no --> D["Decline — and log which<br/>signal fell short, and by how much"]
     T --> P["Deterministic answer<br/>(no LLM call at all)"]
 
     classDef nollm stroke-width:2px;
-    class T,P,DH nollm;
+    class T,P,DH,PH nollm;
 ```
 
    A **graph template** answers from Cypher with no model in the path — `_answer_operational`
@@ -315,7 +336,11 @@ flowchart TD
    semantic similarity ≥ `KB_MIN_RELEVANCE`, or word overlap ≥ 0.18 — any one suffices. The two
    text signals fail in opposite directions (similarity survives rewording but needs
    `EMBEDDER=bge`; word overlap is the only signal the hashing embedder has), and when neither
-   vouches the decline says which number fell short of which threshold.
+   vouches the decline says which number fell short of which threshold. Archived event reports
+   (`report:` passages) are kept out of free-text answers, and a question whose topic words appear in
+   no retrieved passage is declined unless similarity is at least 0.70 ("how do you treat sepsis?"
+   with no sepsis document). "Protocol for this event" and a bed whose rhythm has no structured
+   protocol steps are asked of the documents for that rhythm.
 4. **De-identify** the retrieved context (Presidio or regex, `DEID_BACKEND`) so no name/PHI reaches
    the model.
 5. **LLM generate**: the prompt goes to the `LLMProvider`, always wrapped in `DeidentifyingLLM`:
@@ -506,7 +531,7 @@ chat and WebRTC stay local:
 local LiveKit ── app inbox (rmsai-inbox-*) · WebRTC outbound rooms ── worker rmsai-agent
 LiveKit Cloud ── phone rooms (rmsai-outbound-*, rmsai-call-*) ─────── worker rmsai-agent-phone
                  ▲ carrier: SignalWire (native SIP trunk both ways; also the SMS fallback)
-shared ── Redis (call queue, staged outbound alerts) · Neo4j · Qdrant · audit log
+shared ── Redis (call queue + call slot, staged outbound alerts) · Neo4j · Qdrant · audit log
 ```
 
 - **`Config.telephony()`** is the config the call paths use (`cli.consume --transport sip`,

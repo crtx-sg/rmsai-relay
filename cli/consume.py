@@ -8,7 +8,7 @@
       --follow-up "what were the vitals at the event" --ack "yes I acknowledge"
 
 Reads with a Redis consumer group (so multiple consumers share the stream and messages are
-acked exactly once). A new group starts at the beginning of the stream, so an existing backlog
+acked once handled; a failure is retried, then dead-lettered to `<stream>.dead`). A new group starts at the beginning of the stream, so an existing backlog
 is processed on first run. The consumer is model-free — classification happened in the producer.
 """
 

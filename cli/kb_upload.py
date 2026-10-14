@@ -14,8 +14,8 @@ your documents with a citation, instead of declined.
   # also pull entities into the graph, so the hybrid retriever can relate them
   uv run --extra pdf python -m cli.kb_upload --dir protocols/ --extract
 
-Uploads are **incremental and idempotent**: chunk ids are content-addressed, so re-uploading an
-unchanged document is a no-op and re-uploading an edited one replaces the chunks it changed. Nothing
+Uploads are **incremental and idempotent**: re-uploading a document replaces all of its chunks, so an
+unchanged file ends up identical and an edited one leaves no stale sections behind. No other document
 already in the store is dropped (unlike `cli.kb_vector index --reset`, which rebuilds the corpus).
 
 PDF pages are cited individually — an answer sourced from `af_sop.pdf#page 3` tells the clinician

@@ -1,12 +1,12 @@
 """Phase 2A vector-RAG CLI.
 
-  python -m cli.kb_vector index   --dir docs/            # APPEND (upsert) — preserves event reports
+  python -m cli.kb_vector index   --dir docs/            # APPEND — replaces each indexed doc's chunks, keeps event reports
   python -m cli.kb_vector index   --dir docs/ --reset    # full rebuild — wipes the collection first
   python -m cli.kb_vector retrieve "how do I rate control atrial fibrillation"
   python -m cli.kb_vector ask      "what triggers escalation to critical care"
 
 `index` persists into the live Qdrant server; `retrieve`/`ask` query it. `index` **appends** by
-default (idempotent upsert), so re-indexing the clinical corpus no longer wipes event-report
+default (each indexed document's chunks are replaced, others kept), so re-indexing the clinical corpus no longer wipes event-report
 narratives added by `consume`; pass `--reset` for a clean rebuild. Use `--in-memory` to run a
 self-contained index+query in one process (no server needed). `--embedder {auto,bge,hashing}`
 selects the embedding backend (auto prefers BGE, falls back to hashing offline).

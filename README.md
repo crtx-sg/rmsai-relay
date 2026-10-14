@@ -100,8 +100,8 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
                                           ▼
                                 ┌───────────────────┐
                                 │  Redis Stream      │   bus =  rmsai.events
-                                │  "rmsai.events"    │   (consumer group, exactly-once ack,
-                                └─────────┬─────────┘    partition by patient_id → ordering)
+                                │  "rmsai.events"    │   (consumer group; ack when handled,
+                                └─────────┬─────────┘    else retry → rmsai.events.dead; MAXLEN ~100k)
                        cli.consume        │  XREADGROUP
                        (dict_to_event)    ▼
         ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -109,13 +109,14 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
         │  ensure_patient (G8 auto-create: bed assign + synthetic history → graph)        │
         │  process_device_event   ── persist ──►  Neo4j MonitoredEvent + ActionItems      │
         │                          ── archive ──►  Qdrant report narrative + Report node   │
-        │  criticality(event_type, mews_risk) → should_call gate                          │
+        │  event_criticality(event, config) → should_call gate                            │
         │        │ below threshold / NORMAL_SINUS → skip (still persisted)                │
+        │        │ already acknowledged/resolved (a replay) → not re-alerted              │
         │        ▼ critical                                                               │
         │  ① app:  push the worklist row to the inbox room NOW (every gated event)        │
         │  ② call: SIP → queue it in Redis (ZSET rmsai:calls:queue, most severe first)    │
         │          WebRTC / text (SMS) → dispatch inline                                  │
-        │  CallDispatcher thread: ZPOPMIN → skip if acked → one call at a time            │
+        │  CallDispatcher: claim the call slot → ZPOPMIN → skip if acked → one call       │
         └───────────────────────────────┬────────────────────────────────────────────────┘
                                          │  stage OutboundAlert at dial time (Redis, keyed by room)
                                          ▼
@@ -166,14 +167,14 @@ A few design points that aren't obvious from the diagram:
   per-signal quality). **No predicted `event_type`**; sim files may carry a ground-truth `condition`
   attr for eval only.
 - **`DeviceEvent`** — `SignalWindow` + model-predicted `event_type`/`confidence`,
-  `is_false_positive` (⇔ `NORMAL_SINUS`), `ClinicalAnalysis` (MEWS + per-vital trend + correlations),
+  `is_false_positive` (`NORMAL_SINUS` at ≥ `FP_SUPPRESS_MIN_CONFIDENCE`; below it the event is `uncertain`), `ClinicalAnalysis` (MEWS + per-vital trend + correlations),
   `care_guidance`, and the markdown `report_md`.
 - **`RetrievalResult`** — two labelled blocks: *Retrieved passages* (vector) + *Known relationships*
   (graph), separately cited; relationships empty under `vector` mode.
 - **Interfaces**: `LLMProvider`, `ECGModel`, `VitalsAnalysis`, `EventStore` (+ `BedAssignment` /
   `PatientHistory` stubs). `event_type` ∈ the 16-name `ecgtranscnn` vocabulary (a given
   checkpoint's head is a subset — the real-ECG `real_v2` model predicts 13 of them);
-  `NORMAL_SINUS` ⇒ FP.
+  a confident `NORMAL_SINUS` ⇒ FP.
 
 ---
 
@@ -185,8 +186,8 @@ A few design points that aren't obvious from the diagram:
 | Contracts | **pydantic v2** schemas (`common/schemas.py`) |
 | ECG classifier | **`ECG_TransConv`** (vendored `crtx-sg/ecgtranscnn`, PyTorch CPU), wrapped never reimplemented. Default artifact: the real-ECG `real_v2` 5-fold ensemble (13 classes) |
 | Vitals analysis | `ecgtranscnn` MEWS + Mann-Kendall trend + ECG-vital correlation (statistical), with a per-hospital clinical-significance policy on the trend (`config/hospitals/`) |
-| Event bus | **Redis Streams** (`rmsai.events`, consumer groups; partition by `patient_id`) |
-| Call queue | **Redis sorted set** `rmsai:calls:queue` + hash `rmsai:calls:jobs`: phone calls ordered by criticality, then arrival; one dispatcher thread (`orchestrator/call_queue.py`) |
+| Event bus | **Redis Streams** (`rmsai.events`, capped at ~100k entries; consumer group `rmsai.relay`; a failed message is retried, then dead-lettered to `rmsai.events.dead`) |
+| Call queue | **Redis sorted set** `rmsai:calls:queue` + hash `rmsai:calls:jobs` + leased slot `rmsai:calls:active`: phone calls ordered by criticality, then arrival; one call at a time across all consumers (`orchestrator/call_queue.py`) |
 | Graph KB | **Neo4j** + Cypher (patient ↔ event ↔ condition ↔ treatment ↔ guideline ↔ bed/unit) |
 | Vector KB | **Qdrant** + embeddings (BGE via `sentence-transformers`, deterministic Hashing fallback) |
 | Memory tiers | working (Redis) · episodic (Qdrant) · semantic (= vector KB) |
@@ -306,7 +307,9 @@ fields populate on fresh `ingest → consume`; older events show "raw ECG is arc
 ### Operational query matrix (the verification target)
 
 Every row is answerable through tested, read-only, parameterized Cypher templates (no free
-text-to-Cypher; questions the rules miss go to the LLM router, which picks a template):
+text-to-Cypher; with `KB_LLM_ROUTER=true`, operational questions the rules miss go to the LLM router,
+which picks a template). **Every question the agent understands, with examples, is listed in
+[`docs/project/queries.md`](docs/project/queries.md)**; the matrix below is the original spec set:
 
 | # | Query | Store |
 |---|-------|-------|
@@ -391,7 +394,8 @@ would otherwise scrub them as PII).
 Two stores hold an event: the **graph** (Neo4j) is the structured source of truth (the
 `MonitoredEvent` + vitals snapshot + links + a `Report` node whose `uri` points at the materialized
 `data/reports/<id>.md`); the **vector** store (Qdrant `rmsai_docs`) holds the report *narrative*
-(`doc_id=report:<id>`) plus the clinical-protocol corpus, for semantic Q&A.
+(`doc_id=report:<id>`, served by report lookups and kept out of free-text answers) plus the
+clinical-protocol corpus.
 
 **Dump what's stored for one event** (graph node + vector chunks + report file, side by side):
 ```bash
@@ -403,7 +407,9 @@ Ad-hoc graph reads use `cli.graph` (templates or read-only Cypher); GUIs: Neo4j 
 `http://localhost:7474`, Qdrant dashboard `http://localhost:6333/dashboard`.
 
 **Indexing is append-by-default — re-indexing docs no longer wipes event narratives.**
-`cli.kb_vector index` upserts (idempotent); pass `--reset` only for a clean rebuild. The
+`cli.kb_vector index` replaces each indexed document's chunks (sections removed from a document stop
+being searchable) and leaves every other document, including event-report narratives, alone; pass
+`--reset` only for a clean rebuild. The
 event-writing/serving paths (`cli.consume`, `cli.outbound`, and `build_orchestrator` — which runs on
 every text chat **and** every voice call) all **append**, so they preserve the report narratives that
 `consume` archives. Append requires a **matching embedder dimension**: the collection is built with
@@ -416,7 +422,7 @@ uv run python -m cli.kb_vector index --dir docs --reset      # full rebuild (wip
 ```
 
 **The corpus is `docs/*.md` plus the managed upload folder.** `chunk_dir` globs `docs/` **non-
-recursively for `*.md`**, so every markdown file dropped there becomes retrievable clinical
+recursively for `*.md`**, so every markdown file dropped there (except `README.md`) becomes retrievable clinical
 evidence — project/engineering docs belong in `docs/project/` and upload test fixtures in
 `docs/samples/`, both of which the glob excludes. Non-markdown files are never picked up by the
 glob: a PDF must go through `cli.kb_upload`. Documents added that way are copied to
@@ -439,17 +445,20 @@ relationship, semantic similarity ≥ `KB_MIN_RELEVANCE` (0.60), **or** word ove
 signals fail in opposite directions — semantic similarity survives rewording (calibrated on this
 corpus: on-topic 0.61–0.83, off-topic 0.35–0.54, but only under `EMBEDDER=bge`; hashing scores the
 two alike), while word overlap is what carries the hashing embedder. When neither vouches, the turn
-declines and logs **why**, naming both numbers, both thresholds, and the top passage:
+declines and logs **why**, naming both numbers, both thresholds, and the top passage. Even when one
+vouches, a question whose topic words appear in no retrieved passage is declined unless similarity is
+at least 0.70 (`[orchestrator] declined: no retrieved passage mentions …`):
 
 ```
 [orchestrator] declined: 4 passage(s) retrieved, but neither relevance signal vouched for them:
 semantic similarity 0.17 < 0.60 AND word overlap 0.00 < 0.18 (top: vt_vf.md#Post-resuscitation)…
 ```
 
-> ⚠️ **Destructive ops to know about.** Tests that would `reset_all()` the **live** Neo4j are
-> skipped unless `RMSAI_ALLOW_LIVE_GRAPH_RESET=1` (`conftest.py`); set it only against a graph you can
-> lose. `cli.kb_eval` (without `--no-seed`) resets the live Neo4j, and `cli.kb_vector index --reset`
-> rebuilds the Qdrant collection. After any such wipe, re-run the `ingest → consume` flow to
+> ⚠️ **Destructive ops to know about.** `GraphDriver.reset_all()` refuses to wipe Neo4j unless
+> `RMSAI_ALLOW_LIVE_GRAPH_RESET=1` (`kb/graph/driver.py`), and the tests that call it are skipped
+> without it (`conftest.py`). Set it only against a graph you can lose: with it set, `cli.kb_eval`
+> (without `--no-seed`) resets the live Neo4j; without it, kb_eval stops with an error.
+> `cli.kb_vector index --reset` rebuilds the Qdrant collection. After any such wipe, re-run the `ingest → consume` flow to
 > repopulate events (and their report narratives).
 
 ---
@@ -719,8 +728,9 @@ in the hospital file, for example `vitals_trends: {vitals: {Diastolic: {normal: 
 
 - No PHI in logs (redacting logger; patients referenced by pseudonym only).
 - De-identification asserted on model inputs in tests; **fails closed** (no LLM call on de-id error).
-- Caller authentication enforced before any PHI is voiced; LLM-generated Cypher constrained to
-  read-only.
+- Caller authentication enforced before any PHI is voiced; the graph is queried only through fixed,
+  read-only, parameterized templates (the LLM router can only pick one), and raw Cypher in the
+  `cli.graph lookup` dev path is refused unless read-only.
 - Append-only **JSONL audit log** from Phase 0: `{ts, actor, action, subject(pseudonym), outcome}`
   for PHI reads, outbound calls + outcome, inbound auth results, and queries.
 - Idempotent ingestion (MERGE by event `uuid`) dedupes MQTT+HDF5 and replays.
@@ -961,8 +971,10 @@ ls external/ecgtranscnn/models/real_v2/*.pt
 Then point `ECG_CHECKPOINTS` at the five folds (see `.env.example`), or pass them per-run as
 `--checkpoint` to `cli.ingest` / `cli.outbound` (below).
 
-**Without weights the pipeline still runs** — `ECGModel` falls back to the deterministic stub, so
-every phase and test works; only the predictions are synthetic.
+**Without weights the pipeline still runs** as long as `ECG_CHECKPOINTS` is unset: `ECGModel` is then
+the deterministic stub, so every phase and test works and only the predictions are synthetic. A
+configured checkpoint that is missing or unloadable stops `cli.ingest`/`cli.outbound` with an error;
+pass `--checkpoint` with no value to run the stub on purpose.
 
 **Which checkpoint.** `real_v2` is the real-ECG release (13 classes, 5-fold ensemble, trained on
 ecg_sigma `ecgpkg` v2) and is what you want for real recordings. The older simulator checkpoints
@@ -1007,17 +1019,19 @@ uv run python -m cli.ingest --file data/inference/<real>.h5
 INFO rmsai.inference.ecg: ECG model loaded: 5 checkpoint(s), 13 classes,
      filter_preset=default, package=v2 manifest=096bdfbafa04
 {"patient": "105", "event_id": "8b9c551a…", "event_type": "PVC", "confidence": 0.823,
- "false_positive": false, "criticality": "Medium", "mews": 1, "ground_truth": "PVC"}
+ "false_positive": false, "criticality": "High", "mews": 1, "ground_truth": "PVC", "outcome": "TP"}
 ```
 
 The startup line is the check that matters: **13 classes** and **`filter_preset=default`** confirm
 the real checkpoint loaded. A 16-class line means a simulator checkpoint; no line at all means the
-stub, and the ERROR above it says why.
+stub (no `ECG_CHECKPOINTS`, or `--checkpoint` with no value). A configured checkpoint that is missing
+or fails to load stops `cli.ingest` with an error instead of falling back.
 
 > **Only for `--emit stdout`.** A raw ecg_sigma file keeps the dataset's record id as the patient
 > (`"105"` above). Published with `--emit bus` while the hospital's `dispatch_mode` includes `app`, the consumer
-> refuses it (`[poison] … refusing to publish non-pseudonym patient ref`: the event is persisted
-> but not dispatched). For anything that goes on the bus, curate with `cli.real_samples` below,
+> persists it, then fails on the worklist push (`[retry] … refusing to publish non-pseudonym patient
+> ref: '105'`); it retries every `--retry-idle-ms` (10 min) and after `--max-attempts` (3) moves the
+> message to `rmsai.events.dead`. The event is persisted but never dispatched. For anything that goes on the bus, curate with `cli.real_samples` below,
 > which assigns `PT9#####` pseudonyms.
 
 > **Sanity-check your own files before trusting a number.** Running the 51-event MIT-BIH record 105
@@ -1051,7 +1065,7 @@ uv run python -m cli.ingest --dir data/real
 ```
 {"patient": "PT992591", "event_type": "VENTRICULAR_TACHYCARDIA", "confidence": 0.497, "criticality": "Critical", "ground_truth": "VENTRICULAR_TACHYCARDIA", …}
 {"patient": "PT952625", "event_type": "SVT", "confidence": 0.538, "criticality": "High", "ground_truth": "ATRIAL_FIBRILLATION", …}
-{"summary": {"events": 12, "scored": 12, "correct": 9, "accuracy": 0.75, "model": "checkpoint"}}     # stderr
+{"summary": {"events": 12, "scored": 12, "correct": 9, "accuracy": 0.75, …, "model": "checkpoint"}}     # stderr
 ```
 
 - **One output file per source record.** A file carries one `patient_id`, so subjects are never
@@ -1078,11 +1092,11 @@ uv run python -m cli.ingest --dir data/real
   $RMSAI cli.ingest --dir data/real --emit bus
   ```
 
-  Two things must hold, or every prediction silently comes from the **stub**. `cli.ingest` now
-  flags this (`"model": "stub"` plus a WARNING):
-  1. `ECG_CHECKPOINTS` is set in `.env` (the containers read `.env`, not your shell).
+  Two things must hold:
+  1. `ECG_CHECKPOINTS` is set in `.env` (the containers read `.env`, not your shell); if it is
+     unset, every prediction comes from the **stub**, flagged by `"model": "stub"` plus a WARNING.
   2. The image was built **after** the vendored pin moved to `bac4a01`. An older image lacks
-     `ecg_transcovnet.checkpoint` and logs `failed to load ECG checkpoint, using stub`. Fix it with
+     `ecg_transcovnet.checkpoint`, so `cli.ingest` stops with `failed to load ECG checkpoint: …`. Fix it with
      `make docker-build`, then `make docker-up` so running services pick up the new image.
 - **Only the ECG (and HR) is real.** Per ecg_sigma's README: PPG/RESP/RespRate are derived from the
   ECG, and Pulse/SpO2/BP/Temp are invented, SpO2/BP from *condition-keyed* ranges. So MEWS and
@@ -1162,7 +1176,7 @@ $RMSAI cli.ingest \
     --file data/inference/PT6580_2026-06.h5 --emit bus
 # uses ECG_CHECKPOINTS from .env; override per-run with
 #   --checkpoint external/ecgtranscnn/models/real_v2/fold{0,1,2,3,4}.pt
-# omit --checkpoint AND ECG_CHECKPOINTS to run on the deterministic stub
+# a missing/unloadable checkpoint stops ingest with an error; omit both, or pass --checkpoint with no value, to run the deterministic stub
 ```
 
 ```
@@ -1233,11 +1247,9 @@ $RMSAI pytest -q tests/test_criticality.py -k vitals_driven   # one file / one t
 make test                               # host equivalent (uv run pytest -q)
 ```
 
-> **Known failures:** the offline run (`-m "not infra"`) has 3 pre-existing failures, all STT
-> configuration tests unrelated to recent work (`test_speech_check` ×1, `test_voice_config` ×2;
-> checked 2026-10-13). The full suite has also shown `test_episodic_gate` ×3 (and
-> `test_graph_templates` ×3 when run with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`). Treat a run as green
-> when only those fail.
+> **Known failures:** none offline (`-m "not infra"`: 1157 passed, checked 2026-10-14). The full
+> suite (stores up) fails `test_orchestrator::test_multi_turn_state_persists`: with the hashing
+> embedder the question does not pass the relevance gate. Treat a run as green when only that fails.
 
 Then the end-to-end smoke test — generate, classify, publish, consume, alert, acknowledge:
 
@@ -1256,11 +1268,14 @@ docker compose -f infra/docker-compose.yml logs --tail=40 consumer
 Expect every event persisted. Gated events are dispatched with a reason: `ok`, `vitals_alert (…)`
 (rhythm unconfirmed, vitals carry it; worklist only unless `outbound.call_vitals_alerts: true`) or `fp_override (…)` (confident NORMAL_SINUS, but vitals warrant
 it; common on simulator data). The rest are skipped with a reason: `false_positive` (confident
-NORMAL_SINUS), `low_confidence_arrhythmia (…)` or `below_threshold (…)`. Per-subsystem harnesses are listed under
+NORMAL_SINUS), `low_confidence_arrhythmia (…)` or `below_threshold (…)`. A re-ingested event that was
+already acknowledged/resolved is persisted but not re-alerted (`already_acknowledged`); run
+`cli.events --reopen` to reset a demo. Per-subsystem harnesses are listed under
 [Other CLI harnesses](#other-cli-harnesses-per-subsystem).
 
-> ⚠️ **`cli.kb_eval` (without `--no-seed`) calls `reset_all()` on the LIVE Neo4j** — that is why
-> `cli.kb_dump --list` can suddenly return `[]`. The pytest tests that do the same
+> ⚠️ **`cli.kb_eval` without `--no-seed` reseeds Neo4j: it refuses (exit 2) unless
+> `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`, and with it set it calls `reset_all()` on the LIVE graph** — that is
+> why `cli.kb_dump --list` can return `[]`. The pytest tests that do the same
 > (`test_graph_templates.py`, `test_orchestrator.py`, `test_outbound_flow.py`, …) are skipped unless
 > `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`. Recover by re-running step 3 then step 4.
 
@@ -1353,8 +1368,8 @@ companion app `http://localhost:8080/`.
 | `[errno 98] address already in use` on 8080/8081 | a host-run gateway/worker is still up — host networking shares the port space |
 | worker retry-loops on `:7880` | the LiveKit **server** isn't running, not a worker bug |
 | `collection … has vector dim 384, but embedder … 256` | `--embedder` doesn't match what built the collection |
-| `cli.kb_dump --list` returns `[]` | the graph was wiped (`cli.kb_eval`, or pytest with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`) — redo steps 3–4 |
-| worklist empty | nothing is pending: every event was acknowledged or withheld (check the **Events** tab or `cli.events --status pending`). Also: `DISPATCH_MODE` without `app`, or a `[poison] … non-pseudonym patient ref` (curate real ECG with `cli.real_samples`) |
+| `cli.kb_dump --list` returns `[]` | the graph was wiped (`cli.kb_eval` or pytest, run with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`) — redo steps 3–4 |
+| worklist empty | nothing is pending: every event was acknowledged or withheld (check the **Events** tab or `cli.events --status pending`). Also: `DISPATCH_MODE` without `app`, or `[retry]`/`[dead] … refusing to publish non-pseudonym patient ref` (the message ends up in `rmsai.events.dead`; curate real ECG with `cli.real_samples`) |
 | worklist empty, chat silent | worker not dispatched into the room → `cli.dispatch --all-inbox`; or a cached `app.js` (check the on-screen build tag) |
 | selecting a row is silent | the header shows 🔇 **Voice muted** (the default in `app+call` mode); click it. The worker logs `selected event … (app voice muted: not spoken)` |
 | the worklist shows events whose call hasn't come yet | expected with `--transport sip`: calls queue and go out one at a time, most severe first. `[queued] … call N in queue` in the consumer log gives the position |
@@ -1366,7 +1381,7 @@ companion app `http://localhost:8080/`.
 on hybrid. Reports correctness, citation grounding, context-token cost, and per-mode latency:
 
 ```bash
-$RMSAI cli.kb_eval                     # ⚠️ resets the live Neo4j (seeds its own eval cohort)
+$RMSAI cli.kb_eval                     # refuses unless RMSAI_ALLOW_LIVE_GRAPH_RESET=1 (then resets the live Neo4j); --no-seed is safe
 $RMSAI cli.kb_eval --json
 ```
 
@@ -1587,12 +1602,13 @@ passage in the orchestrator log (see [Managing & inspecting the KB](#managing--i
 
 **5. Quality and performance benchmark.** `cli.kb_eval` runs a gold question set
 (`kb/eval/questions.json`) through vector-only and hybrid retrieval and reports correctness, citation
-grounding, context-token cost and latency. Its Qdrant index is in memory, but **by default it resets
-the live Neo4j** and seeds its own patient cohort:
+grounding, context-token cost and latency. Its Qdrant index is in memory, but seeding its own
+patient cohort resets the live Neo4j, so without `--no-seed` it refuses unless
+`RMSAI_ALLOW_LIVE_GRAPH_RESET=1`:
 
 ```bash
 uv run python -m cli.kb_eval --no-seed          # safe on a live demo graph
-uv run python -m cli.kb_eval                    # ⚠️ wipes Neo4j; re-run DEMO.md §2 and republish afterwards
+RMSAI_ALLOW_LIVE_GRAPH_RESET=1 uv run python -m cli.kb_eval   # ⚠️ wipes Neo4j; re-run DEMO.md §2 and republish afterwards
 uv run python -m cli.kb_eval --no-seed --json   # raw report for comparing runs
 ```
 
@@ -1732,7 +1748,7 @@ Ringing a real phone always needs the setup below. Runbook: [`DEMO.md`](DEMO.md#
 local LiveKit has no SIP service. So phone calls run on a second LiveKit, a **LiveKit Cloud** project
 (`LIVEKIT_SIP_URL`), while the app inbox, chat and WebRTC stay on the local one. `Config.telephony()`
 (`common/config.py`) is the config the call paths use: in split mode it swaps only the LiveKit
-URL/key/secret, the agent name (`rmsai-agent-phone`), the worker health port (`8082`) and turns off
+URL/key/secret, the agent name (`rmsai-agent-phone`), the worker health port (`8082`), clears the public URL, and turns off
 inbox auto-redispatch. Redis (staged alerts), the stores and the numbers are shared. With
 `LIVEKIT_SIP_URL` unset everything behaves as a single server, exactly as before.
 
@@ -1775,7 +1791,8 @@ What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-
 6. **Not answered, or a SIP error** (any failure, including `408` or `603`, counts as no answer):
    the relay re-stages the alert, re-dispatches the agent and retries `OUTBOUND_MAX_RETRIES` times,
    `OUTBOUND_RETRY_DELAY_S` apart. Then, with `--notifier signalwire` (the `make demo-phone-up`
-   default), it texts the alert (status stays `reported` if delivered, else `notify_failed`). With
+   default), it texts the alert (status stays `reported` if delivered, else `notify_failed`; an event acknowledged
+meanwhile is not texted and stays `acknowledged`). With
    the default `simulated` nothing is sent: the log says `[sms] SIMULATED, not sent` and the event
    records `sms_simulated` / `notify_failed`. An invalid or unset trunk or number fails fast with
    no retry.
@@ -1830,7 +1847,8 @@ the text channel **and** for voice calls that go unanswered after retries.
 
 **When it fires:** the call is not answered after `1 + max_retries` attempts (ring timeout, busy,
 or any SIP error such as `408` or `603`). An answered call, including one taken by voicemail,
-sends no SMS. An invalid number or missing trunk fails fast and is never texted.
+sends no SMS. Nor does an event acknowledged elsewhere (e.g. in the app) while the call rang; it stays
+acknowledged. An invalid number or missing trunk fails fast and is never texted.
 
 **What it sends:** "Missed call from RMS relay. <spoken alert>" to the call's destination
 (`--number`, else the hospital's `outbound.call_number`), from the hospital's `outbound.from`.
@@ -1922,8 +1940,7 @@ uv run pytest -q -m "not infra"        # offline: no containers needed
 uv run pytest -q                       # full suite: needs the stores; graph-wiping tests skip unless RMSAI_ALLOW_LIVE_GRAPH_RESET=1
 ```
 
-Known pre-existing failures: 3 offline (speech_check, voice_config), plus episodic_gate and
-graph_templates (only with RMSAI_ALLOW_LIVE_GRAPH_RESET=1) on the full suite; see [§6 of the runbook](#6-test-the-application).
+The offline suite passes with no failures; see [§6 of the runbook](#6-test-the-application).
 
 ### 2. Generate synthetic events (vendored simulator)
 
@@ -1955,8 +1972,8 @@ uv run --extra pdf python -m cli.kb_upload --dir protocols/ --extract           
 the chunk plan and touches nothing. `--extract` also pulls `Condition`/`Treatment` entities into the
 graph, so the hybrid retriever can relate the document to patients and events.
 
-Uploads are incremental and idempotent (chunk ids are content-addressed), so re-uploading an
-unchanged file is a no-op and an edited one replaces only what changed. PDF pages are cited
+Uploads are idempotent: re-uploading a file replaces all of that document's chunks, so an unchanged
+file ends up identical and an edited one leaves no stale sections behind. PDF pages are cited
 individually — an answer from `af_sop.pdf#page 3` tells the clinician which page to turn to — and a
 scanned/image PDF is rejected with that diagnosis rather than silently indexed as empty.
 
@@ -2059,7 +2076,8 @@ uv run python -m cli.consume --channel text --once
 ```
 
 > Run a **single** consumer per patient — concurrent consumers on the same patient cause Neo4j
-> write-lock timeouts (poison-handled, but those events get skipped). Partitioning the bus by
+> write-lock timeouts (each failure is retried after `--retry-idle-ms`, default 10 min, and after
+> `--max-attempts`, default 3, it is moved to `rmsai.events.dead`). Partitioning the bus by
 > `patient_id` keeps ordering while patients run in parallel.
 
 ### 5. Real WebRTC audio loop (browser, no phone)
@@ -2115,9 +2133,10 @@ alert, you can interact two ways and the response matches the input modality:
 - **Type** — a message in the LiveKit **chat box** gets a **text-only** reply on the chat channel
   (no TTS/audio). Typed turns are never wake-word gated.
 
-The PIN entry, the spoken alert, and the verbal **"acknowledge"** run *before* the Q&A phase and are
-never wake-word gated. Patient-scoped questions resolve "the event" to that patient's most recent
-`MonitoredEvent` (e.g. vitals → `T5`).
+The PIN entry and the spoken alert are never wake-word gated, and a reply to the alert (an
+**"acknowledge"**, a "yes", a "not yet") passes the gate without the wake word. On an outbound call,
+"the event" is the called event (its vitals → `T5`); without an event in scope, patient-scoped
+questions use that patient's most recent `MonitoredEvent`.
 
 ### 6. Real SIP phone call (outbound to a number)
 
@@ -2160,7 +2179,7 @@ uv run python -m cli.real_samples pick --pick ...  # held-out real-ECG events fr
 uv run python -m cli.kb_route --llm "..."  # which path a question takes (regex / LLM / documents)
 uv run python -m cli.call --caller livekit # ring the on-call number on demand (no event needed)
 uv run python -m cli.inbox_probe --ptt     # probe in-app chat/PTT without the browser
-uv run python -m cli.graph migrate         # graph schema migrate / seed
+uv run python -m cli.graph migrate         # graph schema: constraints + indexes
 uv run python -m cli.graph chain           # rebuild every patient's FOLLOWED_BY event chain (backfill)
 uv run python -m cli.kb "..."              # hybrid (vector + graph) KB query
 uv run python -m cli.kb_dump <event_id>    # dump one event: graph node + report file + vector chunks

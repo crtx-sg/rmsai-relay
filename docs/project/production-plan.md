@@ -25,7 +25,7 @@ and call throughput, observable, extensible.
 |---|---|---|
 | 1 | **Multi-tenancy & isolation** | per-hospital tenancy, KB namespacing (Qdrant collections / Neo4j subgraphs), PHI segregation, tenant routing |
 | 2 | **Streaming telemetry** | continuous device streams: **edge MQTT gateways → partitioned stream bus**, live waveform/vitals **MQTT→WebRTC** to the app, edge store-and-forward, sliding-window (not just HDF5) inference |
-| 3 | **Event bus & processing** | Kafka (or Redis Streams consumer groups) **partitioned by hospital+patient**, dead-letter queues, idempotency, backpressure |
+| 3 | **Event bus & processing** | Kafka (or Redis Streams consumer groups) **partitioned by hospital+patient**, dead-letter handling at scale (the POC has a per-stream `<stream>.dead`), idempotency, backpressure |
 | 4 | **Model serving** | ECG on Triton/GPU (batching, autoscale), LLM on a vLLM cluster, embeddings service; model registry + versioning |
 | 5 | **Voice at scale** | LiveKit cluster/Cloud, SIP trunk capacity, **K8s worker autoscaling** (job-per-room), concurrency limits |
 | 6 | **Data stores HA** | Neo4j cluster, Qdrant sharding, **time-series DB** (Timescale/Influx) for waveforms/vitals, managed Kafka/Redis/Postgres, object store |

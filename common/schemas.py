@@ -165,7 +165,7 @@ class DeviceEvent(BaseModel):
     window: SignalWindow
     event_type: str  # one of CLASS_NAMES, predicted by ECG_TransConv
     confidence: float
-    is_false_positive: bool  # event_type == NORMAL_SINUS
+    is_false_positive: bool  # NORMAL_SINUS at >= FP_SUPPRESS_MIN_CONFIDENCE
     low_confidence: bool = False  # top-class confidence < LOW_CONFIDENCE_CAVEAT
     uncertain: bool = False  # NORMAL_SINUS below FP_SUPPRESS_MIN_CONFIDENCE
     analysis: ClinicalAnalysis

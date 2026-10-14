@@ -1,7 +1,7 @@
 """Parameterized, tested, read-only operational query templates (Appendix B).
 
-Operational queries run through these named templates (intent -> template). Free LLM
-text-to-Cypher is a read-only allowlisted fallback only (see `lookup.py`). `$now`/`$since` are
+Operational queries run through these named templates (intent -> template); the LLM router can
+only pick one by name, never write Cypher. `$now`/`$since` are
 computed by the caller. Every template is read-only.
 """
 

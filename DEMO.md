@@ -34,7 +34,8 @@ uv run python -m cli.outbound --file data/real/<file>.h5 --no-answer   # retries
 uv run python -m cli.call                                             # simulated on-demand call
 ```
 
-- Keep the consumer on its default `--transport webrtc` (don't pass `CONSUME_ARGS` with `sip`); the
+- Keep the compose consumer on its default `--transport webrtc` (don't pass `CONSUME_ARGS` with `sip`;
+  a host-run `cli.consume --caller livekit` needs `--transport webrtc` explicitly); the
   phone worker (`make phone-up`) isn't needed.
 - The playground (agents-playground.livekit.io) is a page LiveKit hosts, but it connects to your
   local `ws://localhost:7880`: no Cloud account, and the audio stays local.
@@ -122,7 +123,8 @@ $RMSAI cli.kb_vector --embedder bge index --dir docs       # clinical corpus -> 
 $RMSAI cli.kb_upload --file docs/samples/critical_alarm_sop.md   # optional: a sample SOP to cite
 ```
 
-Plain `index` appends, so order doesn't matter. Only `cli.kb_vector index --reset` wipes the
+Plain `index` adds to the collection, and re-indexing a document replaces its earlier chunks, so order
+doesn't matter. Only `cli.kb_vector index --reset` wipes the
 per-event report narratives: never run it after ingesting events.
 
 ---
@@ -366,6 +368,9 @@ How the call flows on the wire: [README § Phone calls → Call flow](README.md#
 
 ### What the clinician can ask on a call
 
+The full list, with an example for every kind of question, is in
+[`docs/project/queries.md`](docs/project/queries.md). In short:
+
 After the PIN, questions are answered from the graph for **the event the call is about** (not the
 patient's newest event), or from the clinical documents. A question about a patient that no graph
 query covers gets a short list of what can be asked; it is never answered by the model guessing.
@@ -377,9 +382,10 @@ query covers gets a short list of what can be asked; it is never answered by the
 | Another bed or patient | last event / vitals / MEWS / events / pending on bed N · protocol for bed N · report for bed N · which bed is PT… on · events / history / medications of PT… |
 | The ward | patients sickest first ("list patients by criticality", "bed rounds", "who should I see first"; "…in bed order") · unacknowledged events / worklist · most severe alarm · critical events in the last 24 h · alarms per bed · patients with a rhythm · withheld / acknowledged events · outstanding action items · patterns · how many events today |
 | The documents | protocols (VT/VF, AFib RVR, …) · MEWS escalation · what a MEWS of N means · hyperkalaemia · critical alarm SOP; topics with no document are declined |
-| The call | acknowledge (names the event it closes; another bed's event is refused) · no / not correct · repeat that · thank you / goodbye |
+| The call | acknowledge (names the event it closes; acknowledging another bed's event is refused, and a question or a "don't acknowledge" never closes the alert) · no / not correct · repeat that · thank you / goodbye |
 
-`tests/test_query_coverage.py` and `tests/test_call_2026_10_14.py` pin these phrasings.
+`tests/test_query_coverage.py`, `tests/test_call_2026_10_14.py`, `tests/test_review_2026_10_14.py` and
+`tests/test_patient_ranking.py` pin these phrasings.
 
 ### Inspect what was stored
 
@@ -436,7 +442,7 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | In-app chat gets no reply | voice worker restarted after the app connected | `$RMSAI cli.dispatch --all-inbox` |
 | Voice worker loops on `:7880` | LiveKit container not running | `docker compose -f infra/docker-compose.yml up -d livekit` |
 | Events arrive, but no speech on select and no chat reply; `make demo-check` FAILs on voice-worker | worker started before LiveKit, retried 16x and stopped (the container stays "Up") | `docker restart infra-voice-worker-1`, or `make demo-up` |
-| `[poison] … refusing to publish non-pseudonym patient ref: '106'` | `data/real` curated before pseudonymization (older `cli.real_samples`) | re-run `pick`; purge the old ids from Neo4j/Qdrant before republishing, or the same event ids end up under two patients |
+| `[retry] … ValueError: refusing to publish non-pseudonym patient ref: '106'`, then `[dead] … -> rmsai.events.dead` after 3 attempts | `data/real` curated before pseudonymization (older `cli.real_samples`) | re-run `pick`; purge the old ids from Neo4j/Qdrant before republishing, or the same event ids end up under two patients (the old messages sit in `rmsai.events.dead`) |
 | `inbox push failed … TwirpError … 503 no response from servers` | app not connected, so the inbox room doesn't exist | log in to the app; pending events backfill on login (republishing is also safe) |
 | Republished, but no alert/call: `already acknowledged; not re-alerted` | the events were closed in an earlier run | `$RMSAI cli.events --reopen`, then republish |
 | Neo4j `warn: null value eliminated in set function` | harmless driver notice: an `OPTIONAL MATCH` over a patient with no history rows | ignore |
