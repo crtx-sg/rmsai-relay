@@ -462,6 +462,18 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                 self._latency.handler_done(time.monotonic() - started)
             print(f"[worker] reply: {reply!r}", flush=True)
             yield reply
+            is_locked = getattr(self._handler, "is_locked", None)
+            if is_locked and is_locked(self._session_id):
+                asyncio.ensure_future(self._hang_up_after(self.session.current_speech))
+
+        async def _hang_up_after(self, speech) -> None:
+            """PIN lockout: let the "ending the call" line play, then end the call for everyone."""
+            from livekit.agents import get_job_context  # noqa: PLC0415
+
+            if speech is not None:
+                await speech.wait_for_playout()
+            print(f"[worker] PIN lockout -> ending call {self._session_id}", flush=True)
+            await get_job_context().delete_room()
 
     return HandlerAgent
 

@@ -12,6 +12,7 @@ from voice.adapters import StubSTT, StubTTS
 
 
 def test_round_trip_chains_tts_into_stt():
-    heard, audio = round_trip("acknowledged copy", stt=StubSTT(), tts=StubTTS())
+    heard, audio, tts_s, stt_s = round_trip("acknowledged copy", stt=StubSTT(), tts=StubTTS())
     assert heard == "acknowledged copy"  # stub codec round-trips exactly
     assert isinstance(audio, bytes) and audio  # non-empty synthesized audio
+    assert tts_s >= 0 and stt_s >= 0  # per-leg timings

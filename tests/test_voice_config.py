@@ -36,7 +36,7 @@ def test_build_stt_whisper_passes_model_and_prompt(monkeypatch):
     captured = {}
 
     class _FakeWhisper:
-        def __init__(self, model, initial_prompt=None):
+        def __init__(self, model, initial_prompt=None, language=None):
             captured["model"] = model
             captured["initial_prompt"] = initial_prompt
 
@@ -50,7 +50,7 @@ def test_build_stt_whisper_passes_model_and_prompt(monkeypatch):
 def test_build_stt_respects_custom_prompt(monkeypatch):
     captured = {}
     monkeypatch.setattr("voice.adapters.WhisperSTT",
-                        lambda model, initial_prompt=None: captured.update(p=initial_prompt))
+                        lambda model, initial_prompt=None, language=None: captured.update(p=initial_prompt))
     cfg = replace(DEFAULT, stt_backend="whisper", stt_initial_prompt="custom vocab here")
     build_stt(cfg)
     assert captured["p"] == "custom vocab here"

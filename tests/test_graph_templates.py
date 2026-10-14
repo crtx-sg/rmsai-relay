@@ -76,6 +76,7 @@ def graph():
         d, uuid="evt-fp", patient_id="PT8002", timestamp=NOW - 600,
         event_type="NORMAL_SINUS", confidence=0.95, is_false_positive=True,
         mews_risk="Low", status="reported", vitals=vit, bed=("Unit1", "Unit1-Bed02"),
+        signal_ref="hdf5://PT8002/evt-fp",
     )
     yield d
     d.reset_all()
@@ -204,8 +205,9 @@ def test_t8_cohort_patterns(graph):
     assert all("event" in r and "age_band" in r for r in rows)
 
 
-def test_t9_ecg_strips_last_event(graph):
-    rows = _tpl(graph, "ecg_strips_last_event", patient="PT8001", event_type="ATRIAL_FIBRILLATION")
+def test_t9_ecg_strips_last_event_of_type(graph):
+    rows = _tpl(graph, "ecg_strips_last_event_of_type", event_type="ATRIAL_FIBRILLATION")
+    assert rows[0]["patient"] == "PT8001"
     assert rows[0]["signal_ref"] == "hdf5://PT8001/evt-afib"
     assert rows[0]["ecg_plot"] == "plots/evt-afib.png"
 
@@ -239,7 +241,7 @@ def test_lookup_intent_critical_events(graph):
     result = lookup(graph, "show critical events in the last 24 hours", now=NOW)
     assert result["mode"] == "template"
     assert result["template"] == "critical_events_since"
-    assert len(result["rows"]) == 1
+    assert len(result["rows"]) == 2  # VF + AFib: "critical" means call-worthy (see test_t1)
 
 
 def test_lookup_rejects_write_cypher(graph):

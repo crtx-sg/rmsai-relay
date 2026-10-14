@@ -8,8 +8,15 @@ links to the `atrial_fibrillation` node).
 
 from __future__ import annotations
 
+import re
+
 from kb.graph.driver import GraphDriver
 from kb.graph.entities import _CONDITION_SYNONYMS, condition_id
+
+
+def _mentions(q: str, term: str) -> bool:
+    """Whole-word match: a substring test linked "mi" (myocardial infarction) in "amiodarone"."""
+    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", q) is not None
 
 
 def link_conditions(driver: GraphDriver, query: str) -> list[str]:
@@ -21,13 +28,13 @@ def link_conditions(driver: GraphDriver, query: str) -> list[str]:
     rows = driver.run_read("MATCH (c:Condition) RETURN c.id AS id, c.name AS name")
     for r in rows:
         name = (r["name"] or "").lower()
-        if name and name in q and r["id"] not in linked:
+        if name and _mentions(q, name) and r["id"] not in linked:
             linked.append(r["id"])
 
     # 2. Synonym surface forms ("afib", "chf", ...) -> canonical condition id.
     known_ids = {r["id"] for r in rows}
     for surface, canonical in _CONDITION_SYNONYMS.items():
-        if surface in q:
+        if _mentions(q, surface):
             cid = condition_id(canonical)
             if cid in known_ids and cid not in linked:
                 linked.append(cid)

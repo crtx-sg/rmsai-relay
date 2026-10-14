@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from common.config import DEFAULT
 from voice.outbound import (
     CallOutcome,
@@ -63,3 +65,22 @@ def test_parse_ack():
     assert parse_ack("acknowledged") == "yes"
     assert parse_ack("no") == "no"
     assert parse_ack("what were the vitals") == "unclear"
+
+
+@pytest.mark.parametrize("text", [
+    "No, that is not correct", "no I do not copy", "I don't confirm that", "incorrect"])
+def test_parse_ack_negation_wins(text):
+    assert parse_ack(text) == "no"
+
+
+@pytest.mark.parametrize("text", [
+    "Can you confirm the potassium?", "is that correct", "what does copy mean",
+    "yes and what was the heart rate", "confirm the dose of amiodarone for this patient please"])
+def test_parse_ack_questions_and_long_turns_are_not_acks(text):
+    assert parse_ack(text) == "unclear"
+
+
+@pytest.mark.parametrize("text", [
+    "yes", "Yes, I acknowledge.", "acknowledged, thank you", "copy that", "roger", "that is correct"])
+def test_parse_ack_plain_acks(text):
+    assert parse_ack(text) == "yes"

@@ -35,6 +35,10 @@ _STARTERS = {
     "was", "were", "do", "does", "did", "can", "could", "would", "how", "when", "where", "status",
     "find", "read", "describe", "explain", "current", "latest", "any", "has", "have", "report",
     "reports", "vitals", "vital", "patient", "summarize", "summary", "check", "acknowledge", "ack",
+    # Content words: a question can open with the subject itself ("hey vios afib protocol").
+    "bed", "beds", "unit", "room", "afib", "af", "vt", "vf", "svt", "pvc", "pvcs", "ecg", "ekg",
+    "mews", "hr", "bp", "spo2", "heart", "blood", "oxygen", "protocol", "trend", "history",
+    "rhythm", "alert", "alerts", "event", "events", "worklist", "medications", "meds",
 }
 _MAX_JUNK = 2  # at most this many mangled-"vios" tokens dropped between greeting and question
 
@@ -70,7 +74,9 @@ def detect_wake_word(text: str, wake_word: str = "hey vios") -> tuple[bool, str]
         if toks[g] in _GREETINGS:
             rest = toks[g + 1:]
             dropped = 0
-            while rest and dropped < _MAX_JUNK and rest[0] not in _STARTERS:
+            # Never drop a token with a digit: it is a patient id or bed number ("PT4543", "12").
+            while (rest and dropped < _MAX_JUNK and rest[0] not in _STARTERS
+                   and not any(c.isdigit() for c in rest[0])):
                 rest.pop(0)
                 dropped += 1
             return True, " ".join(rest)

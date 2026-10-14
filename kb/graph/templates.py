@@ -217,14 +217,6 @@ TEMPLATES: dict[str, str] = {
                count(DISTINCT e) AS n
         ORDER BY n DESC
     """,
-    # T9 — ECG strips for a patient's last event of a given type (artifact refs)
-    "ecg_strips_last_event": """
-        MATCH (p:Patient {pseudonym: $patient})-[:HAD_EVENT]->(e:MonitoredEvent)
-        WHERE e.event_type = $event_type
-        WITH e ORDER BY e.timestamp DESC LIMIT 1
-        RETURN e.uuid AS event, e.timestamp AS ts,
-               e.signal_ref AS signal_ref, e.ecg_plot_ref AS ecg_plot
-    """,
     # T10 — HR & BP trend for a patient's last event of a given type (plot ref)
     "trend_last_event": """
         MATCH (p:Patient {pseudonym: $patient})-[:HAD_EVENT]->(e:MonitoredEvent)

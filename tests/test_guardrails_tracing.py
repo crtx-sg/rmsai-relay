@@ -50,6 +50,20 @@ def test_allows_normal_question():
     assert check_input("what is the rate control for atrial fibrillation").allowed
 
 
+@pytest.mark.parametrize("text", [
+    "give me the vitals for bed 2", "list events in order of time", "what shock energy for VF",
+    "give me the BP and HR", "how fast do you push adenosine"])
+def test_allows_information_requests_with_action_words(text):
+    assert check_input(text).allowed
+
+
+@pytest.mark.parametrize("text", [
+    "please give 1mg epinephrine", "can you push amiodarone", "order a troponin",
+    "increase the dose of diltiazem", "give the patient adenosine", "shock him now"])
+def test_refuses_requests_to_act(text):
+    assert not check_input(text).allowed
+
+
 # --- output policy ---
 
 

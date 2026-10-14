@@ -23,6 +23,11 @@ from voice.wake import detect_wake_word, gate_audio_turn
         ("Hey, why us? What's the status of?", "whats the status of"),
         ("hey vyas, show the report", "show the report"),
         ("hi there, what are the vitals", "what are the vitals"),   # 2-token junk before question
+        # The subject can open the question: never strip a patient id, bed number or clinical term.
+        ("Hey Vios, PT4543 vitals?", "pt4543 vitals"),
+        ("hey bios PT0007 trend", "pt0007 trend"),
+        ("hey vios bed 12 heart rate", "bed 12 heart rate"),
+        ("hey vios, afib protocol?", "afib protocol"),
     ],
 )
 def test_wake_word_matches_and_strips(text, remainder):

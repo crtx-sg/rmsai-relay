@@ -98,6 +98,10 @@ class OrchestratorHandler(Handler):
         """
         return self.working.get_or_create(session_id).authenticated
 
+    def is_locked(self, session_id: str) -> bool:
+        """True once this call used up its PIN attempts; the worker then hangs up."""
+        return self._attempts.get(session_id, 0) >= self.max_attempts
+
     def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
         state = self.working.get_or_create(session_id)
 
@@ -109,6 +113,9 @@ class OrchestratorHandler(Handler):
             return ""
 
         # --- not yet authenticated: PIN gate ---
+        # Locked out: refuse before verifying, so the right PIN after N wrong ones still fails.
+        if self.is_locked(session_id):
+            return _LOCKED
         if self.auth_gate.verify(text):
             self.working.set_authenticated(session_id)
             self.audit.write(actor=f"caller:{session_id}", action="inbound_auth",
@@ -179,7 +186,8 @@ class OutboundHandler(OrchestratorHandler):
         return self.alert.spoken_alert
 
     def _authenticated_turn(self, session_id: str, text: str, *, spoken: bool = False) -> str:
-        if parse_ack(text) == "yes":
+        # A backchannel "yeah"/"okay" over the alert is not an acknowledgment ("yes" still is).
+        if not (spoken and is_filler(text)) and parse_ack(text) == "yes":
             if self.driver is not None:
                 from kb.graph.events import set_event_status  # noqa: PLC0415
 

@@ -19,9 +19,17 @@ _INJECTION = re.compile(
     re.IGNORECASE,
 )
 _SECRET = re.compile(r"\b(pin|password|passcode|secret|api[\s_-]?key)\b", re.IGNORECASE)
+# A request for the system to *act*: the verb opens the utterance (after an optional "please" /
+# "can you" / "go ahead and"). Anywhere-in-text matching refused "give me the vitals", "list events
+# in order of time" and "what shock energy for VF" — information requests, not actions.
 _ACTION = re.compile(
-    r"\b(administer|give|inject|push|prescribe|set the dose|change the dose|increase the dose|"
-    r"decrease the dose|defibrillate|shock|cardiovert|order)\b",
+    r"^\W*(?:please\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?|go ahead and\s+|"
+    r"i (?:want|need) you to\s+)?"
+    r"(?:(?:administer|inject|prescribe|defibrillate|shock|cardiovert)\b"
+    r"|(?:give|push)\b(?!\s+(?:me|us)\b)"
+    r"|(?:set|change|increase|decrease|raise|lower) the dose\b"
+    r"|order\s+(?:an?\s+|the\s+|some\s+)?(?:labs?|tests?|ct|scan|x-?ray|ecg|ekg|troponin|blood|"
+    r"med\w*|drugs?|doses?)\b)",
     re.IGNORECASE,
 )
 _EMERGENCY = re.compile(

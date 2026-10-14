@@ -156,6 +156,31 @@ def test_outbound_handler_ack_sets_event_status(tmp_path, monkeypatch):
     assert recorded == {"uuid": "E1", "status": "acknowledged"}
 
 
+def test_outbound_handler_no_or_question_does_not_ack(tmp_path, monkeypatch):
+    import kb.graph.events as events
+
+    recorded = []
+    monkeypatch.setattr(events, "set_event_status", lambda d, uuid, status: recorded.append(status))
+
+    working, orch = _FakeWorking(), _FakeOrch()
+    h, _ = _handler(tmp_path, working, orch, driver=object())
+    h.respond("one two three four", session_id="room1")
+    h.respond("No, that is not correct", session_id="room1")
+    h.respond("Can you confirm the potassium?", session_id="room1")
+    assert h.respond("Yeah", session_id="room1", spoken=True) == ""  # backchannel over the alert
+    assert recorded == []
+
+
+def test_pin_lockout_refuses_the_right_pin_afterwards(tmp_path):
+    working, orch = _FakeWorking(), _FakeOrch()
+    h, _ = _handler(tmp_path, working, orch)
+    for _ in range(3):
+        reply = h.respond("nine nine nine nine", session_id="room1")
+    assert "Ending the call" in reply and h.is_locked("room1")
+    assert "Ending the call" in h.respond("one two three four", session_id="room1")
+    assert not working.get_or_create("room1").authenticated
+
+
 # --- worker handler selection --------------------------------------------------------------
 
 

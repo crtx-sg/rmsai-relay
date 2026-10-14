@@ -210,14 +210,28 @@ def place_with_retries(
 
 _ACK_YES = {"yes", "yeah", "yep", "acknowledge", "acknowledged", "confirm", "confirmed",
             "affirmative", "copy", "roger", "correct"}
-_ACK_NO = {"no", "nope", "negative", "deny", "denied", "incorrect"}
+_ACK_NO = {"no", "nope", "negative", "deny", "denied", "incorrect", "not", "dont", "don't"}
+# Words that may sit next to an ack word without changing it ("yes I acknowledge", "copy that").
+_ACK_FILLER = {"i", "we", "that", "it", "this", "the", "alert", "event", "is", "ok", "okay",
+               "thanks", "thank", "you", "received", "understood", "got", "and", "please"}
+_QUESTION = {"what", "whats", "which", "who", "why", "how", "when", "where", "can", "could",
+             "would", "should", "is", "are", "do", "does", "did"}
 
 
 def parse_ack(text: str) -> str:
-    """Classify a verbal acknowledgment as 'yes' | 'no' | 'unclear' (G4)."""
-    tokens = set(re.findall(r"[a-z]+", text.lower()))
-    if tokens & _ACK_YES:
-        return "yes"
-    if tokens & _ACK_NO:
+    """Classify a verbal acknowledgment as 'yes' | 'no' | 'unclear' (G4).
+
+    Fails toward 'unclear': a negation wins over any yes-word, a question is never an ack, and
+    'yes' needs an utterance made only of ack words ("No, that is not correct" and "Can you confirm
+    the potassium?" both acknowledged the alert before this).
+    """
+    tokens = re.findall(r"[a-z']+", text.lower())
+    if not tokens:
+        return "unclear"
+    if set(tokens) & _ACK_NO:
         return "no"
+    if "?" in text or tokens[0] in _QUESTION:
+        return "unclear"
+    if set(tokens) & _ACK_YES and set(tokens) <= _ACK_YES | _ACK_FILLER and len(tokens) <= 6:
+        return "yes"
     return "unclear"
