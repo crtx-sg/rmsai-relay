@@ -146,8 +146,14 @@ def run_outbound(
     if outcome != CallOutcome.ANSWERED:
         fallback = None
         status = "notify_failed"
-        # Acknowledged elsewhere (the app) while the call rang: no "missed call" text for it.
-        closed = get_event_status(driver, uuid) in CLOSED_STATUSES
+        # Acknowledged elsewhere (the app) while the call rang: no "missed call" text for it. Fail
+        # open: if the graph can't be read (Neo4j restarting), the text still goes out.
+        try:
+            closed = get_event_status(driver, uuid) in CLOSED_STATUSES
+        except Exception as exc:  # noqa: BLE001
+            print(f"[outbound] status check failed ({type(exc).__name__}); sending the SMS fallback",
+                  flush=True)
+            closed = False
         if fallback_notifier is not None and outcome != CallOutcome.INVALID and not closed:
             text = "Missed call from RMS relay. " + spoken_report(event, bed=bed, config=config)
             delivered = fallback_notifier.send(config.outbound_call_number, text)

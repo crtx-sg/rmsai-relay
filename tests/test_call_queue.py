@@ -65,8 +65,12 @@ class _FakeRedis:
     def delete(self, key):
         self.kv.pop(key, None)
 
-    def expire(self, key, seconds):
-        return int(key in self.kv)
+    def eval(self, script, numkeys, key, value, *args):  # the queue's two compare-and-act scripts
+        if self.kv.get(key) != value:
+            return 0
+        if "'del'" in script:
+            del self.kv[key]
+        return 1
 
 
 def _job(event_id, criticality, ms):

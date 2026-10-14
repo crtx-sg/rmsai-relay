@@ -92,9 +92,11 @@ _BED_WORD = re.compile(r"\bbeds?\s+(?:no\.?\s*|number\s+|#\s*)?(\d+|[a-z]+)\b", 
 _PLACE = re.compile(r"\b(ward|bay|room|unit)\s*(\d+|[A-Z]\b)", re.IGNORECASE)
 _HEX_ID = re.compile(r"\b[0-9a-f]{6,}(?:-[0-9a-f]{3,})+\b", re.IGNORECASE)
 # A citation marker used as a person ("Patient [P2] is in bed 1"): passages are not patients.
-# A citation label read as a patient: "patient [P1]", "the patient's ID is #P1", "patient P2".
+# A citation label read as a patient: "patient [P1]", "the patient's ID is #P1". Brackets, '#' or
+# "ID" are required: "the patient is P2-positive" is clinical text, not a citation.
 _CITED_AS_PATIENT = re.compile(
-    r"\bpatients?(?:'s)?\s*(?:id\s*)?(?:is\s*)?[:#]?\s*\[?#?([PR]\d+)\b\]?", re.IGNORECASE)
+    r"\bpatients?(?:'s)?\s*(?:(?:id\s*)?(?:is\s*)?[:#]\s*\[?|id\s+(?:is\s+)?\[?|\[)([PR]\d+)\b",
+    re.IGNORECASE)
 _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
                  "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
 
@@ -143,7 +145,10 @@ def check_input(text: str) -> InputDecision:
         return InputDecision(False, _REFUSE_INJECTION)
     if _SECRET.search(text) and re.search(r"\b(what|tell|give|share|reveal)\b", text, re.IGNORECASE):
         return InputDecision(False, _REFUSE_SECRET)
-    if _ACTION.search(text):
+    # A question that opens with the verb ("shock energy for VF?", "administer what dose of
+    # adenosine?") asks for information; only a command is refused.
+    if _ACTION.search(text) and not ("?" in text or re.search(
+            r"\b(?:what|which|how\s+(?:much|many|fast|often))\b", text, re.IGNORECASE)):
         return InputDecision(False, _REFUSE_ACTION)
     return InputDecision(True)
 

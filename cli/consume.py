@@ -56,6 +56,14 @@ def _ensure_group(client, stream: str, group: str, redis_url: str) -> None:
 _FAILURES = "{stream}:{group}:failures"  # hash msg_id -> failed attempts so far
 
 
+def _audit(audit, **fields) -> None:
+    """A consume audit line; an unwritable log must never crash the loop or change an outcome."""
+    try:
+        audit.write(actor="cli.consume", action="consume_event", subject="?", **fields)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[consume] audit write failed: {type(exc).__name__}: {exc}", flush=True)
+
+
 def handle_entry(client, stream: str, group: str, msg_id, fields, work, *, audit,
                  max_attempts: int = 3) -> str:
     """Process one stream entry: 'processed' | 'poison' | 'retry' | 'dead'.
@@ -70,8 +78,7 @@ def handle_entry(client, stream: str, group: str, msg_id, fields, work, *, audit
         payload = json.loads(fields[b"data"])
     except (KeyError, TypeError, ValueError) as exc:
         print(f"[poison] {mid}: {type(exc).__name__}: {exc}", flush=True)
-        audit.write(actor="cli.consume", action="consume_event", subject="?", outcome="poison",
-                    stream=stream, msg_id=mid)
+        _audit(audit, outcome="poison", stream=stream, msg_id=mid)
         client.xack(stream, group, msg_id)
         return "poison"
     failures = _FAILURES.format(stream=stream, group=group)
@@ -82,8 +89,7 @@ def handle_entry(client, stream: str, group: str, msg_id, fields, work, *, audit
         if n < max_attempts:
             print(f"[retry] {mid}: {type(exc).__name__}: {exc} (attempt {n}/{max_attempts}, "
                   f"left pending)", flush=True)
-            audit.write(actor="cli.consume", action="consume_event", subject="?",
-                        outcome="retry", stream=stream, msg_id=mid, attempt=n)
+            _audit(audit, outcome="retry", stream=stream, msg_id=mid, attempt=n)
             return "retry"
         client.xadd(f"{stream}.dead", {"data": fields[b"data"], "msg_id": mid,
                                        "error": type(exc).__name__},
@@ -92,8 +98,7 @@ def handle_entry(client, stream: str, group: str, msg_id, fields, work, *, audit
         client.xack(stream, group, msg_id)
         print(f"[dead] {mid}: {type(exc).__name__}: {exc} after {n} attempts -> {stream}.dead",
               flush=True)
-        audit.write(actor="cli.consume", action="consume_event", subject="?", outcome="dead",
-                    stream=stream, msg_id=mid, attempts=n)
+        _audit(audit, outcome="dead", stream=stream, msg_id=mid, attempts=n)
         return "dead"
     client.hdel(failures, mid)
     client.xack(stream, group, msg_id)
@@ -148,8 +153,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-events", type=int, default=None, help="Exit after N messages.")
     parser.add_argument("--max-attempts", type=int, default=3,
                         help="Tries per message before it is dead-lettered to <stream>.dead.")
-    parser.add_argument("--retry-idle-ms", type=int, default=30_000,
-                        help="A failed (or orphaned) message is retried after it sat this long.")
+    parser.add_argument("--retry-idle-ms", type=int, default=600_000,
+                        help="A failed (or orphaned) message is retried after it sat this long. "
+                             "Longer than any call: a message still being worked on (a blocking "
+                             "call) must not be taken over by a second consumer.")
     args = parser.parse_args(argv)
 
     from voice.outbound import resolve_destination  # noqa: PLC0415
@@ -274,23 +281,29 @@ def main(argv: list[str] | None = None) -> int:
             inbox_publisher=inbox_publisher, token_store=token_store,
             call_end_waiter=call_end_waiter, call_queue=call_queue,
         )
-        if result.call_queued and dispatcher is not None:
-            dispatcher.notify()
-        _report(result, samples=args.trend_samples)
-        if result.trace is not None:
-            tracker.add(result.trace)
-        if args.transport == "webrtc" and result.called:
-            _print_webrtc_join(config, result.event_uuid)
-        audit.write(actor="cli.consume", action="consume_event",
-                    subject=result.patient_ref, outcome="processed",
-                    stream=args.stream, msg_id=mid)
+        # The event is persisted and alerted by now. Everything below is reporting: a failure here
+        # must not make the message "failed", or the retry would push and call again.
+        try:
+            if result.call_queued and dispatcher is not None:
+                dispatcher.notify()
+            _report(result, samples=args.trend_samples)
+            if result.trace is not None:
+                tracker.add(result.trace)
+            if args.transport == "webrtc" and result.called:
+                _print_webrtc_join(config, result.event_uuid)
+            audit.write(actor="cli.consume", action="consume_event",
+                        subject=result.patient_ref, outcome="processed",
+                        stream=args.stream, msg_id=mid)
+        except Exception as exc:  # noqa: BLE001 - reporting only; the alert already went out
+            print(f"[consume] reporting failed for {mid}: {type(exc).__name__}: {exc}", flush=True)
 
     def _handle(entries) -> None:
         nonlocal processed
         for msg_id, fields in entries:
-            handle_entry(client, args.stream, args.group, msg_id, fields, _work, audit=audit,
-                         max_attempts=args.max_attempts)
-            processed += 1
+            outcome = handle_entry(client, args.stream, args.group, msg_id, fields, _work,
+                                   audit=audit, max_attempts=args.max_attempts)
+            if outcome != "retry":  # --max-events counts messages finished with, not attempts
+                processed += 1
 
     try:
         while True:

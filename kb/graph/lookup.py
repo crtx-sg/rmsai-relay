@@ -50,16 +50,18 @@ _HISTORY_FOCUS = (
 # Questions about the called/selected event itself (answered from that event, by uuid). Each maps to
 # the part of `event_summary` the answer leads with.
 _EVENT_FOCUS = (
-    ("false_positive", re.compile(r"\bfalse[\s-]+(?:positive|alarm)\b|\bartifact\b|"
+    ("false_positive", re.compile(r"\bfalse[\s-]+(?:positive|alarm)\b|"
                                   r"\b(?:real|genuine|true)\s+(?:event|alarm|alert|arrhythmia)\b",
                                   re.IGNORECASE)),
     ("why", re.compile(r"\bwhy\b.*\b(?:alert\w*|call\w*|flag\w*|shown|notif\w*|paged|rang|ring\w*|"
                        r"contacted)\b|\breason\s+for\s+(?:the\s+)?(?:alert|call|alarm)\b",
                        re.IGNORECASE)),
-    ("confidence", re.compile(r"\b(?:confiden\w*|how\s+sure|certain\w*|probability|accura\w*)\b",
-                              re.IGNORECASE)),
-    ("time", re.compile(r"\b(?:when\s+(?:did|was|were|is)|what\s+time|how\s+long\s+ago)\b",
-                        re.IGNORECASE)),
+    ("confidence", re.compile(r"\b(?:confiden\w*|how\s+sure|certain\w*)\b", re.IGNORECASE)),
+    # The event's time needs the event as its subject: "when is the next dose", "what time is it"
+    # and "when was the patient admitted" are not about it.
+    ("time", re.compile(
+        r"\b(?:when|what\s+time|how\s+long\s+ago)\s+(?:did|was|were)\s+(?:it|(?:this|the|that)\s+"
+        r"(?:event|alarm|alert|arrhythmia|rhythm|episode))\b", re.IGNORECASE)),
     ("criticality", re.compile(r"\b(?:criticality|severity|how\s+(?:serious|severe|critical|bad))\b",
                                re.IGNORECASE)),
     ("rhythm", re.compile(r"\b(?:rhythm|arrhythmia|what\s+(?:was|is)\s+(?:detected|the\s+(?:event|"
@@ -76,6 +78,21 @@ _EVENT_PROTOCOL = re.compile(r"\b(?:protocol|guideline|manag\w*|treat\w*|handle|
 _THIS_TARGET = re.compile(
     r"\b(?:this|the|that|current)\s+(?:patient|event|alert|alarm|rhythm|arrhythmia|case)\b|"
     r"\b(?:his|her|him|he|she|patient's)\b|\bthe\s+model\b|\bnow\b", re.IGNORECASE)
+# Kept out of the this-event rules: questions about a vital, the MEWS, the patient's history or a
+# protocol have their own rules ("heart rate when the event was detected" is a vitals question),
+# and "what is a false positive" asks for a definition, not about this event.
+_NOT_EVENT_FOCUS = re.compile(
+    r"\b(?:mews|news\s+(?:score|\d)|early\s+warning|warning\s+score)\b|"
+    r"^\W*(?:what\s+(?:is|are)\s+(?:a|an)\b|what\s+does\b|define\b|explain\b)", re.IGNORECASE)
+# "...for bradycardia", "...for hyperkalemia": a named topic, not this event's action items.
+_FOR_OTHER = re.compile(
+    r"\bfor\s+(?!this\b|the\s+patient\b|him\b|her\b|it\b|now\b|them\b)\w+|\bdos(?:e|es|ing)\b",
+    re.IGNORECASE)
+# The patient/event words that make a question patient-specific (no "now", "the model", "the alarm":
+# "what does the alarm mean" and "what does the model do" are document questions).
+_PATIENT_TARGET = re.compile(
+    r"\b(?:this|that|current)\s+(?:patient|event|alert|alarm|rhythm|arrhythmia|case)\b|"
+    r"\bthe\s+patient(?:'s)?\b|\b(?:his|her|him|he|she|patient's)\b", re.IGNORECASE)
 _EMERGENCY_WORDS = re.compile(
     r"\b(?:coding|arrest\w*|code\s+blue|unresponsive|not\s+breathing|collaps\w*|no\s+pulse|"
     r"pulseless)\b", re.IGNORECASE)
@@ -194,14 +211,25 @@ def is_patient_specific(query: str) -> bool:
     model'). With no graph query for it, such a question is never handed to free generation over
     the documents: live, the LLM invented patients, ages and IDs from archived event reports."""
     q = normalize_spoken_query(query or "")
-    return bool(_THIS_TARGET.search(q) or _NAMED_PATIENT.search(q) or _BED_LABEL.search(q))
+    if _NAMED_PATIENT.search(q) or _BED_LABEL.search(q):
+        return True  # a named patient or bed is always about that patient
+    if event_type_from_text(q.lower()) or _DEFINITIONAL.search(q) or _NOT_EVENT_FOCUS.search(q):
+        return False  # "how do I treat her AFib", "when should I escalate the patient": documents
+    return bool(_PATIENT_TARGET.search(q))
+
+
+def names_bed_label(query: str) -> bool:
+    """The question names a bed by number ("bed 4", "bed four")."""
+    return bool(_BED_LABEL.search(normalize_spoken_query(query or "")))
 
 
 def names_unresolved_bed(query: str) -> bool:
     """The question names a bed but no bed number survived normalization ("on bed nein")."""
     q = normalize_spoken_query(query or "")
-    return bool(re.search(r"\bbed\b", q, re.IGNORECASE)) and not _BED_LABEL.search(q) \
-        and not _WHERE.search(q.lower())
+    # A bed as a place ("on bed nein", "bed number…"), not "a bed bath" / "the bed alarm".
+    names_bed = re.search(r"\b(?:on|in|at|for)\s+(?:the\s+)?bed\b(?!\s+(?:bath|alarm|sensor|rail|"
+                          r"side|pan|linen|exit))|\bbed\s+(?:number|no\.?)\b", q, re.IGNORECASE)
+    return bool(names_bed) and not _BED_LABEL.search(q) and not _WHERE.search(q.lower())
 
 
 def _history(*, now, status=None, patient=None, bed=None, etype=None, hours=None, critical=False):
@@ -284,12 +312,14 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # criticality, and what to do. Only with no other target named (a bed, a patient, a rhythm).
     # An emergency ("the patient is coding") goes to the documents' emergency steps, not to this.
     on_this_event = (event_ref and not bed and not named and not _DEFINITIONAL.search(q)
-                     and not _EMERGENCY_WORDS.search(q))
+                     and not _EMERGENCY_WORDS.search(q) and not _NOT_EVENT_FOCUS.search(q))
+    other_rules = bool(_VITALS.search(q) or _CLINICAL_HISTORY.search(q) or _EVENT_PROTOCOL.search(q))
     # First match wins here: "how confident is the model about this rhythm" is about confidence.
-    if on_this_event and not etype and (focus := next(
+    if on_this_event and not etype and not other_rules and (focus := next(
             (name for name, rx in _EVENT_FOCUS if rx.search(q)), None)):
         return "event_summary", {"event_uuid": event_ref, "focus": focus}
-    if on_this_event and _EVENT_ACTIONS.search(q) and not _EVENT_PROTOCOL.search(q) \
+    if on_this_event and not etype and _EVENT_ACTIONS.search(q) and not _EVENT_PROTOCOL.search(q) \
+            and not _FOR_OTHER.search(q) \
             and not re.search(r"\b(?:outstanding|all|ward|every|across|other)\b", q):
         return "action_items_for_event", {"event_uuid": event_ref}
     if _MEWS.search(q) and not _DEFINITIONAL.search(q):
@@ -402,13 +432,24 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # "How many events today?" / "...in the last 6 hours?": a count, not the per-bed leaderboard.
     if re.search(r"\bhow\s+many\b", q) and _ALARM_WORD.search(q) \
             and not re.search(r"\b(per|by|each|which|most)\b", q) and not scoped:
+        mins = int(m.group(1)) if (m := _MINUTES.search(q)) else None
+        days = int(m.group(1)) if (m := re.search(r"\b(\d+)\s*days?\b", q)) else None
+        if days is None and re.search(r"\b(?:this|past|last)\s+week\b", q):
+            days = 7
+        if mins and not hours:
+            return "event_count_since", {"since": now - mins * 60, "window": f"in the last "
+                                         f"{mins} minute{'s' if mins != 1 else ''}"}
         if hours:
             return "event_count_since", {"since": now - hours * 3600, "window": f"in the last "
                                          f"{hours} hour{'s' if hours != 1 else ''}"}
+        if days:
+            return "event_count_since", {"since": now - days * 86400, "window": f"in the last "
+                                         f"{days} day{'s' if days != 1 else ''}"}
         if _TODAY.search(q):
             midnight = now - (now % 86400)  # UTC day, like every time the agent says
             return "event_count_since", {"since": midnight, "window": "today"}
-        return "event_count_since", {"since": 0, "window": "in total"}
+        if not re.search(r"\b(?:week|month|yesterday|since)\b", q):  # a window we can't read
+            return "event_count_since", {"since": 0, "window": "in total"}
 
     # Alarm counts — "which patient has the most alarms?", "how many alarms per bed?".
     if _ALARM_COUNTS.search(q) and not bed_label:

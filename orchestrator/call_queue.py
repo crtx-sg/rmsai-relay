@@ -33,6 +33,12 @@ _QUEUE = "rmsai:calls:queue"
 _JOBS = "rmsai:calls:jobs"
 _ACTIVE = "rmsai:calls:active"  # the one call being placed system-wide (event id), with a lease
 _LEASE_S = 60  # renewed every _LEASE_S/3 during a call; a crashed holder frees the slot after this
+# Renew / release the slot only while it still holds OUR event id (atomic compare-and-act). A plain
+# EXPIRE or GET-then-DEL could extend or free a slot another process had claimed after ours lapsed.
+_RENEW = ("if redis.call('get', KEYS[1]) == ARGV[1] then "
+          "return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end")
+_RELEASE = ("if redis.call('get', KEYS[1]) == ARGV[1] then "
+            "return redis.call('del', KEYS[1]) else return 0 end")
 # Score = (levels above this one) * _BAND + enqueue time in ms. Epoch ms (~1.8e12) stays well
 # inside one band, so every Critical sorts before every High, FIFO within a level.
 _BAND = 10**13
@@ -120,15 +126,14 @@ class CallQueue:
         self.redis.set(self.active_key, job.event_id, ex=self.lease_s)
         return job
 
-    def keep_alive(self) -> None:
-        """Renew the call-slot lease (the dispatcher calls this while a call is in progress)."""
-        self.redis.expire(self.active_key, self.lease_s)
+    def keep_alive(self, event_id: str) -> bool:
+        """Renew the call-slot lease for `event_id`; False if the slot is no longer ours (it lapsed,
+        e.g. the laptop slept through a call, and another process may now be dialling)."""
+        return bool(self.redis.eval(_RENEW, 1, self.active_key, event_id, self.lease_s))
 
     def done(self, event_id: str) -> None:
         self.redis.hdel(self.jobs_key, event_id)
-        active = self.redis.get(self.active_key)
-        if active is not None and _s(active) == event_id:
-            self.redis.delete(self.active_key)
+        self.redis.eval(_RELEASE, 1, self.active_key, event_id)
 
     def pending(self) -> int:
         return int(self.redis.zcard(self.queue_key))
@@ -189,7 +194,10 @@ class CallDispatcher:
             def _heartbeat() -> None:  # keep the call slot while the call lasts
                 while not beating.wait(self.queue.lease_s / 3):
                     try:
-                        self.queue.keep_alive()
+                        if not self.queue.keep_alive(job.event_id):
+                            print(f"[calls] call slot lost during the call for {job.event_id}",
+                                  flush=True)
+                            return
                     except Exception as exc:  # noqa: BLE001 - a Redis blip; retry next beat
                         print(f"[calls] lease renewal failed: {type(exc).__name__}", flush=True)
 
@@ -200,8 +208,13 @@ class CallDispatcher:
                 print(f"[calls] call for event {job.event_id} failed: "
                       f"{type(exc).__name__}: {exc}", flush=True)
             finally:
-                beating.set()
-                self.queue.done(job.event_id)
+                try:
+                    self.queue.done(job.event_id)
+                except Exception as exc:  # noqa: BLE001 - the lease lapses; recover() re-queues it
+                    print(f"[calls] could not finish {job.event_id}: {type(exc).__name__}",
+                          flush=True)
+                finally:
+                    beating.set()
             return True
         finally:
             self._busy.clear()

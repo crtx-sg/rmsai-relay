@@ -238,16 +238,19 @@ def read_event(hf: h5py.File, event_key: str, md: dict) -> SignalWindow:
                 vitals[vname] = Vital(
                     value=value,
                     units=_decode(vgrp["units"][()]) if "units" in vgrp else "",
-                    timestamp=float(vgrp["timestamp"][()]) if "timestamp" in vgrp else event_ts,
+                    timestamp=(_finite(vgrp["timestamp"][()]) if "timestamp" in vgrp else None)
+                    or event_ts,
                 )
             extras = _load_extras(vgrp)
             history = extras.get("history", [])
             if history:
+                # A reading with no usable value or time is dropped on its own; it used to skip the
+                # whole event (and its alarm).
                 vitals_history[vname] = [
-                    VitalSample(value=v, timestamp=float(s["timestamp"]))
+                    VitalSample(value=v, timestamp=t)
                     for s in history
-                    if isinstance(s, dict) and "timestamp" in s
-                    and (v := _finite(s.get("value"))) is not None
+                    if isinstance(s, dict) and (v := _finite(s.get("value"))) is not None
+                    and (t := _finite(s.get("timestamp"))) is not None
                 ]
 
     # --- Ground truth (sim only) ---

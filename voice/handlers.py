@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 
 from common.audit import AuditLog
 from voice.auth import PinAuthGate, parse_pin
-from voice.outbound import parse_ack
+from voice.outbound import is_plain_no, is_question, parse_ack
 from voice.outbound_alert import OutboundAlert
 
 
@@ -208,16 +208,22 @@ class OutboundHandler(OrchestratorHandler):
 
     def _names_other_event(self, text: str) -> bool:
         beds, patients = _named_targets(text)
-        other_bed = any(not str(getattr(self.alert, "bed", "") or "").endswith(b) for b in beds)
+        # With no bed on the alert a named bed can't be checked, so it counts as another bed:
+        # refusing ("acknowledge it in the app") is safer than closing a possibly different event.
+        alert_bed = str(getattr(self.alert, "bed", "") or "")
+        other_bed = any(not alert_bed.endswith(b) for b in beds) if alert_bed else bool(beds)
         return other_bed or any(p != self.alert.patient_ref for p in patients)
 
     def _authenticated_turn(self, session_id: str, text: str, *, spoken: bool = False) -> str:
+        # An acknowledgment COMMAND: the verb, no negation, not a question. "Don't acknowledge bed
+        # two yet" and "is bed two acknowledged" closed the alert before this guard.
+        command = bool(_ACK_VERB.search(text)) and parse_ack(text) != "no" and not is_question(text)
         # "Acknowledge bed seven" on a call about bed 2: only the called event can be closed here.
-        if _ACK_VERB.search(text) and self._names_other_event(text):
+        if command and self._names_other_event(text):
             return (f"On this call I can only acknowledge {self._this_event()}. Please "
                     f"acknowledge other events in the app.")
         beds, patients = _named_targets(text)
-        names_this = bool(beds or patients) and _ACK_VERB.search(text)  # "acknowledge bed two"
+        names_this = command and bool(beds or patients)  # "acknowledge bed two"
         # A backchannel "yeah"/"okay" over the alert is not an acknowledgment ("yes" still is).
         if names_this or (not (spoken and is_filler(text)) and parse_ack(text) == "yes"):
             if self.driver is not None:
@@ -231,9 +237,7 @@ class OutboundHandler(OrchestratorHandler):
             return f"Thank you, I've recorded your acknowledgment of {self._this_event()}. Goodbye."
         # A short "no" / "that's not correct" (an answer to the alert or the confirm-back, not a
         # question): say the alert stays open, instead of "I don't have that patient information".
-        if parse_ack(text) == "no" and len(text.split()) <= 6 and "?" not in text \
-                and not re.match(r"\W*(?:what|which|who|why|how|when|where|is|are|can|do|does)\b",
-                                 text, re.IGNORECASE):
+        if is_plain_no(text):
             return (f"Okay, I have not acknowledged {self._this_event()}; it stays open. "
                     f"What would you like to know?")
         return super()._authenticated_turn(session_id, text, spoken=spoken)

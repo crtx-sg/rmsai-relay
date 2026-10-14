@@ -28,7 +28,7 @@ from kb.graph.events import is_pending
 from kb.graph.llm_router import route as llm_route
 from kb.graph.lookup import (
     asks_event_protocol, is_patient_specific, looks_like_event_listing, match_intent,
-    names_unresolved_bed,
+    names_bed_label, names_unresolved_bed,
 )
 from kb.graph.templates import EVENT_HISTORY, describe_event_history, run_template
 from kb.hybrid.answer import _MIN_OVERLAP, is_relevant
@@ -102,7 +102,10 @@ _GENERIC_WORDS = frozenset(
 _TOPIC_SIMILARITY = 0.70
 # "What does a MEWS of 5 mean?": answered from the scorer's band + the document's escalation rule.
 # The 3B model gave "a high level of distress".
-_MEWS_MEANING = re.compile(r"\b(?:mews|news)\b", re.IGNORECASE)
+# The number must be the score itself ("MEWS of 5", "a MEWS score is 7"): "MEWS escalation in 30
+# minutes means?" read 30 as a MEWS. A named bed ("is bed 4's MEWS significant?") is a lookup.
+_MEWS_SCORE = re.compile(r"\b(?:mews|news)\s*(?:score\s*)?(?:of|is|=|at)?\s*(\d{1,2})\b",
+                         re.IGNORECASE)
 _MEANING = re.compile(r"\b(?:mean\w*|indicat\w*|signif\w*|interpret\w*)\b", re.IGNORECASE)
 _MEWS_DOC = "mews_escalation.md"
 
@@ -534,6 +537,8 @@ def _answer_action_items(rows: list[dict]) -> str:
     if r0.get("bed"):
         who += f" on {spoken_bed(r0['bed'])}"
     items = [str(r["action"]).replace(" — ", ": ") for r in rows if r.get("action")]
+    if not items:
+        return "No action items are recorded for this event."
     open_n = sum(1 for r in rows if r.get("status") == "outstanding")
     return (f"For {who}, the recommended actions are: " + "; ".join(items) + "."
             + (f" {open_n} still outstanding." if open_n and open_n != len(rows) else ""))
@@ -572,7 +577,8 @@ def _answer_clinical_history(rows: list[dict], focus: str | None = None) -> str:
     if not rows:
         return "No clinical history is recorded for this patient."
     r = rows[0]
-    pt = r.get("patient") or "this patient"
+    pt = r.get("patient")
+    who = f"patient {pt}" if pt else "this patient"
     conditions = [canonical_condition(c) if canonical_condition(c) != c.strip().lower() else c
                   for c in r.get("conditions") or [] if c]
     sections = {
@@ -582,19 +588,21 @@ def _answer_clinical_history(rows: list[dict], focus: str | None = None) -> str:
         "symptoms": ("Recorded symptoms", r.get("symptoms") or []),
     }
     if focus == "allergies":
-        return f"Allergies are not recorded in this system for patient {pt}."
-    sex = {"m": "male", "f": "female"}.get(str(r.get("gender") or "").lower())
+        return f"Allergies are not recorded in this system for {who}."
+    sex = {"m": "male", "male": "male", "f": "female", "female": "female"}.get(
+        str(r.get("gender") or "").lower())
     if focus == "demographics":
-        if not r.get("age") and not sex:
-            return f"Age and sex are not recorded for patient {pt}."
-        age = f" is {r['age']} years old" if r.get("age") else ""
-        return f"Patient {pt}{age}{', ' if age and sex else ' is '}{sex or ''}.".replace(" .", ".")
+        facts = [f"{r['age']} years old" if r.get("age") else None, sex]
+        facts = [f for f in facts if f]
+        if not facts:
+            return f"Age and sex are not recorded for {who}."
+        return f"{who[0].upper()}{who[1:]} is {', '.join(facts)}."
     if focus in sections:
         label, items = sections[focus]
         if not items:
-            return f"No {label.lower()} are recorded for patient {pt}."
-        return f"Patient {pt}. {label}: {_spoken_list(items)}."
-    who = f"Patient {pt}"
+            return f"No {label.lower()} are recorded for {who}."
+        return f"{who[0].upper()}{who[1:]}. {label}: {_spoken_list(items)}."
+    who = f"{who[0].upper()}{who[1:]}"
     if r.get("age") and sex:
         who += f", {r['age']} year old {sex}"
     lines = [f"{label}: {_spoken_list(items)}." for label, items in sections.values() if items]
@@ -927,8 +935,8 @@ class Orchestrator:
             return TurnResult(answer=courtesy, mode="courtesy", trace=tracer.as_dicts())
 
         # --- "what does a MEWS of N mean?" -> the scorer's band + the document's escalation rule ---
-        if _MEWS_MEANING.search(user_text) and _MEANING.search(user_text) \
-                and (m := re.search(r"\b(\d{1,2})\b", user_text)):
+        if _MEANING.search(user_text) and not names_bed_label(user_text) \
+                and (m := _MEWS_SCORE.search(user_text)) and int(m.group(1)) <= 20:
             escalation = next((c["text"] for c in self.hybrid.vector.store.chunks_for_doc(_MEWS_DOC)
                                if str(c.get("source", "")).endswith("#Escalation thresholds")), None)
             if escalation:  # the chunk opens with its heading line

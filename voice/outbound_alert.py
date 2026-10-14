@@ -14,7 +14,7 @@ doesn't leave a stale alert behind.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 
 from common.config import DEFAULT, Config
 
@@ -40,7 +40,10 @@ class OutboundAlert:
     def from_json(cls, raw: str | bytes) -> "OutboundAlert":
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
-        return cls(**json.loads(raw))
+        # Ignore fields this version doesn't know: a worker on an older image still voices the
+        # alert written by a newer consumer (it raised TypeError and fell back to a generic call).
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in json.loads(raw).items() if k in known})
 
 
 class OutboundAlertStore:

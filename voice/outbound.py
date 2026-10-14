@@ -208,14 +208,44 @@ def place_with_retries(
     return CallOutcome.NO_ANSWER, attempts  # exhausted -> notify_failed
 
 
-_ACK_YES = {"yes", "yeah", "yep", "acknowledge", "acknowledged", "confirm", "confirmed",
-            "affirmative", "copy", "roger", "correct"}
-_ACK_NO = {"no", "nope", "negative", "deny", "denied", "incorrect", "not", "dont", "don't"}
-# Words that may sit next to an ack word without changing it ("yes I acknowledge", "copy that").
-_ACK_FILLER = {"i", "we", "that", "it", "this", "the", "alert", "event", "is", "ok", "okay",
-               "thanks", "thank", "you", "received", "understood", "got", "and", "please", "kindly"}
-_QUESTION = {"what", "whats", "which", "who", "why", "how", "when", "where", "can", "could",
-             "would", "should", "is", "are", "do", "does", "did"}
+_ACK_YES = {"yes", "yeah", "yep", "acknowledge", "acknowledged", "acknowledging", "confirm",
+            "confirmed", "affirmative", "copy", "roger", "correct", "right", "noted"}
+_ACK_NO = {"no", "nope", "negative", "deny", "denied", "incorrect", "not", "dont", "cant",
+           "cannot", "wont", "didnt", "isnt", "wasnt", "never", "wrong"}
+# Words that may sit next to an ack word without changing it ("yes I acknowledge", "copy that",
+# "that's correct", "yes sir, thanks very much, bye"). Apostrophes are dropped first ("that's" ->
+# "thats"): the tokenizer used to keep "that's" whole, so "that's correct" was not an ack.
+_ACK_FILLER = {"i", "we", "that", "thats", "it", "its", "ive", "weve", "this", "the", "alert",
+               "event", "alarm", "is", "ok", "okay", "thanks", "thank", "you", "received",
+               "understood", "got", "and", "please", "kindly", "sir", "maam", "bye", "goodbye",
+               "very", "much", "receipt", "of", "have", "has", "been", "all", "good", "for", "now",
+               "a", "an", "so", "well"}
+_QUESTION = {"what", "whats", "which", "who", "whos", "why", "how", "when", "where", "can",
+             "could", "would", "should", "is", "are", "was", "were", "do", "does", "did", "has",
+             "have", "will", "any", "tell"}
+# "no" that is not a refusal: "acknowledged, no further questions", "no problem, acknowledged".
+_HARMLESS_NO = re.compile(
+    r"\bno\s+(?:further|more|other)?\s*(?:questions?|problems?|worries|issues?)\b|"
+    r"\bno\s+(?:further|more)\b", re.IGNORECASE)
+
+
+def _ack_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z]+", _HARMLESS_NO.sub(" ", re.sub(r"['’]", "", text.lower())))
+
+
+def is_question(text: str) -> bool:
+    """A question, not an answer: '?' or a question word first ("is bed two acknowledged",
+    "who acknowledged bed seven"). STT often drops the '?', so the first word matters."""
+    tokens = _ack_tokens(text)
+    return "?" in text or bool(tokens and tokens[0] in _QUESTION)
+
+
+def is_plain_no(text: str) -> bool:
+    """Only a refusal ("no", "not yet", "that's not correct"), with no question attached ("No,
+    what is the heart rate" is a question)."""
+    tokens = set(_ack_tokens(text))
+    return bool(tokens & _ACK_NO) and not is_question(text) \
+        and tokens <= _ACK_NO | _ACK_YES | _ACK_FILLER | {"yet", "wait", "hold", "on"}
 
 
 def parse_ack(text: str) -> str:
@@ -225,13 +255,13 @@ def parse_ack(text: str) -> str:
     'yes' needs an utterance made only of ack words ("No, that is not correct" and "Can you confirm
     the potassium?" both acknowledged the alert before this).
     """
-    tokens = re.findall(r"[a-z']+", text.lower())
+    tokens = _ack_tokens(text)
     if not tokens:
         return "unclear"
     if set(tokens) & _ACK_NO:
         return "no"
-    if "?" in text or tokens[0] in _QUESTION:
+    if is_question(text):
         return "unclear"
-    if set(tokens) & _ACK_YES and set(tokens) <= _ACK_YES | _ACK_FILLER and len(tokens) <= 6:
+    if set(tokens) & _ACK_YES and set(tokens) <= _ACK_YES | _ACK_FILLER and len(tokens) <= 10:
         return "yes"
     return "unclear"

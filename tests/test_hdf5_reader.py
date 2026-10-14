@@ -186,6 +186,7 @@ def test_null_or_nan_vitals_are_missing_not_fatal(tmp_path):
         hr = hf[first]["vitals"]["HR"]
         extras = json.loads(hr["extras"][()])
         extras["history"][0]["value"] = None
+        extras["history"][1]["timestamp"] = None  # a reading with no time: dropped, event kept
         del hr["extras"]
         hr["extras"] = json.dumps(extras).encode()
         del hr["value"]
@@ -194,4 +195,4 @@ def test_null_or_nan_vitals_are_missing_not_fatal(tmp_path):
     assert len(windows) == len(list(read_hdf5_file(_FIXTURE)))  # nothing skipped or aborted
     w = windows[0]
     assert "HR" not in w.vitals
-    assert len(w.vitals_history["HR"]) == len(extras["history"]) - 1
+    assert len(w.vitals_history["HR"]) == len(extras["history"]) - 2

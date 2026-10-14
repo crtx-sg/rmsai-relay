@@ -33,9 +33,12 @@ _NUM = r"(?:" + "|".join(sorted({*_ONES, *_TEENS}, key=len, reverse=True)) + r")
 # unit/bed become digits; an optional leading "bed" (from "...on bed unit one...") is absorbed so the
 # rebuilt label isn't doubled.
 # "bin" is how STT hears "bed" on a phone line ("acknowledge the alarms with bin three"), and also
-# "vid"/"bid"/"bad"/"bet" ("last reported event on vid nine", live 2026-10-14); each only counts
-# when a bed number follows.
-_BED_WORD = r"(?:bed|bin|vid|bid|bad|bet)"
+# "vid"/"bid"/"bad"/"bet" ("last reported event on vid nine", live 2026-10-14). Those are real
+# words, so they only count after "on/in/at/for" or before "number": "is that bad 2 days later?"
+# and "I bet two of them" are not beds. Each still needs a bed number to follow.
+_MISHEARD = r"(?:vid|bid|bad|bet)"
+_BED_WORD = (rf"(?:bed|bin|(?:(?<=\bon )|(?<=\bin )|(?<=\bat )|(?<=\bfor )){_MISHEARD}|"
+             rf"{_MISHEARD}(?=\s+(?:number|no\.?|num|#)))")
 # "bed number two" / "bed no. two": the number word may be introduced (live call 2026-10-09:
 # "What is the event on bed number two?" missed the graph and the LLM answered from history).
 _BED_NO = r"(?:(?:number|no\.?|num|#)\s*)?"

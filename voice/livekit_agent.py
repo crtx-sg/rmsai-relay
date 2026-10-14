@@ -26,6 +26,7 @@ import asyncio
 import logging
 import os
 import re
+import threading
 import time
 from functools import partial
 
@@ -159,17 +160,30 @@ _BARGE_IN_WORD = re.compile(r"^\W*(?:ok(?:ay)?|stop|wait|hold on)\W*$", re.IGNOR
 # separate turns. Live call 2026-10-14: "What was the" got "I don't have information on that", and
 # the MEWS answer to the next piece was cancelled when the piece after it arrived, so the MEWS was
 # never heard. A piece that ends on a dangling word, or whose answer was cancelled before it played,
-# is carried and prefixed to the next piece instead. Prepositions that can end a real question
-# ("which bed is PT998224 on?", "what is it for?") are not dangling: that piece is answered.
+# is carried and prefixed to the next piece instead. Only a SHORT piece can dangle: "Do you know
+# what the MEWS score is?" and "Can you tell me what the potassium was?" are whole questions, and a
+# held piece is only answered if the clinician speaks again.
 _DANGLING = re.compile(
-    r"\b(?:the|a|an|of|to|with|about|from|by|and|or|was|is|are|were|what|which|whats|my|his|her|"
-    r"their)\W*$", re.IGNORECASE)
+    r"\b(?:the|a|an|of|to|with|about|from|by|and|or|what|which|whats|my|his|her|their)\W*$",
+    re.IGNORECASE)
+_DANGLING_MAX_WORDS = 4
 _CARRY_S = 10.0  # a carried piece older than this is dropped, not joined
 
 
 def is_dangling(text: str) -> bool:
-    """True for a piece that cannot be a whole question: it ends mid-phrase ("What was the")."""
-    return bool(_DANGLING.search(text or ""))
+    """True for a piece that cannot be a whole question: short, no '?', ends mid-phrase ("What was
+    the")."""
+    text = (text or "").strip()
+    return (bool(_DANGLING.search(text)) and "?" not in text
+            and len(text.split()) <= _DANGLING_MAX_WORDS)
+
+
+def can_carry(text: str, *, authenticated: bool, push_to_talk: bool) -> bool:
+    """Whether a piece may be held and joined to the next. Not before the PIN (digits would join
+    the next attempt), not in typed/push-to-talk app chat (every message is whole, and a "/select"
+    control message must never be glued to text), and never an acknowledgment (already recorded)."""
+    return (authenticated and not push_to_talk and not text.lstrip().startswith("/")
+            and "acknowledg" not in text.lower())
 
 
 def join_carried(carry: tuple[str, float] | None, text: str, now: float) -> str:
@@ -430,6 +444,7 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             self._greeting_gate = greeting_gate  # async () -> bool: caller present and answered
             self._latency = latency
             self._carry: tuple[str, float] | None = None  # unanswered start of a split question
+            self._turn_lock = threading.Lock()
 
         async def on_enter(self) -> None:
             if not self._greeting:
@@ -468,38 +483,55 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                       flush=True)
 
         async def llm_node(self, chat_ctx, tools, model_settings):
-            text = join_carried(self._carry, last_user_text(chat_ctx), time.monotonic())
+            raw = last_user_text(chat_ctx)
+            is_auth = getattr(self._handler, "is_authenticated", None)
+            carry_ok = can_carry(raw, authenticated=bool(is_auth and is_auth(self._session_id)),
+                                 push_to_talk=self._push_to_talk)
+            text = join_carried(self._carry, raw, time.monotonic()) if carry_ok else raw
             self._carry = None
             print(f"[worker] heard: {text!r}", flush=True)
-            is_auth = getattr(self._handler, "is_authenticated", None)
-            if is_auth and is_auth(self._session_id) and is_dangling(text):
+            if carry_ok and is_dangling(text):
                 # Wait for the rest of the question rather than answer half of it.
                 self._carry = (text, time.monotonic())
                 print("[worker] incomplete question; waiting for the rest", flush=True)
                 return
+
+            def _carry(why: str) -> None:
+                if carry_ok:
+                    self._carry = (text, time.monotonic())
+                    print(f"[worker] answer {why}; carrying the question", flush=True)
+
             loop = asyncio.get_running_loop()
             started = time.monotonic()
             try:
-                reply = await loop.run_in_executor(
-                    None, partial(self._handler.respond, text, session_id=self._session_id,
-                                  spoken=True)  # audio turn: short spoken answers, fillers ignored
-                )
+                # One handler run at a time: a cancelled run keeps going in its thread, and the next
+                # turn must not interleave with it (same chat history, same LLM).
+                reply = await loop.run_in_executor(None, partial(self._respond_serial, text))
             except asyncio.CancelledError:
-                # The next piece of the same question arrived before this answer was spoken: join
-                # them, or the first piece (e.g. "what was the MEWS score") is lost. Never an ack:
-                # the handler already recorded it, so repeating it would only muddle the next turn.
-                if "acknowledg" not in text.lower():
-                    self._carry = (text, time.monotonic())
-                print("[worker] answer cancelled by the next speech; carrying the question",
-                      flush=True)
+                # The next piece of the same question arrived before this answer was ready.
+                _carry("cancelled by the next speech")
                 raise
             if self._latency is not None:
                 self._latency.handler_done(time.monotonic() - started)
             print(f"[worker] reply: {reply!r}", flush=True)
             yield reply
+            # The answer was ready but cut off before any of it was heard (the case on the
+            # 2026-10-14 call): no CancelledError reaches this node then, so watch the speech.
+            speech = self.session.current_speech
+            if speech is not None and carry_ok:
+                def _on_done(handle) -> None:
+                    heard = any(getattr(item, "role", None) == "assistant"
+                                for item in getattr(handle, "chat_items", []) or [])
+                    if handle.interrupted and not heard:
+                        _carry("interrupted before it was heard")
+                speech.add_done_callback(_on_done)
             is_locked = getattr(self._handler, "is_locked", None)
             if is_locked and is_locked(self._session_id):
                 asyncio.ensure_future(self._hang_up_after(self.session.current_speech))
+
+        def _respond_serial(self, text: str) -> str:
+            with self._turn_lock:  # audio turn: short spoken answers, fillers ignored
+                return self._handler.respond(text, session_id=self._session_id, spoken=True)
 
         async def _hang_up_after(self, speech) -> None:
             """PIN lockout: let the "ending the call" line play, then end the call for everyone."""

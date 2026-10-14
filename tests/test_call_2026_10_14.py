@@ -27,13 +27,17 @@ def _intent(q):
 
 # --- split questions (worker) ----------------------------------------------------------------------
 
-@pytest.mark.parametrize("piece", ["What was the", "What is the", "and the", "What are the vitals of"])
+@pytest.mark.parametrize("piece", ["What was the", "What is the", "and the", "the MEWS of"])
 def test_half_questions_are_held_for_the_rest(piece):
     assert is_dangling(piece)
 
 
 @pytest.mark.parametrize("q", ["What was the MEWS score", "which bed is PT998224 on",
-                               "Kindly acknowledge this", "What are the other events reported for"])
+                               "Kindly acknowledge this", "What are the other events reported for",
+                               # whole questions that end on "is/was/the" (review 2026-10-14)
+                               "Can you tell me what the potassium was?",
+                               "Do you know what the MEWS score is", "who is the patient this is about",
+                               "Repeat what the alert was"])
 def test_whole_questions_are_answered(q):
     assert not is_dangling(q)
 
