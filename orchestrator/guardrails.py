@@ -32,6 +32,11 @@ _ACTION = re.compile(
     r"med\w*|drugs?|doses?)\b)",
     re.IGNORECASE,
 )
+def is_emergency(text: str) -> bool:
+    """'The patient is coding' and the like: the documents' emergency steps, never a guess."""
+    return bool(_EMERGENCY.search(text or ""))
+
+
 _EMERGENCY = re.compile(
     r"\b(emergency|arrest|code blue|coding|unresponsive|not breathing|dying|collapse|"
     r"seizure|anaphylaxis|stroke now)\b",
@@ -87,7 +92,9 @@ _BED_WORD = re.compile(r"\bbeds?\s+(?:no\.?\s*|number\s+|#\s*)?(\d+|[a-z]+)\b", 
 _PLACE = re.compile(r"\b(ward|bay|room|unit)\s*(\d+|[A-Z]\b)", re.IGNORECASE)
 _HEX_ID = re.compile(r"\b[0-9a-f]{6,}(?:-[0-9a-f]{3,})+\b", re.IGNORECASE)
 # A citation marker used as a person ("Patient [P2] is in bed 1"): passages are not patients.
-_CITED_AS_PATIENT = re.compile(r"\bpatients?\s*(?:id\s*)?[:#]?\s*\[([PR]\d+)\]", re.IGNORECASE)
+# A citation label read as a patient: "patient [P1]", "the patient's ID is #P1", "patient P2".
+_CITED_AS_PATIENT = re.compile(
+    r"\bpatients?(?:'s)?\s*(?:id\s*)?(?:is\s*)?[:#]?\s*\[?#?([PR]\d+)\b\]?", re.IGNORECASE)
 _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
                  "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
 

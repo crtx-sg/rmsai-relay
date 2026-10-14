@@ -297,3 +297,11 @@ def test_scripted_confirm_back_names_the_event():
     assert _confirm_back(ev, "Unit1/Unit1-Bed02") == (
         "I heard you acknowledge the ventricular fibrillation alert for patient PT998224 on bed 2 "
         "— is that correct?")
+
+
+def test_a_plain_no_keeps_the_alert_open_and_says_so(tmp_path, monkeypatch):
+    h, recorded = _vf_call(tmp_path, monkeypatch)
+    out = h.respond("No, that is not correct", session_id="room1")
+    assert recorded == [] and "not acknowledged" in out and "stays open" in out
+    # A question containing a negation is still a question, not a "no".
+    assert h.respond("why don't we check the vitals", session_id="room1").startswith("answer:")

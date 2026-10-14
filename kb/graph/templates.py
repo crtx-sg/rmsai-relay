@@ -17,11 +17,13 @@ WORKLIST_LEVELS = ["High", "Critical"]
 CLOSED_STATUSES = ["acknowledged", "resolved"]
 
 TEMPLATES: dict[str, str] = {
-    # Worklist — every unacknowledged event at WORKLIST_LEVELS, most severe first, then newest.
-    # `$since` = 0 means "no time window"; a question naming hours ("in the last 6 hours") narrows it.
+    # Worklist — every pending event (alerted, not acknowledged), most severe first, then newest:
+    # the same rows as the app's worklist. (It used to keep only High/Critical, so "what is on my
+    # worklist?" said 8 while "which bed has the most severe alarm?" said 5.) `$since` = 0 means
+    # "no time window"; a question naming hours ("in the last 6 hours") narrows it.
     "worklist": """
         MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
-        WHERE e.criticality IN $levels AND NOT coalesce(e.status, 'reported') IN $closed
+        WHERE NOT coalesce(e.status, 'reported') IN $closed
               AND coalesce(e.alert_gate, false) AND e.timestamp >= $since
         OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
         OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
@@ -29,7 +31,8 @@ TEMPLATES: dict[str, str] = {
                e.event_type AS event, e.criticality AS criticality,
                coalesce(e.status, 'reported') AS status,
                coalesce(e.alert_gate, false) AS alert_gate, e.timestamp AS ts
-        ORDER BY CASE e.criticality WHEN 'Critical' THEN 0 ELSE 1 END, e.timestamp DESC
+        ORDER BY CASE e.criticality WHEN 'Critical' THEN 0 WHEN 'High' THEN 1
+                                    WHEN 'Medium' THEN 2 ELSE 3 END, e.timestamp DESC
     """,
     # Alarm counts per patient + bed, most first: "which patient has the most alarms?"
     "alarm_counts": """
@@ -163,6 +166,52 @@ TEMPLATES: dict[str, str] = {
         RETURN p.pseudonym AS patient, p.age AS age, p.gender AS gender, conditions,
                medications, surgeries, collect(DISTINCT y.name) AS symptoms
     """,
+    # --- the called / selected event, by uuid (never "the patient's latest", which can be a newer
+    # event: on the 2026-10-14 call the patient's VT at 07:17 answered questions about the VF call) --
+    # Rhythm, confidence, time, false-positive flag, criticality, MEWS and why it was (not) alerted.
+    "event_summary": """
+        MATCH (e:MonitoredEvent {uuid: $event_uuid})
+        OPTIONAL MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event_type,
+               e.confidence AS confidence, e.is_false_positive AS false_positive,
+               e.criticality AS criticality, e.mews_risk AS mews_risk, e.why_json AS why_json,
+               e.why AS why, coalesce(e.status, 'reported') AS status,
+               coalesce(e.alert_gate, false) AS alert_gate, e.timestamp AS ts
+    """,
+    "action_items_for_event": """
+        MATCH (e:MonitoredEvent {uuid: $event_uuid})-[:HAS_ACTION]->(a:ActionItem)
+        OPTIONAL MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, a.text AS action, a.priority AS priority,
+               a.status AS status
+        ORDER BY CASE a.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
+    """,
+    "ecg_strip_for_event": """
+        MATCH (e:MonitoredEvent {uuid: $event_uuid})
+        OPTIONAL MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event, e.timestamp AS ts,
+               e.signal_ref AS signal_ref, e.ecg_plot_ref AS ecg_plot
+    """,
+    "hr_trend_for_event": """
+        MATCH (e:MonitoredEvent {uuid: $event_uuid})
+        OPTIONAL MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event, e.timestamp AS ts,
+               e.hr AS hr, e.hr_history AS hr_history, e.hr_history_ts AS hr_history_ts
+    """,
+    # How many events since a time ("how many events today?"): total, alerted and still pending.
+    "event_count_since": """
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        WHERE e.timestamp >= $since
+        RETURN count(e) AS events,
+               sum(CASE WHEN coalesce(e.alert_gate, false) THEN 1 ELSE 0 END) AS alerted,
+               sum(CASE WHEN coalesce(e.alert_gate, false)
+                             AND NOT coalesce(e.status, 'reported') IN $closed THEN 1 ELSE 0 END)
+                   AS pending,
+               count(DISTINCT p) AS patients
+    """,
     # Vitals snapshot for the event the companion app has *selected* — the same shape as
     # `vitals_at_patient_last_event`, keyed by event uuid instead of "the patient's latest", so a
     # chat scoped to an older worklist row answers about that row's rhythm and not a newer one.
@@ -235,7 +284,8 @@ TEMPLATES: dict[str, str] = {
         OPTIONAL MATCH (cp)-[:HAS_STEP]->(s:ProtocolStep)
         RETURN c.name AS condition, e.event_type AS last_event,
                cp.title AS protocol, cp.source AS protocol_source,
-               collect({order: s.order, kind: s.kind, text: s.text}) AS steps
+               [x IN collect({order: s.order, kind: s.kind, text: s.text})
+                WHERE x.text IS NOT NULL] AS steps
     """,
     # T8 — Demographic / co-morbidity / symptom patterns vs event type
     "cohort_patterns": """
@@ -344,6 +394,7 @@ for _name, _cypher in TEMPLATES.items():
 TEMPLATE_DEFAULTS: dict[str, dict] = {
     "worklist": {"since": 0, "levels": WORKLIST_LEVELS, "closed": CLOSED_STATUSES},
     "alarm_counts": {"levels": WORKLIST_LEVELS, "closed": CLOSED_STATUSES},
+    "event_count_since": {"closed": CLOSED_STATUSES},
 }
 
 

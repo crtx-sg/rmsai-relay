@@ -26,7 +26,10 @@ from common.vitals_format import fmt_vital
 from kb.graph.driver import GraphDriver
 from kb.graph.events import is_pending
 from kb.graph.llm_router import route as llm_route
-from kb.graph.lookup import looks_like_event_listing, match_intent, names_unresolved_bed
+from kb.graph.lookup import (
+    asks_event_protocol, is_patient_specific, looks_like_event_listing, match_intent,
+    names_unresolved_bed,
+)
 from kb.graph.templates import EVENT_HISTORY, describe_event_history, run_template
 from kb.hybrid.answer import _MIN_OVERLAP, is_relevant
 from kb.hybrid.retriever import HybridRetriever
@@ -35,7 +38,7 @@ from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
 
 from .report import spoken_bed, spoken_event
-from .guardrails import UNGROUNDED_ANSWER, Guardrails, ungrounded_identifiers
+from .guardrails import UNGROUNDED_ANSWER, Guardrails, is_emergency, ungrounded_identifiers
 
 def explain_decline(result, overlap: float, top_score: float = 0.0, *,
                     min_relevance: float = 0.60, min_overlap: float = _MIN_OVERLAP) -> str:
@@ -74,6 +77,46 @@ _EVENT_LISTING_HINT = (
 # "last reported event on vid nine" was routed to the call's own event and read out bed 2's vitals.
 _BED_HINT = ("I couldn't tell which bed you meant. Please say the bed number again, for example: "
              "bed seven.")
+# A question about this patient/event that no graph query covers. Never answered by free generation
+# over the documents: live, the model invented "P3", ages, beds and event IDs from archived reports.
+_PATIENT_HINT = ("I can tell you this patient's rhythm, vitals, MEWS, heart-rate trend, history, "
+                 "medications, events and bed, and why the alert was raised. Which would you like?")
+# A router pick about "the patient's latest event", when the session is about a specific (called or
+# selected) event: answer about that event. The patient can have a newer one (VT after the VF call).
+_CALLED_EVENT_TWIN = {
+    "vitals_at_patient_last_event": "vitals_at_selected_event",
+    "mews_at_patient_last_event": "mews_at_selected_event",
+    "hr_trend_for_patient_last_event": "hr_trend_for_event",
+    "ecg_strips_for_patient_last_event": "ecg_strip_for_event",
+}
+# Words that say what KIND of question it is, not what it is about: the rest must appear in a
+# retrieved passage (unless similarity alone is high). "How do you treat sepsis?" matched a VT
+# passage on "treat" and was answered from it, with no sepsis document in the corpus.
+_GENERIC_WORDS = frozenset(
+    "about after also anyone before does done during from have here into like long more most much "
+    "only other over same some such than that their them then there these they this those very what "
+    "when where which while will with would your should could tell explain mean means meaning "
+    "patient patients treat treated treating treatment treatments manage managed managing "
+    "management handle handling protocol protocols guideline guidelines dose doses dosing give "
+    "given says said steps step procedure procedures recommended recommendation".split())
+_TOPIC_SIMILARITY = 0.70
+# "What does a MEWS of 5 mean?": answered from the scorer's band + the document's escalation rule.
+# The 3B model gave "a high level of distress".
+_MEWS_MEANING = re.compile(r"\b(?:mews|news)\b", re.IGNORECASE)
+_MEANING = re.compile(r"\b(?:mean\w*|indicat\w*|signif\w*|interpret\w*)\b", re.IGNORECASE)
+_MEWS_DOC = "mews_escalation.md"
+
+
+def _missing_topic(question: str, passages) -> list[str]:
+    """The question's topic words, when none of them appears in any retrieved passage; else []."""
+    terms = [w for w in re.findall(r"[a-z][a-z0-9-]{3,}", question.lower())
+             if w not in _GENERIC_WORDS]
+    if not terms:
+        return []
+    text = " ".join(f"{p.text} {p.source}".lower() for p in passages)
+    return [] if any(t[:5] in text for t in terms) else terms
+
+
 # "say that again" — re-voice the previous answer from working memory (basic conversational memory).
 _REPEAT = re.compile(
     r"\b(repeat( that| it| again| the (last|previous|prior)[\w ]*)?|say (that|it) again|"
@@ -109,7 +152,9 @@ _ANSWER_INSTRUCTIONS = (
     "the specific values, patient IDs, and bed labels exactly as given in the context "
     "— do not say information is unavailable when it is listed. Do NOT greet, restate the question, "
     "explain your reasoning, add disclaimers, mention internal field/table/report names, or offer "
-    "further help. Only if the context contains no matching records, say so in one short sentence."
+    "further help. Only if the context contains no matching records, say so in one short sentence. "
+    "[P1], [P2], [R1]… label the passages and relationships for citation: they are never patient "
+    "IDs, so never call anything 'patient P1'."
 )
 
 
@@ -254,6 +299,8 @@ def _row_to_sentence(row: dict) -> str:
     hr_history = r.pop("hr_history", None)
     r.pop("hr_history_ts", None)
     r.pop("alert_gate", None)  # bookkeeping for the pending count, not something to read out
+    r.pop("report_id", None)  # internal id / file path: the app opens the report, nobody reads it
+    r.pop("report_uri", None)
 
     clauses = []
     if (crit := r.pop("criticality", None)):
@@ -316,7 +363,9 @@ def _mews_from_explanation(why_json) -> str | None:
 _RECORD_TEMPLATES = {
     "vitals_at_event", "vitals_at_patient_last_event", "vitals_at_patient_event_of_type",
     "vitals_at_selected_event", "vitals_for_bed_last_event", "mews_at_selected_event",
-    "mews_at_patient_last_event", "bed_last_event",
+    "mews_at_patient_last_event", "bed_last_event", "hr_trend_for_event",
+    "hr_trend_for_patient_last_event", "ecg_strip_for_event", "ecg_strips_last_event",
+    "ecg_strips_for_patient_last_event", "ecg_strips_last_event_of_type", "patient_bed",
 }
 _SPOKEN_VITAL = {"hr": "heart rate {}", "spo2": "oxygen saturation {} percent",
                  "rr": "respiratory rate {}", "temp": "temperature {} degrees"}
@@ -386,6 +435,17 @@ def _spoken_record(row: dict, focus: str | None = None) -> str:
                  for c in (mews or {}).get("components") or []
                  if isinstance(c, dict) and c.get("score")]
         return f"{head}. {mews_text}." + (f" Contributing: {', '.join(comps)}." if comps else "")
+    if r.get("ecg_plot") or r.get("signal_ref"):  # a strip can be shown, not read out
+        return (f"{head}. The ECG strip is available in the app." if r.get("ecg_plot")
+                else f"{head}. The raw ECG is archived; no strip image was rendered.")
+    if r.get("hr_history"):  # a trend answer: the shape, not 25 numbers read aloud
+        h = [float(v) for v in r["hr_history"]]
+        word = _trend_word(h)
+        shape = (f"heart rate was {word} at about {_fmt_value('hr', h[0])}" if word == "stable"
+                 else f"heart rate was {word}, from {_fmt_value('hr', h[0])} to "
+                      f"{_fmt_value('hr', h[-1])}")
+        return (f"{head}. Over the {len(h)} readings before the event, {shape}, peaking at "
+                f"{_fmt_value('hr', max(h))}.")
     if focus in _FOCUS_NAME:
         vitals = _spoken_vitals(r, focus)
         if not vitals:
@@ -406,6 +466,97 @@ def _spoken_record(row: dict, focus: str | None = None) -> str:
     elif status and r.get("alert_gate"):
         text += " It is awaiting acknowledgment."
     return text
+
+
+def _protocol_question(event_type) -> str | None:
+    """The document question for an event's rhythm: 'What is the protocol for ventricular
+    fibrillation?' (None without a rhythm)."""
+    return f"What is the protocol for {spoken_event(event_type)}?" if event_type else None
+
+
+def _speakable(text: str) -> str:
+    """Stored explanation text, said aloud: symbols and abbreviations as words."""
+    for a, b in (("≥", "at or above"), ("≤", "at or below"), ("SpO₂", "oxygen saturation"),
+                 ("SpO2", "oxygen saturation"), (" %", " percent"), ("%", " percent"),
+                 ("bpm", "beats per minute"), ("HR ", "heart rate "),
+                 ("Systolic BP", "systolic blood pressure"), ("Heart Rate", "heart rate")):
+        text = text.replace(a, b)
+    return re.sub(r"\bmin\b", "minutes", text)
+
+
+def _answer_event_summary(row: dict, focus: str | None) -> str:
+    """The called event's rhythm / confidence / time / false-positive flag / criticality / reason,
+    from that event (never the patient's newest one)."""
+    r = {k: v for k, v in row.items() if v is not None}
+    who = f"Patient {r['patient']}" if r.get("patient") else "This patient"
+    if r.get("bed"):
+        who += f" on {spoken_bed(r['bed'])}"
+    rhythm = spoken_event(r.get("event_type"))
+    conf = f"{float(r['confidence']):.0%}".replace("%", " percent") if r.get("confidence") is not None \
+        else None
+    when = _spoken_time(r["ts"]) if r.get("ts") is not None else ""
+    if focus == "confidence":
+        return (f"{who}: the model is {conf} confident the rhythm is {rhythm}." if conf
+                else f"{who}: no model confidence is recorded for this event.")
+    if focus == "time":
+        if r.get("ts") is None:
+            return f"{who}: the event time is not recorded."
+        mins = int((time.time() - float(r["ts"])) // 60)
+        ago = f", about {mins} minutes ago" if 0 <= mins < 180 else ""
+        return f"{who}: {rhythm} was detected {when}{ago}."
+    if focus == "false_positive":
+        if r.get("false_positive"):
+            return (f"{who}: yes. The model read the rhythm as {rhythm}"
+                    f"{f' with {conf} confidence' if conf else ''}, so the rhythm alarm is treated as "
+                    f"a false positive. Any alert was raised on the vitals.")
+        return (f"{who}: no. The model detected {rhythm}{f' with {conf} confidence' if conf else ''};"
+                f" it is not flagged as a false positive.")
+    if focus == "why":
+        if r.get("why"):
+            return f"{who}: " + _speakable(str(r["why"])).replace("Shown because:", "you were "
+                                                                  "alerted because", 1)
+        return f"{who}: {rhythm}, rated {str(r.get('criticality') or 'unknown').lower()}."
+    if focus == "criticality":
+        mews = _mews_from_explanation(r.get("why_json"))
+        mews = mews.split(";")[0] if mews else (f"MEWS risk {r['mews_risk']}" if r.get("mews_risk")
+                                                else "")
+        return (f"{who}: {rhythm} {when}, rated {str(r.get('criticality') or 'unknown').lower()}"
+                + (f", {mews}." if mews else "."))
+    # rhythm (default)
+    return f"{who}: the model detected {rhythm} {when}" + (f", {conf} confident." if conf else ".")
+
+
+def _answer_action_items(rows: list[dict]) -> str:
+    if not rows:
+        return "No action items are recorded for this event."
+    r0 = rows[0]
+    who = f"patient {r0['patient']}" if r0.get("patient") else "this patient"
+    if r0.get("bed"):
+        who += f" on {spoken_bed(r0['bed'])}"
+    items = [str(r["action"]).replace(" — ", ": ") for r in rows if r.get("action")]
+    open_n = sum(1 for r in rows if r.get("status") == "outstanding")
+    return (f"For {who}, the recommended actions are: " + "; ".join(items) + "."
+            + (f" {open_n} still outstanding." if open_n and open_n != len(rows) else ""))
+
+
+def _answer_event_count(rows: list[dict], window: str | None) -> str:
+    r = rows[0] if rows else {}
+    n = int(r.get("events") or 0)
+    window = window or "in total"
+    if not n:
+        return f"No events {window}."
+    return (f"{n} event{'s' if n != 1 else ''} {window} for {r.get('patients', 0)} "
+            f"patient{'s' if r.get('patients') != 1 else ''}: {r.get('alerted', 0)} alerted, "
+            f"{r.get('pending', 0)} still awaiting acknowledgment.")
+
+
+def _answer_mews_meaning(score: int, escalation: str | None) -> str:
+    """'What does a MEWS of 5 mean?' — the band from the same scorer that rates the alerts, plus the
+    escalation rule quoted from the MEWS document."""
+    from ecg_transcovnet.mews import _risk_level  # noqa: PLC0415 - vendored scorer's banding
+
+    text = f"A MEWS of {score} is {_risk_level(score).lower()} risk."
+    return f"{text} {escalation.strip()}" if escalation else text
 
 
 def _spoken_list(items: list[str]) -> str:
@@ -432,13 +583,18 @@ def _answer_clinical_history(rows: list[dict], focus: str | None = None) -> str:
     }
     if focus == "allergies":
         return f"Allergies are not recorded in this system for patient {pt}."
+    sex = {"m": "male", "f": "female"}.get(str(r.get("gender") or "").lower())
+    if focus == "demographics":
+        if not r.get("age") and not sex:
+            return f"Age and sex are not recorded for patient {pt}."
+        age = f" is {r['age']} years old" if r.get("age") else ""
+        return f"Patient {pt}{age}{', ' if age and sex else ' is '}{sex or ''}.".replace(" .", ".")
     if focus in sections:
         label, items = sections[focus]
         if not items:
             return f"No {label.lower()} are recorded for patient {pt}."
         return f"Patient {pt}. {label}: {_spoken_list(items)}."
     who = f"Patient {pt}"
-    sex = {"m": "male", "f": "female"}.get(str(r.get("gender") or "").lower())
     if r.get("age") and sex:
         who += f", {r['age']} year old {sex}"
     lines = [f"{label}: {_spoken_list(items)}." for label, items in sections.values() if items]
@@ -466,7 +622,9 @@ def _describe_context(shared: dict) -> str:
 
 # What an empty result means, per template, instead of a bare "No matching records."
 _EMPTY_ANSWERS = {
-    "worklist": "Your worklist is clear: no unacknowledged High or Critical events.",
+    "worklist": "Your worklist is clear: no unacknowledged events.",
+    "comorbidity_neighborhood": "No co-morbidity pattern is recorded for that condition among "
+                                "current patients.",
     "alarm_counts": "There are no alarms on record.",
 }
 
@@ -485,7 +643,7 @@ def _spoken_summary(rows: list[dict], name: str | None) -> str:
     n = len(rows)
     if name == "worklist":
         parts = [f"{n} unacknowledged events."]
-        for level in ("Critical", "High"):
+        for level in ("Critical", "High", "Medium", "Low"):
             tier = [r for r in rows if r.get("criticality") == level]
             if not tier:
                 continue
@@ -504,10 +662,33 @@ def _spoken_summary(rows: list[dict], name: str | None) -> str:
         listed = who[0] if len(who) == 1 else ", ".join(who[:-1]) + " and " + who[-1]
         each = " each" if len(leaders) > 1 else ""
         text = f"Most alarms: {top}{each}, on {listed}."
-        rest = n - len(leaders)
+        rest = [r for r in rows if r.get("alarms") != top]
         if rest:
-            text += f" {rest} other {'bed has' if rest == 1 else 'beds have'} fewer."
+            by_n: dict[int, list[str]] = {}
+            for r in rest:
+                by_n.setdefault(r.get("alarms", 0), []).append(spoken_bed(r.get("bed")))
+            text += " " + " ".join(f"{c} each on {_spoken_list(beds)}." if len(beds) > 1
+                                   else f"{c} on {beds[0]}." for c, beds in by_n.items())
         return text
+    if name == "patients_with_event_type":
+        who = [f"{r.get('patient')} on {spoken_bed(r.get('bed'))}" for r in rows]
+        return f"{n} patients: {_spoken_list(who)}."
+    if name == "outstanding_action_items":
+        high = [r for r in rows if r.get("priority") == "high"]
+        beds = {r.get("bed") for r in rows if r.get("bed")}
+        top = [f"{spoken_bed(r.get('bed'))}: {str(r.get('action')).replace(' — ', ', ')}"
+               for r in high[:3]]
+        return (f"{n} outstanding action items across {len(beds)} beds, {len(high)} high priority."
+                + (" Top: " + "; ".join(top) + "." if top else "")
+                + " Ask about a bed for its actions.")
+    if name == "cohort_patterns":
+        top = rows[:3]
+        sexes = {"m": "men", "f": "women"}
+        said = [f"{spoken_event(r.get('event'))} in "
+                f"{sexes.get(str(r.get('gender') or '').lower(), 'patients')} aged "
+                f"{str(r.get('age_band')).replace('65+', '65 and over').replace('<40', 'under 40')}"
+                f", {r.get('n')} event{'s' if r.get('n') != 1 else ''}" for r in top]
+        return f"Most common patterns: {'; '.join(said)}."
     if any(r.get("event") or r.get("reported_event") or r.get("event_type") for r in rows):
         return _spoken_event_summary(rows)
     shown = [_row_to_sentence(r) for r in rows[:3]]
@@ -555,7 +736,9 @@ def _answer_event_history(rows: list[dict], params: dict, *, spoken: bool = Fals
     if not rows:
         return f"No {desc}."
     n = len(rows)
-    one = desc.replace(" events", " event", 1) if n == 1 else desc
+    one = re.sub(r"\bevents\b", "event", desc, count=1) if n == 1 else desc  # not "1 events"
+    if spoken:  # "bed 6", not "bed Unit1-Bed06"
+        one = re.sub(r"bed (Unit\d+-Bed\d+)", lambda m: spoken_bed(m.group(1)), one)
     # "How many patients…" was answered with an event count: one patient can have several events
     # (PT998224: VF and VT), so a listing not already scoped to a patient also says how many.
     if n > 1 and not params.get("patient_id"):
@@ -743,28 +926,69 @@ class Orchestrator:
                 )
             return TurnResult(answer=courtesy, mode="courtesy", trace=tracer.as_dicts())
 
+        # --- "what does a MEWS of N mean?" -> the scorer's band + the document's escalation rule ---
+        if _MEWS_MEANING.search(user_text) and _MEANING.search(user_text) \
+                and (m := re.search(r"\b(\d{1,2})\b", user_text)):
+            escalation = next((c["text"] for c in self.hybrid.vector.store.chunks_for_doc(_MEWS_DOC)
+                               if str(c.get("source", "")).endswith("#Escalation thresholds")), None)
+            if escalation:  # the chunk opens with its heading line
+                escalation = escalation.split("\n", 1)[-1].replace("\n", " ")
+            answer_text = _answer_mews_meaning(int(m.group(1)), escalation)
+            self.working.append_turn(
+                session_id, ChatTurn(role="assistant", text=answer_text, timestamp=now + 0.001))
+            return TurnResult(answer=answer_text, mode="kb",
+                              citations=[f"{_MEWS_DOC}#Escalation thresholds"] if escalation else [],
+                              trace=tracer.as_dicts())
+
         # --- intent: operational template vs hybrid KB ---
         operational_rows: list[dict] | None = None
         with tracer.span("retrieve") as sp:
             intent = match_intent(user_text, now=now, patient_ref=state.patient_ref,
                                   event_ref=state.event_ref)
-            decline_hint = None if intent is not None else (
+            # "Protocol for this event" / a bed's protocol with no structured steps: a document
+            # question about that event's rhythm, asked in those words.
+            kb_question = user_text
+            if intent is None and asks_event_protocol(user_text, state.event_ref):
+                rows = run_template(self.driver, "event_summary", event_uuid=state.event_ref)
+                kb_question = _protocol_question(rows[0].get("event_type") if rows else None) \
+                    or user_text
+            elif intent and intent[0] == "protocol_for_bed_last_event":
+                rows = run_template(self.driver, *intent[:1], **intent[1])
+                if not rows or not rows[0].get("steps"):
+                    last = run_template(self.driver, "bed_last_event", bed=intent[1]["bed"])
+                    question = _protocol_question(last[0].get("event_type") if last else None)
+                    if question:
+                        kb_question, intent = question, None
+            rewritten = kb_question != user_text
+            if rewritten:
+                print(f"[orchestrator] protocol question for the event's rhythm: {kb_question!r}",
+                      flush=True)
+            decline_hint = None if intent is not None or rewritten else (
                 _EVENT_LISTING_HINT if looks_like_event_listing(user_text)
                 else _BED_HINT if names_unresolved_bed(user_text) else None)
             listing_declined = decline_hint is not None
             if listing_declined:
                 print("[orchestrator] unresolvable target (event listing or bed): declined with a "
                       "hint", flush=True)
-            if intent is None and self.llm_router and not listing_declined:
+            emergency = is_emergency(user_text)
+            if intent is None and self.llm_router and not listing_declined and not rewritten \
+                    and not emergency:
                 # The regexes only fire on phrasings someone anticipated. When one misses a question
                 # that is plainly about a bed/patient/event, ask the model which template was meant
                 # — it picks a name from a fixed menu and never supplies an identity. Gated on
                 # `looks_operational` inside, so document questions never pay for this.
                 intent = llm_route(user_text, self.llm, patient_ref=state.patient_ref,
                                    event_ref=state.event_ref, now=now)
+                if intent is not None and state.event_ref and intent[0] in _CALLED_EVENT_TWIN:
+                    intent = (_CALLED_EVENT_TWIN[intent[0]], {"event_uuid": state.event_ref})
                 if intent is not None:
                     print(f"[orchestrator] llm-routed to template {intent[0]!r}", flush=True)
                     sp.attributes["llm_routed"] = intent[0]
+            if intent is None and not rewritten and not listing_declined and not emergency \
+                    and is_patient_specific(user_text):
+                decline_hint, listing_declined = _PATIENT_HINT, True
+                print("[orchestrator] patient-specific question with no graph query: hint, not "
+                      "free generation", flush=True)
             if intent:
                 name, params = intent
                 operational_rows = run_template(self.driver, name, **params)
@@ -778,10 +1002,15 @@ class Orchestrator:
                 mode, declined, kb_context, citations = "operational", False, "", []
             else:
                 mode = "hybrid"
-                result = self.hybrid.retrieve(user_text, mode="hybrid")
+                result = self.hybrid.retrieve(kb_question, mode="hybrid")
+                # Archived event reports are patient records: they belong to graph answers, not to
+                # free-text ones (the model quoted their IDs and invented patients from them).
+                kept = [p for p in result.passages if not str(p.source).startswith("report:")]
+                if len(kept) != len(result.passages):
+                    result = result.model_copy(update={"passages": kept})
                 kb_parts, citations = _render_block_parts(result)
                 kb_context = "".join(t for t, _ in kb_parts)
-                overlap = _best_overlap(user_text, result.passages) if result.passages else 0.0
+                overlap = _best_overlap(kb_question, result.passages) if result.passages else 0.0
                 top_score = result.passages[0].score if result.passages else 0.0
                 # Two independent ways a passage can vouch for itself: it *means* the same thing
                 # (semantic similarity, which survives rewording) or it *says* the same words. Either
@@ -789,8 +1018,15 @@ class Orchestrator:
                 # passage phrased differently from the question was refused.
                 declined = not is_relevant(result, overlap, top_score,
                                            min_relevance=self.min_relevance)
+                missing = [] if result.relationships or emergency else _missing_topic(
+                    kb_question, result.passages)
+                if not declined and missing and top_score < _TOPIC_SIMILARITY:
+                    declined = True
+                    print(f"[orchestrator] declined: no retrieved passage mentions "
+                          f"{', '.join(missing)} (similarity {top_score:.2f} < "
+                          f"{_TOPIC_SIMILARITY:.2f})", flush=True)
                 sp.attributes.update(top_score=round(top_score, 3), overlap=round(overlap, 3))
-                if declined:
+                if declined and not missing:
                     # "I don't have information on that" is indistinguishable from a broken KB
                     # unless the turn says which of the three ways it got there. Logged, traced,
                     # and carried on the result so a caller can surface it.
@@ -820,6 +1056,13 @@ class Orchestrator:
             focus = params.get("focus") or ("mews" if name.startswith("mews_") else None)
             if name == "patient_clinical_history":
                 answer_text = _answer_clinical_history(operational_rows, focus)
+            elif name == "event_summary":
+                answer_text = (_answer_event_summary(operational_rows[0], focus) if operational_rows
+                               else "I couldn't find that event.")
+            elif name == "action_items_for_event":
+                answer_text = _answer_action_items(operational_rows)
+            elif name == "event_count_since":
+                answer_text = _answer_event_count(operational_rows, params.get("window"))
             elif spoken and operational_rows and len(operational_rows) == 1 \
                     and name in _RECORD_TEMPLATES:
                 answer_text = _spoken_record(operational_rows[0], focus)
@@ -846,10 +1089,12 @@ class Orchestrator:
                     episodic_ctx = "\n".join(f"- {e.text}" for e in episodes) or "(none)"
                     parts += [("\n\n## Relevant past interactions\n", False), (episodic_ctx, True)]
                 parts += [("\n\n", False), *kb_parts, ("\n\nQuestion: ", False),
-                          (user_text, True), ("\nAnswer:", False)]
+                          (kb_question, True), ("\nAnswer:", False)]
                 prompt = "".join(t for t, _ in parts)
             with tracer.span("generate") as sp:
                 answer_text, failed = self._generate(parts)  # de-id'd + retried inside
+                if spoken:  # "(P1)", "[R8]": citation labels are for the screen, not to be read out
+                    answer_text = re.sub(r"\s*[\[(][PR]\d+[\])]", "", answer_text).strip()
                 sp.attributes["llm_failed"] = failed
                 # Output guardrail: a patient/bed/ward/event the model was never given is invented
                 # or misattributed — on a clinical relay worse than no answer. Seen live: "Patient

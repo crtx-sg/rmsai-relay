@@ -28,7 +28,7 @@ EVT = "231a9c9a-e5e6-58ff-97f2-3283dad269e0"
 
 
 @pytest.mark.parametrize("q", [
-    "what is the MEWS score?", "MEWS?", "what's the early warning score", "what is the criticality",
+    "what is the MEWS score?", "MEWS?", "what's the early warning score",
     "what is the news score",          # STT's rendering of "MEWS score"
     "is the NEWS 5 correct",
 ])

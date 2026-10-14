@@ -14,7 +14,7 @@ import pytest
 
 from common.deid import RegexDeidentifier
 from common.providers import DeidentifyingLLM
-from common.schemas import Passage, Relationship
+from common.schemas import Passage, Relationship, RetrievalResult
 from kb.graph.llm_router import CATALOGUE
 from kb.graph.lookup import match_intent
 from kb.graph.templates import CLOSED_STATUSES, WORKLIST_LEVELS, run_template
@@ -86,7 +86,7 @@ _REPORT = Passage(text="Event report for Alice Smith, phone 212-555-0101.",
 
 class _Hybrid:
     def retrieve(self, _q, mode="hybrid"):
-        return SimpleNamespace(passages=[_SOP, _REPORT], relationships=[
+        return RetrievalResult(query=_q, passages=[_SOP, _REPORT], relationships=[
             Relationship(fact="Alice Smith HAS_CONDITION AF", source="graph:x")])
 
 
@@ -172,8 +172,9 @@ def test_worklist_template_gets_its_defaults():
 
     run_template(_Driver(), "worklist")  # e.g. picked by the LLM router with no params
     assert seen["since"] == 0 and seen["levels"] == WORKLIST_LEVELS == ["High", "Critical"]
-    assert seen["closed"] == CLOSED_STATUSES and "e.criticality IN $levels" in seen["cypher"]
-    assert "WHEN 'Critical' THEN 0" in seen["cypher"]  # most severe first ("most severe alarm?")
+    # Every pending event, as the app's worklist shows them (not only High/Critical), most severe first.
+    assert seen["closed"] == CLOSED_STATUSES and "e.criticality IN $levels" not in seen["cypher"]
+    assert "WHEN 'Critical' THEN 0 WHEN 'High' THEN 1" in seen["cypher"]
 
 
 def test_router_can_pick_the_worklist_templates():

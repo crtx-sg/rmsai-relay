@@ -89,13 +89,13 @@ def test_alarm_counts_name_the_leaders():
             {"patient": "PT986685", "bed": "Unit1-Bed06", "alarms": 1}]
     assert _spoken_summary(rows, "alarm_counts") == (
         "Most alarms: 2 each, on bed 5, patient PT992591 and bed 1, patient PT942338. "
-        "2 other beds have fewer.")
+        "1 each on bed 4 and bed 6.")
 
 
 def test_non_event_lists_are_cut_to_three():
     # Event lists are summarised by type (never truncated, see below); other lists read three.
     rows = [{"patient": f"PT{i}", "action": "repeat ECG", "due": None} for i in range(5)]
-    out = _spoken_summary(rows, "outstanding_action_items")
+    out = _spoken_summary(rows, "comorbidity_neighborhood")
     assert out.startswith("5 records.") and "And 2 more; ask for details." in out
 
 

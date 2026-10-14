@@ -229,6 +229,13 @@ class OutboundHandler(OrchestratorHandler):
             print(f"[voice] acknowledgment received -> MonitoredEvent {self.alert.event_id} "
                   f"status=acknowledged (Neo4j updated)", flush=True)
             return f"Thank you, I've recorded your acknowledgment of {self._this_event()}. Goodbye."
+        # A short "no" / "that's not correct" (an answer to the alert or the confirm-back, not a
+        # question): say the alert stays open, instead of "I don't have that patient information".
+        if parse_ack(text) == "no" and len(text.split()) <= 6 and "?" not in text \
+                and not re.match(r"\W*(?:what|which|who|why|how|when|where|is|are|can|do|does)\b",
+                                 text, re.IGNORECASE):
+            return (f"Okay, I have not acknowledged {self._this_event()}; it stays open. "
+                    f"What would you like to know?")
         return super()._authenticated_turn(session_id, text, spoken=spoken)
 
 

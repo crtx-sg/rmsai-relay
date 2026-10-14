@@ -364,6 +364,23 @@ make demo-phone-up        # a later plain `make demo-up` puts the consumer back 
 
 How the call flows on the wire: [README § Phone calls → Call flow](README.md#call-flow-technical).
 
+### What the clinician can ask on a call
+
+After the PIN, questions are answered from the graph for **the event the call is about** (not the
+patient's newest event), or from the clinical documents. A question about a patient that no graph
+query covers gets a short list of what can be asked; it is never answered by the model guessing.
+
+| About | Examples |
+|---|---|
+| This event | vitals · heart rate / blood pressure / oxygen / resp rate / temperature · MEWS score · criticality · what rhythm · how confident · when · false positive? · why was I alerted · ECG strip · heart-rate trend · what should I do now · protocol for this event |
+| This patient | past medical history · medications · diagnoses · surgeries · symptoms · allergies (not recorded) · age · which bed · prior / unacknowledged / critical events |
+| Another bed or patient | last event / vitals / MEWS / events / pending on bed N · protocol for bed N · report for bed N · which bed is PT… on · events / history / medications of PT… |
+| The ward | unacknowledged events / worklist · most severe alarm · critical events in the last 24 h · alarms per bed · patients with a rhythm · withheld / acknowledged events · outstanding action items · patterns · how many events today |
+| The documents | protocols (VT/VF, AFib RVR, …) · MEWS escalation · what a MEWS of N means · hyperkalaemia · critical alarm SOP; topics with no document are declined |
+| The call | acknowledge (names the event it closes; another bed's event is refused) · no / not correct · repeat that · thank you / goodbye |
+
+`tests/test_query_coverage.py` and `tests/test_call_2026_10_14.py` pin these phrasings.
+
 ### Inspect what was stored
 
 ```bash
