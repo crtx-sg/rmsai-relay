@@ -34,8 +34,12 @@ class _Driver:
     def __init__(self):
         self.status: dict[str, str] = {}
 
-    def run_write(self, _query, uuid, status):
-        self.status[uuid] = status
+    def run_write(self, _query, uuid, status, closed=()):
+        if self.status.get(uuid) not in closed:  # set_event_status never reopens a closed event
+            self.status[uuid] = status
+
+    def run_read(self, _query, uuid):
+        return [{"status": self.status.get(uuid)}]
 
 
 def _event():
@@ -85,6 +89,21 @@ def test_a_simulated_sms_is_never_recorded_as_delivered(tmp_path, capsys):
     assert any(a["action"] == "sms_fallback" and a["outcome"] == "sms_simulated" for a in audits)
     out = capsys.readouterr().out
     assert "SIMULATED, not sent" in out and "+15551234567" not in out  # says so, number masked
+
+
+def test_ack_in_app_while_ringing_is_kept_and_not_texted(tmp_path):
+    # The clinician acknowledged in the app while the queued call rang out: the unanswered call
+    # set notify_failed (reopening the event) and texted "Missed call..." for a handled alarm.
+    driver, ev = _Driver(), _event()
+    driver.status[ev.window.event_id] = "acknowledged"
+    sms = _RealSms()
+    result = run_outbound(
+        ev, driver=driver, orchestrator=None, caller=SimulatedCaller([CallOutcome.NO_ANSWER] * 3),
+        utterances=[], config=_CFG, bed="Unit1-Bed05", audit=AuditLog(tmp_path / "a.jsonl"),
+        sleep_fn=lambda _s: None, fallback_notifier=sms,
+    )
+    assert driver.status[ev.window.event_id] == "acknowledged"
+    assert sms.sent == [] and result.fallback is None
 
 
 def test_fallback_delivery_failure_is_notify_failed(tmp_path):

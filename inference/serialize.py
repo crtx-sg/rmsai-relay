@@ -15,7 +15,8 @@ from __future__ import annotations
 from fractions import Fraction
 from typing import Any
 
-from common.criticality import criticality
+from common.config import DEFAULT, Config
+from common.criticality import event_criticality
 from common.schemas import (
     ClinicalAnalysis,
     DeviceEvent,
@@ -31,7 +32,8 @@ from common.schemas import (
 )
 
 
-def event_to_dict(event: DeviceEvent, *, include_signals: bool = False) -> dict[str, Any]:
+def event_to_dict(event: DeviceEvent, *, include_signals: bool = False,
+                  config: Config = DEFAULT) -> dict[str, Any]:
     w = event.window
     a = event.analysis
     payload: dict[str, Any] = {
@@ -44,7 +46,7 @@ def event_to_dict(event: DeviceEvent, *, include_signals: bool = False) -> dict[
         "is_false_positive": event.is_false_positive,
         "uncertain": event.uncertain,
         "low_confidence": event.low_confidence,
-        "criticality": criticality(event.event_type, a.mews.risk),
+        "criticality": event_criticality(event, config),
         "mews": {"score": a.mews.score, "risk": a.mews.risk,
                  "components": [c.model_dump() for c in a.mews.components]},
         "vital_trends": {n: t.model_dump(exclude_none=True) for n, t in a.vital_trends.items()},

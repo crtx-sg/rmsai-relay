@@ -12,6 +12,11 @@ its call has finished, so a job popped but unfinished when the process died is s
 and `recover()` puts it back. The bus message itself is acked as soon as the event is persisted
 and pushed to the app; the queue is what keeps the pending call.
 
+One call at a time holds across processes too: a dispatcher must `claim()` the single call slot
+(`rmsai:calls:active`, holding the event id being dialled, with a lease it keeps alive during the
+call). Two consumers used to run two dispatchers, and a second consumer's startup `recover()`
+re-queued the call the first one was placing, so the clinician was rung twice.
+
 Jobs carry the bus payload (already on our own Redis, keyed by pseudonym), never names.
 """
 
@@ -26,6 +31,8 @@ from common.criticality import criticality_rank
 
 _QUEUE = "rmsai:calls:queue"
 _JOBS = "rmsai:calls:jobs"
+_ACTIVE = "rmsai:calls:active"  # the one call being placed system-wide (event id), with a lease
+_LEASE_S = 60  # renewed every _LEASE_S/3 during a call; a crashed holder frees the slot after this
 # Score = (levels above this one) * _BAND + enqueue time in ms. Epoch ms (~1.8e12) stays well
 # inside one band, so every Critical sorts before every High, FIFO within a level.
 _BAND = 10**13
@@ -67,10 +74,13 @@ class CallJob:
 class CallQueue:
     """Push / pop / done over the sorted set + job hash. One dispatcher pops; any process pushes."""
 
-    def __init__(self, redis_client, *, queue_key: str = _QUEUE, jobs_key: str = _JOBS) -> None:
+    def __init__(self, redis_client, *, queue_key: str = _QUEUE, jobs_key: str = _JOBS,
+                 active_key: str = _ACTIVE, lease_s: int = _LEASE_S) -> None:
         self.redis = redis_client
         self.queue_key = queue_key
         self.jobs_key = jobs_key
+        self.active_key = active_key
+        self.lease_s = lease_s
 
     def push(self, job: CallJob) -> int:
         """Queue `job` (idempotent per event id: a redelivered event keeps its place). Returns the
@@ -93,15 +103,43 @@ class CallQueue:
                 return CallJob.from_json(raw)
             # A queue entry without a job (cleared by hand): skip it.
 
+    def claim(self) -> CallJob | None:
+        """Take the system-wide call slot and pop the next job; None if another process holds the
+        slot or nothing is waiting. While the slot is held, `keep_alive()` it; `done()` frees it.
+
+        Holding the slot means no other process is mid-call, so any popped-but-unfinished job is
+        an orphan of a crashed holder: it is re-queued (in severity order) before popping.
+        """
+        if not self.redis.set(self.active_key, "claiming", nx=True, ex=self.lease_s):
+            return None
+        self.recover()
+        job = self.pop()
+        if job is None:
+            self.redis.delete(self.active_key)
+            return None
+        self.redis.set(self.active_key, job.event_id, ex=self.lease_s)
+        return job
+
+    def keep_alive(self) -> None:
+        """Renew the call-slot lease (the dispatcher calls this while a call is in progress)."""
+        self.redis.expire(self.active_key, self.lease_s)
+
     def done(self, event_id: str) -> None:
         self.redis.hdel(self.jobs_key, event_id)
+        active = self.redis.get(self.active_key)
+        if active is not None and _s(active) == event_id:
+            self.redis.delete(self.active_key)
 
     def pending(self) -> int:
         return int(self.redis.zcard(self.queue_key))
 
     def recover(self) -> int:
-        """Re-queue jobs that were popped but never finished (the process died mid-call)."""
+        """Re-queue jobs that were popped but never finished (the process died mid-call). The job
+        another process is dialling right now (it holds the call slot) is left alone."""
         queued = {_s(m) for m in self.redis.zrange(self.queue_key, 0, -1)}
+        active = self.redis.get(self.active_key)
+        if active is not None:
+            queued.add(_s(active))
         n = 0
         for event_id, raw in self.redis.hgetall(self.jobs_key).items():
             event_id = _s(event_id)
@@ -143,15 +181,26 @@ class CallDispatcher:
         """Place the next queued call, if any. Returns False when the queue was empty."""
         self._busy.set()
         try:
-            job = self.queue.pop()
+            job = self.queue.claim()
             if job is None:
                 return False
+            beating = threading.Event()
+
+            def _heartbeat() -> None:  # keep the call slot while the call lasts
+                while not beating.wait(self.queue.lease_s / 3):
+                    try:
+                        self.queue.keep_alive()
+                    except Exception as exc:  # noqa: BLE001 - a Redis blip; retry next beat
+                        print(f"[calls] lease renewal failed: {type(exc).__name__}", flush=True)
+
+            threading.Thread(target=_heartbeat, name="call-lease", daemon=True).start()
             try:
                 self.handle(job)
             except Exception as exc:  # noqa: BLE001 - one bad call must not stop the others
                 print(f"[calls] call for event {job.event_id} failed: "
                       f"{type(exc).__name__}: {exc}", flush=True)
             finally:
+                beating.set()
                 self.queue.done(job.event_id)
             return True
         finally:

@@ -27,7 +27,8 @@ TEMPLATES: dict[str, str] = {
         OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit)
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
                e.event_type AS event, e.criticality AS criticality,
-               coalesce(e.status, 'reported') AS status, e.timestamp AS ts
+               coalesce(e.status, 'reported') AS status,
+               coalesce(e.alert_gate, false) AS alert_gate, e.timestamp AS ts
         ORDER BY CASE e.criticality WHEN 'Critical' THEN 0 ELSE 1 END, e.timestamp DESC
     """,
     # Alarm counts per patient + bed, most first: "which patient has the most alarms?"
@@ -72,7 +73,8 @@ TEMPLATES: dict[str, str] = {
         RETURN p.pseudonym AS patient, b.label AS bed, e.timestamp AS ts,
                e.event_type AS reported_event,
                e.is_false_positive AS false_positive,
-               e.ground_truth_condition AS actual_condition, e.status AS status
+               e.ground_truth_condition AS actual_condition, e.status AS status,
+               coalesce(e.alert_gate, false) AS alert_gate
         ORDER BY e.timestamp DESC
     """,
     # T4 — Event analysis reports for a bed (refs; content from vector store)
@@ -174,7 +176,8 @@ TEMPLATES: dict[str, str] = {
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
                e.event_type AS event, e.criticality AS criticality,
                e.is_false_positive AS false_positive,
-               coalesce(e.status, 'reported') AS status, e.timestamp AS ts
+               coalesce(e.status, 'reported') AS status,
+               coalesce(e.alert_gate, false) AS alert_gate, e.timestamp AS ts
         ORDER BY e.timestamp DESC
     """,
     # Where a named patient is: "which bed is PT998224 on?"

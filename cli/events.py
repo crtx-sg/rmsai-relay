@@ -12,9 +12,13 @@
   python -m cli.events --ask "say all unacked events in bed 02"
   python -m cli.events --ask "unacknowledged events for this patient" --as-patient PT998224
 
+  # demo reset: reopen acknowledged/resolved events so re-ingesting them alerts again (writes!)
+  python -m cli.events --reopen                          # every closed event
+  python -m cli.events --reopen <event-id> <event-id>
+
 `pending` = alerted and not acknowledged/resolved: the same definition the app worklist and the
 voice agent use (`kb.graph.events.list_events`), so this listing is how to verify a spoken answer.
-Read-only. Pseudonyms only.
+Read-only except `--reopen`. Pseudonyms only.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ import time
 from datetime import datetime, timezone
 
 from common.config import DEFAULT
-from kb.graph.events import STATUS_FILTERS, list_events
+from kb.graph.events import STATUS_FILTERS, list_events, reopen_events
 from orchestrator.perf_view import parse_since
 
 
@@ -121,6 +125,9 @@ def main(argv: list[str] | None = None, *, driver=None) -> int:
     parser.add_argument("--as-patient", help="session patient for --ask ('this patient')")
     parser.add_argument("--spoken", action="store_true",
                         help="--ask: render the answer as the phone call would")
+    parser.add_argument("--reopen", nargs="*", metavar="EVENT_ID",
+                        help="demo reset: set acknowledged/resolved events (all, or these ids) back "
+                             "to reported, so a re-ingest alerts again")
     args = parser.parse_args(argv)
     try:
         since = parse_since(args.since)
@@ -133,6 +140,10 @@ def main(argv: list[str] | None = None, *, driver=None) -> int:
         from kb.graph.driver import GraphDriver  # noqa: PLC0415
 
         driver = GraphDriver.from_config(DEFAULT)
+    if args.reopen is not None:
+        n = reopen_events(driver, args.reopen or None)
+        print(f"[events] reopened {n} event(s)")
+        return 0
     if args.ask:
         return _ask(driver, args.ask, patient_ref=args.as_patient, spoken=args.spoken)
 

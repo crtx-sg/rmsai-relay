@@ -11,6 +11,7 @@ of the file still processes. Window-math / missing-units violations reject *that
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
@@ -42,6 +43,15 @@ _WINDOW_MATCH_TOL_SAMPLES = 1
 
 class ReaderError(Exception):
     """Raised for an event that cannot be safely read (rejected loudly)."""
+
+
+def _finite(x) -> float | None:
+    """`x` as a finite float, or None (missing, null, NaN/inf, or not a number)."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
 
 
 def _decode(value: Any) -> Any:
@@ -223,9 +233,10 @@ def read_event(hf: h5py.File, event_key: str, md: dict) -> SignalWindow:
     if "vitals" in grp:
         for vname in grp["vitals"]:
             vgrp = grp["vitals"][vname]
-            if "value" in vgrp:
+            value = _finite(vgrp["value"][()]) if "value" in vgrp else None
+            if value is not None:  # NaN/null = not measured: MEWS scored NaN as its worst band
                 vitals[vname] = Vital(
-                    value=float(vgrp["value"][()]),
+                    value=value,
                     units=_decode(vgrp["units"][()]) if "units" in vgrp else "",
                     timestamp=float(vgrp["timestamp"][()]) if "timestamp" in vgrp else event_ts,
                 )
@@ -233,9 +244,10 @@ def read_event(hf: h5py.File, event_key: str, md: dict) -> SignalWindow:
             history = extras.get("history", [])
             if history:
                 vitals_history[vname] = [
-                    VitalSample(value=float(s["value"]), timestamp=float(s["timestamp"]))
+                    VitalSample(value=v, timestamp=float(s["timestamp"]))
                     for s in history
-                    if "value" in s and "timestamp" in s
+                    if isinstance(s, dict) and "timestamp" in s
+                    and (v := _finite(s.get("value"))) is not None
                 ]
 
     # --- Ground truth (sim only) ---
@@ -290,6 +302,8 @@ def read_hdf5_file(path: str | Path, *, strict_units: bool = False) -> Iterator[
         for event_key in sorted(k for k in hf.keys() if k.startswith("event_")):
             try:
                 yield read_event(hf, event_key, md)
-            except (ReaderError, KeyError, ValueError) as exc:
-                _log.error("skipping %s/%s: %s", path.name, event_key, exc)
+            except (ReaderError, KeyError, ValueError, TypeError, AttributeError, OSError) as exc:
+                # One malformed event (a null field, a bad extras blob, an h5py read error) is
+                # skipped; it used to abort the file and, via cli.ingest, the whole run.
+                _log.error("skipping %s/%s: %s: %s", path.name, event_key, type(exc).__name__, exc)
                 continue

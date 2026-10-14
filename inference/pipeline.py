@@ -47,5 +47,5 @@ def process_window(
         model_id=getattr(model, "model_id", type(model).__name__),
         model_classes=list(getattr(model, "labels", []) or []) or None,
     )
-    event.report_md = render_event_report(event)
+    event.report_md = render_event_report(event, config)
     return event

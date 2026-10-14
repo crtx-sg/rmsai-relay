@@ -15,7 +15,7 @@ import json
 from common.config import DEFAULT
 from kb.eval.fixtures import seed_eval_graph
 from kb.eval.harness import load_questions, render_report, run_eval
-from kb.graph.driver import GraphDriver
+from kb.graph.driver import GraphDriver, GraphResetRefused
 from kb.hybrid.retriever import HybridRetriever
 from kb.vector.retriever import VectorRetriever
 from kb.vector.store import QdrantStore
@@ -37,7 +37,10 @@ def main(argv: list[str] | None = None) -> int:
 
     with GraphDriver.from_config(DEFAULT) as driver:
         if not args.no_seed:
-            seed_eval_graph(driver)
+            try:
+                seed_eval_graph(driver)
+            except GraphResetRefused as exc:
+                parser.error(f"{exc} (seeding resets the graph; or pass --no-seed)")
         report = run_eval(HybridRetriever(vector, driver), questions)
 
     if args.json:

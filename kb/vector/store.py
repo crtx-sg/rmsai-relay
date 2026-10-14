@@ -73,7 +73,26 @@ class QdrantStore:
         return params.size
 
     def index(self, chunks: list[Chunk], vectors: list[list[float]]) -> int:
-        """Upsert chunks + their vectors (content-addressed ids → idempotent). Returns the count."""
+        """Replace each document's chunks with these (callers pass whole documents). Returns the count.
+
+        Ids depend on chunk position, so upserting alone left the old version's chunks behind when
+        a re-uploaded document lost or renamed a section: a superseded "300 mg" stayed searchable
+        next to the new "150 mg", both cited under the document's own name.
+        """
+        from qdrant_client.models import (  # noqa: PLC0415
+            FieldCondition,
+            Filter,
+            FilterSelector,
+            MatchAny,
+        )
+
+        doc_ids = sorted({c.doc_id for c in chunks})
+        if doc_ids:
+            self.client.delete(
+                collection_name=self.collection,
+                points_selector=FilterSelector(filter=Filter(must=[
+                    FieldCondition(key="doc_id", match=MatchAny(any=doc_ids))])),
+            )
         points = [
             PointStruct(
                 id=_stable_id(c),

@@ -112,7 +112,7 @@ EcgTransConvModel
 
 ## 2. Initialize the knowledge base
 
-Both stores start empty. `cli.kb_eval` resets the live graph (tests only do with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`) (see [Troubleshooting](#troubleshooting)).
+Both stores start empty. `cli.kb_eval` (seeding) and the graph tests reset the graph only with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1` (see [Troubleshooting](#troubleshooting)).
 
 ```bash
 $RMSAI cli.graph migrate                                   # {"migrated": true}
@@ -269,7 +269,9 @@ are the usual confusions), re-pick with another `--seed`.
 Log in to `http://localhost:8080/` (PIN `1234`) **before** publishing. The inbox room `rmsai-inbox-h1` only exists while the app is
 connected, so a push while it's closed fails (`inbox push failed … 503 … inbox room not open`). The
 event isn't lost: on login the app backfills every pending (alerted, unacknowledged) event from the
-graph. Publishing again is also safe: the graph is keyed by event id.
+graph. Publishing again is also safe: the graph is keyed by event id, and an event the clinician
+already acknowledged keeps its status and is not alerted again. To re-run the demo on the same
+files, reopen them first: `$RMSAI cli.events --reopen`.
 
 ### Publish to the bus
 
@@ -412,12 +414,13 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | `real-samples` fails to start: bind source path does not exist | package not at `../ecg_sigma/packages` | set `ECGPKG_HOST_DIR=/abs/path/to/packages` (and `ECGPKG_NAME` if not `ecg_pkg_v2`) |
 | `pick` exits 2: `… not held out for this model` | package ≠ checkpoint's training package | use the matching package, or `--allow-mismatch` knowingly |
 | Accuracy ≈ 0, `ST_ELEVATION` predictions, `"model": "stub"` | stub fallback | [§1 table](#1-bring-up-and-confirm-the-real-model-is-loaded) |
-| Worklist empty / `cli.kb_dump --list` returns `[]` | `cli.kb_eval` (or tests run with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1`) reset the **live** Neo4j | redo §2, then republish (§5) |
+| Worklist empty / `cli.kb_dump --list` returns `[]` | something ran with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1` (`cli.kb_eval`, graph tests) and reset the **live** Neo4j | redo §2, then republish (§5) |
 | In-app chat gets no reply | voice worker restarted after the app connected | `$RMSAI cli.dispatch --all-inbox` |
 | Voice worker loops on `:7880` | LiveKit container not running | `docker compose -f infra/docker-compose.yml up -d livekit` |
 | Events arrive, but no speech on select and no chat reply; `make demo-check` FAILs on voice-worker | worker started before LiveKit, retried 16x and stopped (the container stays "Up") | `docker restart infra-voice-worker-1`, or `make demo-up` |
 | `[poison] … refusing to publish non-pseudonym patient ref: '106'` | `data/real` curated before pseudonymization (older `cli.real_samples`) | re-run `pick`; purge the old ids from Neo4j/Qdrant before republishing, or the same event ids end up under two patients |
 | `inbox push failed … TwirpError … 503 no response from servers` | app not connected, so the inbox room doesn't exist | log in to the app; pending events backfill on login (republishing is also safe) |
+| Republished, but no alert/call: `already acknowledged; not re-alerted` | the events were closed in an earlier run | `$RMSAI cli.events --reopen`, then republish |
 | Neo4j `warn: null value eliminated in set function` | harmless driver notice: an `OPTIONAL MATCH` over a patient with no history rows | ignore |
 | Two consumers splitting events | a host-run `cli.consume` shares group `rmsai.relay` with the container | `docker compose -f infra/docker-compose.yml stop consumer` before running one by hand |
 | `SIP dial failed … 603: Decline` (SignalWire) | SignalWire refused the call: trial mode, Domain App credentials, or destination country | [`TELEPHONY_SETUP.md` § Troubleshooting](TELEPHONY_SETUP.md#troubleshooting) |

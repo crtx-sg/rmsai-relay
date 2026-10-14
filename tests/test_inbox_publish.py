@@ -72,6 +72,7 @@ class _FakeRedis:
 def patched(monkeypatch):
     calls = {"voice": [], "text": []}
     monkeypatch.setattr(bus_consumer, "ensure_patient", lambda d, b, pid: ("ICU", "3"))
+    monkeypatch.setattr(bus_consumer, "get_event_status", lambda d, uuid: None)  # new event
     monkeypatch.setattr(bus_consumer, "process_device_event",
                         lambda ev, d, v, bed=None, config=None: None)
     monkeypatch.setattr(bus_consumer, "run_outbound",

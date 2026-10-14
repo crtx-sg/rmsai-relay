@@ -37,6 +37,7 @@ def persist_monitored_event(
     hr_history: list | None = None,
     hr_history_ts: list | None = None,
     extra: dict | None = None,
+    criticality_level: str | None = None,
 ) -> str:
     """MERGE a MonitoredEvent (by uuid) + its links. Returns the event id (== uuid).
 
@@ -45,13 +46,15 @@ def persist_monitored_event(
     traceability fields don't widen this signature. None values are dropped.
     """
     vitals = vitals or {}
-    crit = criticality(event_type, mews_risk)
+    # The pipeline passes the escalated level that gated the alert; the base lookup is a fallback.
+    crit = criticality_level or criticality(event_type, mews_risk)
     driver.run_write(
         """
         MERGE (e:MonitoredEvent {id:$uuid})
+        ON CREATE SET e.status=$status
         SET e.uuid=$uuid, e.timestamp=$ts, e.event_type=$etype, e.confidence=$conf,
             e.is_false_positive=$fp, e.ground_truth_condition=$gt, e.mews_risk=$mews,
-            e.criticality=$crit, e.status=$status,
+            e.criticality=$crit,
             e.hr=$hr, e.sbp=$sbp, e.dbp=$dbp, e.spo2=$spo2, e.rr=$rr, e.temp=$temp,
             e.signal_ref=$signal_ref, e.ecg_plot_ref=$ecg_plot_ref, e.vitals_plot_ref=$vitals_plot_ref,
             e.hr_history=$hr_history, e.hr_history_ts=$hr_history_ts
@@ -92,8 +95,8 @@ def persist_monitored_event(
         aid = f"{uuid}_{item['text'][:24]}"
         driver.run_write(
             "MATCH (e:MonitoredEvent {id:$uuid}) "
-            "MERGE (a:ActionItem {id:$aid}) "
-            "SET a.text=$text, a.priority=$priority, a.status=$status "
+            "MERGE (a:ActionItem {id:$aid}) ON CREATE SET a.status=$status "
+            "SET a.text=$text, a.priority=$priority "
             "MERGE (e)-[:HAS_ACTION]->(a)",
             uuid=uuid, aid=aid, text=item["text"],
             priority=item.get("priority", "medium"), status=item.get("status", "outstanding"),
@@ -166,10 +169,34 @@ def set_report_indexed(driver: GraphDriver, report_id: str) -> None:
 
 
 def set_event_status(driver: GraphDriver, uuid: str, status: str) -> None:
-    """Update a MonitoredEvent's lifecycle status (reported/acknowledged/notify_failed/resolved)."""
+    """Update a MonitoredEvent's lifecycle status (reported/acknowledged/notify_failed/resolved).
+
+    An open status (reported/notify_failed) never replaces a closed one: a queued call that ends
+    unanswered after the clinician acknowledged in the app must not reopen the event.
+    """
+    if status in CLOSED_STATUSES:
+        driver.run_write(
+            "MATCH (e:MonitoredEvent {id:$uuid}) SET e.status=$status", uuid=uuid, status=status
+        )
+        return
     driver.run_write(
-        "MATCH (e:MonitoredEvent {id:$uuid}) SET e.status=$status", uuid=uuid, status=status
+        "MATCH (e:MonitoredEvent {id:$uuid}) "
+        "WHERE NOT coalesce(e.status, 'reported') IN $closed SET e.status=$status",
+        uuid=uuid, status=status, closed=CLOSED_STATUSES,
     )
+
+
+def reopen_events(driver: GraphDriver, uuids: list[str] | None = None) -> int:
+    """Demo reset: set closed events (all, or `uuids`) back to `reported` with outstanding action
+    items, so re-ingesting them alerts again. Returns how many events were reopened."""
+    rows = driver.run_write(
+        "MATCH (e:MonitoredEvent) WHERE e.status IN $closed AND ($ids IS NULL OR e.id IN $ids) "
+        "SET e.status='reported' "
+        "WITH e OPTIONAL MATCH (e)-[:HAS_ACTION]->(a:ActionItem) SET a.status='outstanding' "
+        "RETURN count(DISTINCT e) AS n",
+        closed=CLOSED_STATUSES, ids=uuids,
+    )
+    return int(rows[0]["n"]) if rows else 0
 
 
 def get_event_status(driver: GraphDriver, uuid: str) -> str | None:

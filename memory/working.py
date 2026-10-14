@@ -11,6 +11,10 @@ from common.config import DEFAULT, Config
 from common.schemas import ChatTurn, ConversationState
 
 _KEY = "rmsai:session:{sid}"
+# Sessions expire a day after their last turn (the TTL renews on every save), and keep only the
+# latest turns: the long-lived inbox room otherwise grew one Redis blob forever.
+DEFAULT_TTL_S = 24 * 3600
+MAX_TURNS = 50
 
 
 class WorkingMemory:
@@ -19,7 +23,8 @@ class WorkingMemory:
         self.ttl = ttl_seconds
 
     @classmethod
-    def from_config(cls, config: Config = DEFAULT, ttl_seconds: int | None = None) -> "WorkingMemory":
+    def from_config(cls, config: Config = DEFAULT,
+                    ttl_seconds: int | None = DEFAULT_TTL_S) -> "WorkingMemory":
         import redis  # noqa: PLC0415
 
         return cls(redis.Redis.from_url(config.redis_url), ttl_seconds)
@@ -41,6 +46,7 @@ class WorkingMemory:
         """Load, append a turn, persist, and return the updated state (so turn N sees 1..N-1)."""
         state = self.get_or_create(session_id)
         state.turns.append(turn)
+        del state.turns[:-MAX_TURNS]
         self.save(state)
         return state
 

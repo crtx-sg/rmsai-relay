@@ -13,11 +13,12 @@ from tests.test_bus_consumer import _Afib, _event, _FakeAlertStore, _run, patche
 
 
 class _FakeRedis:
-    """Just the sorted-set + hash commands the queue uses."""
+    """Just the sorted-set, hash and key commands the queue uses."""
 
     def __init__(self):
         self.z: dict[str, dict[str, float]] = {}
         self.h: dict[str, dict[str, str]] = {}
+        self.kv: dict[str, str] = {}
 
     def hsetnx(self, key, field, value):
         h = self.h.setdefault(key, {})
@@ -50,6 +51,22 @@ class _FakeRedis:
 
     def zrange(self, key, start, end):
         return [m for m, _ in sorted(self.z.get(key, {}).items(), key=lambda kv: kv[1])]
+
+    # plain keys (the call slot); expiry is simulated by deleting the key in a test
+    def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.kv:
+            return None
+        self.kv[key] = value
+        return True
+
+    def get(self, key):
+        return self.kv.get(key)
+
+    def delete(self, key):
+        self.kv.pop(key, None)
+
+    def expire(self, key, seconds):
+        return int(key in self.kv)
 
 
 def _job(event_id, criticality, ms):
@@ -91,6 +108,28 @@ def test_finished_call_is_not_recovered():
     q.push(_job("a", "High", 1000))
     q.done(q.pop().event_id)
     assert q.recover() == 0 and q.pop() is None
+
+
+def test_second_consumer_neither_requeues_nor_dials_a_call_in_progress():
+    r = _FakeRedis()
+    q1, q2 = CallQueue(r), CallQueue(r)
+    q1.push(_job("a", "Critical", 1000))
+    q1.push(_job("b", "High", 2000))
+    assert q1.claim().event_id == "a"   # consumer 1 is dialling "a"
+    assert q2.recover() == 0            # consumer 2 starts: "a" is not an orphan
+    assert q2.claim() is None           # ...and it may not ring a second phone meanwhile
+    q1.done("a")
+    assert q2.claim().event_id == "b"
+
+
+def test_crashed_holder_job_is_recovered_once_its_lease_lapses():
+    r = _FakeRedis()
+    q1, q2 = CallQueue(r), CallQueue(r)
+    q1.push(_job("a", "Critical", 1000))
+    q1.push(_job("b", "High", 2000))
+    assert q1.claim().event_id == "a"   # consumer 1 dies mid-call: no done(), no keep_alive()
+    r.delete(q1.active_key)             # its lease expires
+    assert q2.claim().event_id == "a"   # the orphan is re-queued, most severe first
 
 
 def test_dispatcher_places_calls_one_at_a_time_and_survives_a_failing_one():

@@ -23,7 +23,9 @@ from inference.pipeline import process_window
 from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
 from kb.graph.driver import GraphDriver
+from kb.graph.events import get_event_status
 from kb.graph.schema import migrate
+from kb.graph.templates import CLOSED_STATUSES
 from kb.hybrid.retriever import HybridRetriever
 from kb.vector.retriever import VectorRetriever
 from kb.vector.store import QdrantStore
@@ -31,7 +33,8 @@ from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
 from orchestrator.event_flow import process_device_event
 from orchestrator.orchestrator import Orchestrator
-from orchestrator.outbound_flow import run_outbound, run_text_notify, should_call
+from orchestrator.bus_consumer import finish_call
+from orchestrator.outbound_flow import app_only, run_outbound, run_text_notify, should_call
 from orchestrator.patient_bootstrap import ensure_patient
 from voice.outbound import CallOutcome, SimulatedCaller, get_caller
 
@@ -120,11 +123,19 @@ def main(argv: list[str] | None = None) -> int:
         for event in read_hdf5_file(args.file):
             de = process_window(event, model, vitals)
             unit, bed = ensure_patient(driver, beds, de.window.patient_ref)
+            prior = get_event_status(driver, de.window.event_id)
             process_device_event(de, driver, vector, bed=(unit, bed), config=config)
             call, reason = should_call(de, config)
             tag = f"{de.window.patient_ref}/{de.event_type} (conf {de.confidence:.2f})"
+            if prior in CLOSED_STATUSES:
+                print(f"[skip] {tag} @ {bed}: already {prior}")
+                continue
             if not call:
                 print(f"[skip] {tag} @ {bed}: {reason}")
+                continue
+            if app_only(reason, config):  # same rule as cli.consume: worklist only, no phone
+                print(f"[skip] {tag} @ {bed}: vitals-driven alert, app only "
+                      f"(outbound.call_vitals_alerts=false) [{reason}]")
                 continue
             if reason.startswith("fp_override"):
                 print(f"[fp-override] {tag} @ {bed}: ECG is a false positive, but vitals warrant "
@@ -147,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             if result.fallback:
                 print(f"    sms fallback: {result.fallback}")
             print(f"    => status: {result.status}")
+            finish_call(driver, de.window.event_id, result)  # record delivered_call / _sms
     finally:
         driver.close()
     return 0

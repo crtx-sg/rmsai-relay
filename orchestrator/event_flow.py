@@ -138,6 +138,7 @@ def process_device_event(
         event_type=event.event_type, confidence=event.confidence,
         is_false_positive=event.is_false_positive, mews_risk=event.analysis.mews.risk,
         ground_truth_condition=gt, status="reported", vitals=_vitals_snapshot(event), bed=bed,
+        criticality_level=crit,
         link_condition=event.event_type, action_items=actions,
         signal_ref=f"hdf5://{w.patient_ref}/{w.event_id}",
         ecg_plot_ref=ecg_plot_ref, hr_history=hr_history, hr_history_ts=hr_history_ts,

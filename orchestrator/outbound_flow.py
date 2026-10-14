@@ -16,7 +16,8 @@ from common.config import DEFAULT, Config
 from common.criticality import alert_basis, at_least, event_criticality
 from common.schemas import DeviceEvent
 from kb.graph.driver import GraphDriver
-from kb.graph.events import set_event_status
+from kb.graph.events import get_event_status, set_event_status
+from kb.graph.templates import CLOSED_STATUSES
 from voice.outbound import Caller, CallOutcome, parse_ack, place_with_retries
 
 from .report import spoken_report
@@ -84,6 +85,12 @@ def should_call(event: DeviceEvent, config: Config = DEFAULT) -> tuple[bool, str
     return True, (f"vitals_alert ({why})" if vitals_driven else "ok")
 
 
+def app_only(reason: str, config: Config = DEFAULT) -> bool:
+    """A vitals-driven alert goes to the worklist but rings no phone unless the hospital opts in
+    (`outbound.call_vitals_alerts`): the rhythm is below the confidence gate."""
+    return reason.startswith("vitals_alert") and not config.outbound_call_vitals_alerts
+
+
 def run_outbound(
     event: DeviceEvent,
     *,
@@ -133,7 +140,9 @@ def run_outbound(
     if outcome != CallOutcome.ANSWERED:
         fallback = None
         status = "notify_failed"
-        if fallback_notifier is not None and outcome != CallOutcome.INVALID:
+        # Acknowledged elsewhere (the app) while the call rang: no "missed call" text for it.
+        closed = get_event_status(driver, uuid) in CLOSED_STATUSES
+        if fallback_notifier is not None and outcome != CallOutcome.INVALID and not closed:
             text = "Missed call from RMS relay. " + spoken_report(event, bed=bed, config=config)
             delivered = fallback_notifier.send(config.outbound_call_number, text)
             if delivered and getattr(fallback_notifier, "simulated", False):

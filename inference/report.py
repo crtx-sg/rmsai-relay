@@ -6,15 +6,16 @@ The graph persistence (Phase 4) reads the typed fields directly, never by re-par
 
 from __future__ import annotations
 
-from common.criticality import criticality
+from common.config import DEFAULT, Config
+from common.criticality import event_criticality
 from common.schemas import DeviceEvent
 from common.vitals_format import fmt_vital
 
 
-def render_event_report(event: DeviceEvent) -> str:
+def render_event_report(event: DeviceEvent, config: Config = DEFAULT) -> str:
     w = event.window
     a = event.analysis
-    crit = criticality(event.event_type, a.mews.risk)
+    crit = event_criticality(event, config)  # the level that gated the alert, not the base lookup
 
     lines: list[str] = [
         f"# Event Report — {w.patient_ref} / {w.event_id}",

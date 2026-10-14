@@ -172,3 +172,26 @@ def test_missing_metadata_field_is_rejected_loudly(tmp_path):
         del hf["metadata"].attrs["patient_id"]
     with h5py.File(stripped) as hf, pytest.raises(ReaderError, match="patient_id"):
         _read_metadata(hf, strict_units=False)
+
+
+def test_null_or_nan_vitals_are_missing_not_fatal(tmp_path):
+    # One null history value aborted the whole file (TypeError), and a NaN vital scored as the worst
+    # MEWS band. Both are now "not measured".
+    import shutil
+
+    path = tmp_path / "PT1155_2026-06.h5"
+    shutil.copy(_FIXTURE, path)
+    with h5py.File(path, "r+") as hf:
+        first = sorted(k for k in hf if k.startswith("event_"))[0]
+        hr = hf[first]["vitals"]["HR"]
+        extras = json.loads(hr["extras"][()])
+        extras["history"][0]["value"] = None
+        del hr["extras"]
+        hr["extras"] = json.dumps(extras).encode()
+        del hr["value"]
+        hr["value"] = np.nan
+    windows = list(read_hdf5_file(path))
+    assert len(windows) == len(list(read_hdf5_file(_FIXTURE)))  # nothing skipped or aborted
+    w = windows[0]
+    assert "HR" not in w.vitals
+    assert len(w.vitals_history["HR"]) == len(extras["history"]) - 1

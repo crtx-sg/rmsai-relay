@@ -44,6 +44,7 @@ class _Normal(ECGModel):
 def patched(monkeypatch):
     calls = {"persist": [], "voice": [], "text": []}
     monkeypatch.setattr(bus_consumer, "ensure_patient", lambda d, b, pid: ("ICU", "3"))
+    monkeypatch.setattr(bus_consumer, "get_event_status", lambda d, uuid: None)  # new event
     monkeypatch.setattr(bus_consumer, "process_device_event",
                         lambda ev, d, v, bed=None, config=None: calls["persist"].append(ev.window.event_id))
 
@@ -74,6 +75,15 @@ def test_critical_event_persists_and_calls(patched):
     assert res.persisted and res.called
     assert patched["persist"] == [res.event_uuid]
     assert patched["voice"] == ["ICU/3"] and not patched["text"]
+
+
+def test_replayed_acknowledged_event_is_not_alerted_again(patched, monkeypatch):
+    # Re-ingesting a file whose events were already acknowledged reset them and called again.
+    monkeypatch.setattr(bus_consumer, "get_event_status", lambda d, uuid: "acknowledged")
+    res = _run(event_to_dict(_event(_Afib())), patched, channel="voice")
+    assert res.persisted and not res.called
+    assert res.decision_reason == "already_acknowledged"
+    assert not patched["voice"] and not patched["text"]
 
 
 def test_text_channel_routes_to_notify(patched):

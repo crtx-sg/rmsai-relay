@@ -22,11 +22,14 @@ from common.criticality import alert_basis, event_criticality
 from inference.serialize import dict_to_event
 from kb.graph.driver import GraphDriver
 from kb.graph.events import get_event_status, set_event_delivery
+from kb.graph.templates import CLOSED_STATUSES
 from kb.vector.retriever import VectorRetriever
 from live.inbox import artifact_kinds_for, build_event_message, mint_artifact_links
 from orchestrator.call_queue import CallJob
 from orchestrator.event_flow import process_device_event
-from orchestrator.outbound_flow import OutboundResult, run_outbound, run_text_notify, should_call
+from orchestrator.outbound_flow import (
+    OutboundResult, app_only, run_outbound, run_text_notify, should_call,
+)
 from orchestrator.patient_bootstrap import ensure_patient
 from orchestrator.report import spoken_report
 from voice.outbound_alert import OutboundAlert
@@ -141,11 +144,21 @@ def process_bus_event(
     bed_label = f"{unit}/{bed}"
     print(f"[consume] patient {w.patient_ref} -> bed {bed_label}", flush=True)
 
+    prior = get_event_status(driver, w.event_id)  # None = first time this event is seen
     process_device_event(event, driver, vector, bed=(unit, bed), config=config)
     print(f"[consume] persisted MonitoredEvent {w.event_id} -> Neo4j graph", flush=True)
     print(f"[consume] archived report narrative -> Qdrant vector store", flush=True)
 
     trace = _trace(event, config)
+    if prior in CLOSED_STATUSES:
+        # A replay or redelivery of an event the clinician already closed: keep the status, and
+        # don't push or call again (`cli.events reopen` resets a demo).
+        print(f"[consume] event {w.event_id} already {prior}; not re-alerted", flush=True)
+        return ConsumeResult(
+            event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
+            bed=bed_label, persisted=True, called=False, decision_reason=f"already_{prior}",
+            trace=trace,
+        )
     call, reason = should_call(event, config)
     if not call:
         print(f"[consume] no call: {reason} (event still persisted)", flush=True)
@@ -202,7 +215,7 @@ def process_bus_event(
     # Call surface: unchanged per-event SIP/voice (or text) alert. Skipped for app-only mode, and
     # for a vitals-driven alert unless the hospital opts in: the rhythm is below the confidence gate,
     # so it is reported on the worklist but does not ring the clinician.
-    vitals_app_only = reason.startswith("vitals_alert") and not config.outbound_call_vitals_alerts
+    vitals_app_only = app_only(reason, config)
     if vitals_app_only:
         print(f"[consume] no call: vitals-driven alert ({event.event_type} "
               f"{event.confidence:.0%} < {config.outbound_min_arrhythmia_confidence:.0%}) is "
@@ -246,7 +259,7 @@ def process_bus_event(
             event, driver=driver, orchestrator=orchestrator, caller=caller,
             utterances=utterances, config=config, bed=bed_label, fallback_notifier=notifier,
         )
-    _finish_call(driver, w.event_id, result)
+    finish_call(driver, w.event_id, result)
     return ConsumeResult(
         event_uuid=w.event_id, patient_ref=w.patient_ref, event_type=event.event_type,
         bed=bed_label, persisted=True, called=result.called, decision_reason=reason,
@@ -254,7 +267,7 @@ def process_bus_event(
     )
 
 
-def _finish_call(driver, event_id: str, result: OutboundResult) -> None:
+def finish_call(driver, event_id: str, result: OutboundResult) -> None:
     if result.fallback:
         print(f"[consume] call {result.outcome} after {result.attempts} attempt(s); SMS fallback: "
               f"{result.fallback} -> status {result.status}", flush=True)
@@ -362,7 +375,7 @@ def run_queued_call(
         caller_factory=caller_factory, dispatch_fn=dispatch_fn, alert_store=alert_store,
         call_end_waiter=call_end_waiter,
     )
-    _finish_call(driver, job.event_id, result)
+    finish_call(driver, job.event_id, result)
     return ConsumeResult(
         event_uuid=job.event_id, patient_ref=job.patient_ref, event_type=job.event_type,
         bed=job.bed, persisted=True, called=result.called, decision_reason=job.reason,

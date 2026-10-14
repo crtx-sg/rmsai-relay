@@ -24,6 +24,7 @@ from common.schemas import ChatTurn
 from common.tracing import Tracer
 from common.vitals_format import fmt_vital
 from kb.graph.driver import GraphDriver
+from kb.graph.events import is_pending
 from kb.graph.llm_router import route as llm_route
 from kb.graph.lookup import looks_like_event_listing, match_intent
 from kb.graph.templates import EVENT_HISTORY, describe_event_history, run_template
@@ -268,6 +269,7 @@ def _row_to_sentence(row: dict) -> str:
     has_signal = r.pop("signal_ref", None) is not None
     hr_history = r.pop("hr_history", None)
     r.pop("hr_history_ts", None)
+    r.pop("alert_gate", None)  # bookkeeping for the pending count, not something to read out
 
     clauses = []
     if (crit := r.pop("criticality", None)):
@@ -429,9 +431,10 @@ def _spoken_event_summary(rows: list[dict]) -> str:
     head = f"{', '.join(who)}: " if who else ""
     text = f"{head}{len(rows)} events — {kinds}."
     if any("status" in r for r in rows):
-        pending = sum(1 for r in rows if str(r.get("status", "reported")) not in ("acknowledged",
-                                                                                "resolved"))
-        text += f" {pending} unacknowledged." if pending else " All acknowledged."
+        # Same rule as the Events tab and `cli.events`: pending = alerted and not closed. Counting
+        # every open row said "5 unacknowledged" for a bed with one alert and four withheld events.
+        pending = sum(1 for r in rows if is_pending(r))
+        text += f" {pending} unacknowledged." if pending else " Nothing awaiting acknowledgment."
     if len(beds) > 1 and len(patients) == 1:
         text += f" Beds: {', '.join(_spoken_bed(b) for b in sorted(beds))}."
     return text
@@ -698,7 +701,7 @@ class Orchestrator:
             answer_text = _EVENT_LISTING_HINT
         elif mode == "operational" and name == EVENT_HISTORY:
             answer_text = _answer_event_history(operational_rows, params, spoken=spoken)
-            model_input = self.llm.deidentifier.deidentify(kb_context)
+            model_input = self._model_input([(kb_context, True)])
         elif mode == "operational":
             # Structured graph result -> deterministic, crisp answer. No LLM is called, so NO prompt
             # is built: conversation history and recalled past interactions never touch an operational
@@ -706,7 +709,8 @@ class Orchestrator:
             answer_text = (_spoken_summary(operational_rows, name)
                            if spoken and operational_rows and len(operational_rows) > 1
                            else _answer_operational(operational_rows, name))
-            model_input = self.llm.deidentifier.deidentify(kb_context)  # the rows that informed it
+            # The rows that informed it (audit only): a de-id failure must not lose this answer.
+            model_input = self._model_input([(kb_context, True)])
         else:
             # Free-text/hybrid: the LLM needs conversation history (multi-turn follow-ups). Built ONLY
             # here — only when the model is actually invoked. Recalled "past interactions" are added

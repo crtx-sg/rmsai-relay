@@ -32,6 +32,8 @@ from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
 from ingest.time_anchor import ANCHORS, rebase_by_patient
 
+_STREAM_MAXLEN = 100_000  # bus entries kept (`rmsai.events` otherwise grows forever)
+
 
 def publish_to_bus(redis_url: str, stream: str, payload: dict) -> str:
     import redis  # noqa: PLC0415
@@ -46,7 +48,9 @@ def publish_to_bus(redis_url: str, stream: str, payload: dict) -> str:
         "is_false_positive": str(payload["is_false_positive"]),
     }
     try:
-        return client.xadd(stream, fields).decode()
+        # Acked entries are never deleted, so cap the stream (approximate trim is O(1)). The cap is
+        # far above any backlog a consumer could fall behind by in this POC.
+        return client.xadd(stream, fields, maxlen=_STREAM_MAXLEN, approximate=True).decode()
     except redis.exceptions.ConnectionError as exc:
         # `from None`: the pool's traceback is noise once the cause has a name and a fix.
         raise service_unreachable("Redis (the event bus)", redis_url, exc) from None

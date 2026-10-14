@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from common.bed_assignment import BedAssignmentStub
 from common.patient_history import PatientHistoryStub
-from kb.graph.ingest import ingest_patient_record
+from kb.graph.ingest import ASSIGN_BED, ingest_patient_record
 
 
 _CURRENT_BEDS = (
@@ -23,13 +23,6 @@ _PATIENT_BED = (
     "OPTIONAL MATCH (p)-[r:ASSIGNED_TO]->(b:Bed) WHERE coalesce(r.current, true) "
     "OPTIONAL MATCH (b)-[:IN_UNIT]->(u:Unit) "
     "RETURN p.id AS id, b.label AS bed, coalesce(u.name, split(b.label, '-')[0]) AS unit"
-)
-_ASSIGN = (
-    "MERGE (u:Unit {id:$unit}) SET u.name=$unit "
-    "MERGE (b:Bed {id:$bed}) SET b.label=$bed "
-    "MERGE (b)-[:IN_UNIT]->(u) "
-    "WITH b MATCH (p:Patient {id:$pid}) "
-    "MERGE (p)-[r:ASSIGNED_TO]->(b) SET r.current=true"
 )
 
 
@@ -61,5 +54,5 @@ def ensure_patient(driver, beds: BedAssignmentStub, patient_id: str) -> tuple[st
         history = PatientHistoryStub().get(patient_id).to_dict()
         ingest_patient_record(driver, history, bed=(unit, bed))
     else:  # known patient with no current bed: assign one
-        driver.run_write(_ASSIGN, unit=unit, bed=bed, pid=patient_id)
+        driver.run_write(ASSIGN_BED, unit=unit, bed=bed, pid=patient_id)
     return unit, bed

@@ -21,6 +21,18 @@ _MANAGES: dict[str, list[str]] = {
 }
 
 
+
+# Make `$bed` the patient's one current bed. Earlier assignments stay as history (current=false):
+# a reassigned patient used to keep two current beds, so "which bed is PT… on?" answered two.
+ASSIGN_BED = (
+    "MERGE (u:Unit {id:$unit}) SET u.name=$unit "
+    "MERGE (b:Bed {id:$bed}) SET b.label=$bed "
+    "MERGE (b)-[:IN_UNIT]->(u) "
+    "WITH b MATCH (p:Patient {id:$pid}) "
+    "OPTIONAL MATCH (p)-[o:ASSIGNED_TO]->(other:Bed) WHERE other <> b SET o.current=false "
+    "WITH DISTINCT p, b MERGE (p)-[r:ASSIGNED_TO]->(b) SET r.current=true"
+)
+
 def ingest_patient_record(driver: GraphDriver, history: dict, bed: tuple | None = None) -> None:
     """MERGE one patient's demographics, history, and bed/unit assignment (idempotent)."""
     pid = history["patient_id"]
@@ -76,14 +88,7 @@ def ingest_patient_record(driver: GraphDriver, history: dict, bed: tuple | None 
 
     if bed is not None:
         unit, bed_label = bed
-        driver.run_write(
-            "MERGE (u:Unit {id:$unit}) SET u.name=$unit "
-            "MERGE (b:Bed {id:$bed}) SET b.label=$bed "
-            "MERGE (b)-[:IN_UNIT]->(u) "
-            "WITH b MATCH (p:Patient {id:$pid}) "
-            "MERGE (p)-[r:ASSIGNED_TO]->(b) SET r.current=true",
-            unit=unit, bed=bed_label, pid=pid,
-        )
+        driver.run_write(ASSIGN_BED, unit=unit, bed=bed_label, pid=pid)
 
 
 def derive_comorbidity(driver: GraphDriver, *, min_co_occurrence: int = 2) -> int:

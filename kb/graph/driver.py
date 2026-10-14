@@ -6,6 +6,7 @@ a `assert_read_only` check used to keep the LLM text-to-Cypher fallback (Phase 2
 
 from __future__ import annotations
 
+import os
 import re
 
 from neo4j import GraphDatabase
@@ -18,6 +19,12 @@ _WRITE_CLAUSE = re.compile(
     re.IGNORECASE,
 )
 _APOC_WRITE = re.compile(r"apoc\.\w*(create|merge|delete|set|refactor)", re.IGNORECASE)
+
+ALLOW_RESET_ENV = "RMSAI_ALLOW_LIVE_GRAPH_RESET"
+
+
+class GraphResetRefused(RuntimeError):
+    """`reset_all` without the explicit opt-in: it would wipe every patient, event and report."""
 
 
 class NotReadOnlyError(Exception):
@@ -66,5 +73,10 @@ class GraphDriver:
         return self.run_read(cypher, **params)
 
     def reset_all(self) -> None:
-        """Delete every node + relationship (test helper)."""
+        """Delete every node + relationship (test/eval helper). Refused unless
+        RMSAI_ALLOW_LIVE_GRAPH_RESET=1: `cli.kb_eval` wiped the demo graph with no guard at all."""
+        if os.environ.get(ALLOW_RESET_ENV) != "1":
+            raise GraphResetRefused(
+                f"refusing to wipe the Neo4j graph; set {ALLOW_RESET_ENV}=1 to "
+                "run against a graph you can lose")
         self.run_write("MATCH (n) DETACH DELETE n")

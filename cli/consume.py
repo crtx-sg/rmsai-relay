@@ -53,6 +53,62 @@ def _ensure_group(client, stream: str, group: str, redis_url: str) -> None:
             raise
 
 
+_FAILURES = "{stream}:{group}:failures"  # hash msg_id -> failed attempts so far
+
+
+def handle_entry(client, stream: str, group: str, msg_id, fields, work, *, audit,
+                 max_attempts: int = 3) -> str:
+    """Process one stream entry: 'processed' | 'poison' | 'retry' | 'dead'.
+
+    Acks only once the message is finished with: processed, undecodable (poison), or failed
+    `max_attempts` times (copied to `<stream>.dead`, then acked). Any other failure (Neo4j
+    restarting, a network blip) leaves it pending so `reclaim_pending` retries it. Before this,
+    every failure was acked as "poison" and the alarm was silently lost.
+    """
+    mid = msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id)
+    try:
+        payload = json.loads(fields[b"data"])
+    except (KeyError, TypeError, ValueError) as exc:
+        print(f"[poison] {mid}: {type(exc).__name__}: {exc}", flush=True)
+        audit.write(actor="cli.consume", action="consume_event", subject="?", outcome="poison",
+                    stream=stream, msg_id=mid)
+        client.xack(stream, group, msg_id)
+        return "poison"
+    failures = _FAILURES.format(stream=stream, group=group)
+    try:
+        work(payload, mid)
+    except Exception as exc:  # noqa: BLE001 - retried, then dead-lettered; never wedges the group
+        n = int(client.hincrby(failures, mid, 1))
+        if n < max_attempts:
+            print(f"[retry] {mid}: {type(exc).__name__}: {exc} (attempt {n}/{max_attempts}, "
+                  f"left pending)", flush=True)
+            audit.write(actor="cli.consume", action="consume_event", subject="?",
+                        outcome="retry", stream=stream, msg_id=mid, attempt=n)
+            return "retry"
+        client.xadd(f"{stream}.dead", {"data": fields[b"data"], "msg_id": mid,
+                                       "error": type(exc).__name__},
+                    maxlen=10_000, approximate=True)
+        client.hdel(failures, mid)
+        client.xack(stream, group, msg_id)
+        print(f"[dead] {mid}: {type(exc).__name__}: {exc} after {n} attempts -> {stream}.dead",
+              flush=True)
+        audit.write(actor="cli.consume", action="consume_event", subject="?", outcome="dead",
+                    stream=stream, msg_id=mid, attempts=n)
+        return "dead"
+    client.hdel(failures, mid)
+    client.xack(stream, group, msg_id)
+    return "processed"
+
+
+def reclaim_pending(client, stream: str, group: str, consumer: str, *, min_idle_ms: int,
+                    count: int) -> list:
+    """Claim messages pending longer than `min_idle_ms` (failed here, or orphaned by a crashed
+    consumer) for this consumer, and return them for another try."""
+    resp = client.xautoclaim(stream, group, consumer, min_idle_time=min_idle_ms,
+                             start_id="0-0", count=count)
+    return [(mid, fields) for mid, fields in resp[1] if fields]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -90,6 +146,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Print a model-performance summary every N labelled events (0 = only "
                              "on exit). See also `cli.model_perf` for the summary from the graph.")
     parser.add_argument("--max-events", type=int, default=None, help="Exit after N messages.")
+    parser.add_argument("--max-attempts", type=int, default=3,
+                        help="Tries per message before it is dead-lettered to <stream>.dead.")
+    parser.add_argument("--retry-idle-ms", type=int, default=30_000,
+                        help="A failed (or orphaned) message is retried after it sat this long.")
     args = parser.parse_args(argv)
 
     from voice.outbound import resolve_destination  # noqa: PLC0415
@@ -203,8 +263,40 @@ def main(argv: list[str] | None = None) -> int:
 
     tracker = PerfTracker(every=args.perf_every, emit=lambda text: print(text, flush=True))
     processed = 0
+
+    def _work(payload: dict, mid: str) -> None:
+        result = process_bus_event(
+            payload, driver=driver, vector=vector, orchestrator=orch, beds=beds,
+            utterances=utterances, channel=args.channel, caller=caller,
+            notifier=notifier, to=destination, config=config,
+            caller_factory=caller_factory, dispatch_fn=dispatch_fn,
+            alert_store=alert_store,
+            inbox_publisher=inbox_publisher, token_store=token_store,
+            call_end_waiter=call_end_waiter, call_queue=call_queue,
+        )
+        if result.call_queued and dispatcher is not None:
+            dispatcher.notify()
+        _report(result, samples=args.trend_samples)
+        if result.trace is not None:
+            tracker.add(result.trace)
+        if args.transport == "webrtc" and result.called:
+            _print_webrtc_join(config, result.event_uuid)
+        audit.write(actor="cli.consume", action="consume_event",
+                    subject=result.patient_ref, outcome="processed",
+                    stream=args.stream, msg_id=mid)
+
+    def _handle(entries) -> None:
+        nonlocal processed
+        for msg_id, fields in entries:
+            handle_entry(client, args.stream, args.group, msg_id, fields, _work, audit=audit,
+                         max_attempts=args.max_attempts)
+            processed += 1
+
     try:
         while True:
+            # Retry what failed earlier, and take over messages a crashed consumer left pending.
+            _handle(reclaim_pending(client, args.stream, args.group, args.consumer,
+                                    min_idle_ms=args.retry_idle_ms, count=args.count))
             try:
                 resp = client.xreadgroup(
                     args.group, args.consumer, {args.stream: ">"},
@@ -222,37 +314,9 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             empty_batch = True
             for _stream, entries in resp:
-                for msg_id, fields in entries:
+                if entries:
                     empty_batch = False
-                    mid = msg_id.decode()
-                    try:
-                        payload = json.loads(fields[b"data"])
-                        result = process_bus_event(
-                            payload, driver=driver, vector=vector, orchestrator=orch, beds=beds,
-                            utterances=utterances, channel=args.channel, caller=caller,
-                            notifier=notifier, to=destination, config=config,
-                            caller_factory=caller_factory, dispatch_fn=dispatch_fn,
-                            alert_store=alert_store,
-                            inbox_publisher=inbox_publisher, token_store=token_store,
-                            call_end_waiter=call_end_waiter, call_queue=call_queue,
-                        )
-                        if result.call_queued and dispatcher is not None:
-                            dispatcher.notify()
-                        _report(result, samples=args.trend_samples)
-                        if result.trace is not None:
-                            tracker.add(result.trace)
-                        if args.transport == "webrtc" and result.called:
-                            _print_webrtc_join(config, result.event_uuid)
-                        audit.write(actor="cli.consume", action="consume_event",
-                                    subject=result.patient_ref, outcome="processed",
-                                    stream=args.stream, msg_id=mid)
-                    except Exception as exc:  # noqa: BLE001 - poison message: ack + record, don't wedge the group
-                        print(f"[poison] {mid}: {type(exc).__name__}: {exc}")
-                        audit.write(actor="cli.consume", action="consume_event",
-                                    subject="?", outcome="poison", stream=args.stream, msg_id=mid)
-                    finally:
-                        client.xack(args.stream, args.group, msg_id)
-                        processed += 1
+                _handle(entries)
             if args.max_events is not None and processed >= args.max_events:
                 break
             if args.once and not empty_batch:

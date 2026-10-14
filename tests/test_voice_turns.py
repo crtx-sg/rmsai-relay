@@ -283,11 +283,13 @@ def test_named_targets_route_to_the_graph(q, expected):
 
 
 def test_bed_event_summary_lists_every_rhythm():
-    rows = [{"patient": "PT998224", "bed": "Unit1-Bed02", "reported_event": e, "status": s, "ts": i}
-            for i, (e, s) in enumerate([("VENTRICULAR_TACHYCARDIA", "reported"),
-                                        ("VENTRICULAR_TACHYCARDIA", "reported"),
-                                        ("VENTRICULAR_FIBRILLATION", "reported"),
-                                        ("ATRIAL_FIBRILLATION", "acknowledged")])]
+    # The second VT was withheld (never alerted): not "unacknowledged", as on the Events tab.
+    rows = [{"patient": "PT998224", "bed": "Unit1-Bed02", "reported_event": e, "status": s,
+             "alert_gate": g, "ts": i}
+            for i, (e, s, g) in enumerate([("VENTRICULAR_TACHYCARDIA", "reported", True),
+                                           ("VENTRICULAR_TACHYCARDIA", "reported", False),
+                                           ("VENTRICULAR_FIBRILLATION", "reported", True),
+                                           ("ATRIAL_FIBRILLATION", "acknowledged", True)])]
     assert _spoken_summary(rows, "event_status_on_bed") == (
         "Bed 2, patient PT998224: 4 events — ventricular tachycardia twice, ventricular "
-        "fibrillation, atrial fibrillation. 3 unacknowledged.")
+        "fibrillation, atrial fibrillation. 2 unacknowledged.")

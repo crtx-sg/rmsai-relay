@@ -43,16 +43,26 @@ CLINICAL_STT_PROMPT = (
 )
 
 
+def _env(name: str) -> str | None:
+    """The env value, or None when unset or blank: a `.env` line `LLM_MAX_TOKENS=` (or compose's
+    `${X:-}`) crashed every process at import, and a blank bool silently read as False."""
+    v = os.environ.get(name)
+    return v if v is not None and v.strip() else None
+
+
 def _f(name: str, default: float) -> float:
-    return float(os.environ.get(name, default))
+    v = _env(name)
+    return float(default if v is None else v)
 
 
 def _i(name: str, default: int) -> int:
-    return int(os.environ.get(name, default))
+    v = _env(name)
+    return int(default if v is None else v)
 
 
 def _b(name: str, default: bool) -> bool:
-    return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+    v = _env(name)
+    return default if v is None else v.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _list(name: str) -> tuple[str, ...]:

@@ -230,6 +230,7 @@ def test_run_outbound_live_places_call_without_scripting(tmp_path):
 
 def test_process_bus_event_live_stages_alert_and_places_call(monkeypatch):
     monkeypatch.setattr(bus_consumer, "ensure_patient", lambda d, b, pid: ("ICU", "3"))
+    monkeypatch.setattr(bus_consumer, "get_event_status", lambda d, uuid: None)  # new event
     monkeypatch.setattr(bus_consumer, "process_device_event",
                         lambda ev, d, v, bed=None, config=None: None)
 
