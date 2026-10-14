@@ -7,9 +7,23 @@ symptoms, surgeries, age, gender). References the pseudonym only (G3).
 
 from __future__ import annotations
 
+import re
+
 from common.config import DEFAULT, Config
 from common.criticality import alert_basis, event_criticality
 from common.schemas import DeviceEvent
+
+
+def spoken_bed(label) -> str:
+    """'Unit1-Bed05' or 'Unit1/Unit1-Bed05' -> 'bed 5' (one POC unit; the full label is in text)."""
+    m = re.search(r"Bed0*(\d+)$", str(label or ""))
+    return f"bed {m.group(1)}" if m else (f"bed {label}" if label else "an unknown bed")
+
+
+def spoken_event(event) -> str:
+    """'VENTRICULAR_TACHYCARDIA' -> 'ventricular tachycardia'; short codes (SVT, PVC) stay as-is."""
+    text = str(event or "an event").replace("_", " ")
+    return text if len(text) <= 4 else text.lower()
 
 
 def render_patient_context(ctx: dict) -> str:
@@ -33,7 +47,9 @@ def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config 
     w = event.window
     a = event.analysis
     crit = event_criticality(event, config)
-    where = f" on bed {bed}" if bed else ""
+    # Said, not read: "bed 2" and "ventricular fibrillation", not "bed Unit1/Unit1-Bed02" and
+    # "VENTRICULAR FIBRILLATION" (the full label is on the worklist and in the chart).
+    where = f" on {spoken_bed(bed)}" if bed else ""
     guidance = a.care_guidance[0] if a.care_guidance else ""
     guidance_txt = f" Recommended: {guidance}." if guidance else ""
     # A vitals-driven alert must not be spoken as a rhythm finding: the vitals are what we know, the
@@ -41,7 +57,7 @@ def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config 
     # gate). Lead accordingly and say which, so the clinician never hears an uncertain rhythm
     # asserted as fact.
     basis, why = alert_basis(event, config)
-    detected = event.event_type.replace("_", " ")
+    detected = spoken_event(event.event_type)
     if basis == "vitals" and event.event_type == config.criticality_normal_event:
         lead, override_txt = f"Detected {detected}", (
             f" Note: the ECG rhythm is classified as normal sinus, so this alert is driven by "

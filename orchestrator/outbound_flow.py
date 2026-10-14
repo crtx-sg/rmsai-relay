@@ -22,7 +22,13 @@ from voice.outbound import Caller, CallOutcome, parse_ack, place_with_retries
 
 from .report import spoken_report
 
-_CONFIRM_BACK = "I heard you acknowledge the alert — is that correct?"
+def _confirm_back(event, bed) -> str:
+    """Name the event being acknowledged, so a call that also covered other patients is clear."""
+    from orchestrator.report import spoken_bed, spoken_event  # noqa: PLC0415
+
+    where = f" on {spoken_bed(bed)}" if bed else ""
+    return (f"I heard you acknowledge the {spoken_event(event.event_type)} alert for patient "
+            f"{event.window.patient_ref}{where} — is that correct?")
 _MAX_TURNS = 12
 
 
@@ -220,12 +226,12 @@ def _converse(event, orchestrator, utterances, session_id, bed, *, emit, drop_af
             break
         intent = parse_ack(u)
         if intent == "yes":
-            say(_CONFIRM_BACK)
+            say(_confirm_back(event, bed))
             confirm = _next()
             if confirm is not None and parse_ack(confirm) == "yes":
                 acknowledged, status = True, "acknowledged"
                 break
-            say(_CONFIRM_BACK)  # re-prompt once
+            say(_confirm_back(event, bed))  # re-prompt once
             confirm2 = _next()
             if confirm2 is not None and parse_ack(confirm2) == "yes":
                 acknowledged, status = True, "acknowledged"

@@ -88,7 +88,8 @@ TEMPLATES: dict[str, str] = {
     "vitals_at_event": """
         MATCH (e:MonitoredEvent {uuid: $event_uuid})
         RETURN e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
-               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.why_json AS why_json,
+               e.timestamp AS ts
     """,
     # Vitals snapshot for a patient's most recent event — backs the "vitals at the time of the
     # event" chat intent, where "the event" is implicitly the latest one for the scoped patient.
@@ -100,7 +101,8 @@ TEMPLATES: dict[str, str] = {
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
                e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
                e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
-               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.why_json AS why_json,
+               e.timestamp AS ts
     """,
     # Vitals at the patient's event of a named type ("vitals at the time of the VT"): the scoped
     # event when it is of that type, else the patient's latest of that type.
@@ -112,7 +114,8 @@ TEMPLATES: dict[str, str] = {
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
                e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
                e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
-               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.why_json AS why_json,
+               e.timestamp AS ts
     """,
     # MEWS for the selected worklist event / the session patient's latest event. The score and the
     # vitals that contributed to it live in the event's stored explanation (`why_json`, written for
@@ -134,6 +137,32 @@ TEMPLATES: dict[str, str] = {
                e.criticality AS criticality, e.mews_risk AS mews_risk, e.why_json AS why_json,
                e.timestamp AS ts
     """,
+    # A bed's most recent event in one answer: rhythm, time, criticality, MEWS (score from the stored
+    # explanation), status and vitals. "What was the last event on bed nine?" / "MEWS for bed seven".
+    "bed_last_event": """
+        MATCH (b:Bed {label: $bed})<-[:AT_BED]-(e:MonitoredEvent)
+        WITH b, e ORDER BY e.timestamp DESC LIMIT 1
+        OPTIONAL MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event_type,
+               e.criticality AS criticality, e.mews_risk AS mews_risk, e.why_json AS why_json,
+               coalesce(e.status, 'reported') AS status,
+               coalesce(e.alert_gate, false) AS alert_gate,
+               e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+    """,
+    # A patient's clinical background from the graph: diagnoses, medications, surgeries, symptoms.
+    "patient_clinical_history": """
+        MATCH (p:Patient {id: $patient_id})
+        OPTIONAL MATCH (p)-[:HAS_DIAGNOSIS]->(c:Condition)
+        WITH p, collect(DISTINCT c.name) AS conditions
+        OPTIONAL MATCH (p)-[:PRESCRIBED]->(t:Treatment)
+        WITH p, conditions, collect(DISTINCT t.name) AS medications
+        OPTIONAL MATCH (p)-[:HAD_SURGERY]->(s:Surgery)
+        WITH p, conditions, medications, collect(DISTINCT s.name) AS surgeries
+        OPTIONAL MATCH (p)-[:PRESENTS]->(y:Symptom)
+        RETURN p.pseudonym AS patient, p.age AS age, p.gender AS gender, conditions,
+               medications, surgeries, collect(DISTINCT y.name) AS symptoms
+    """,
     # Vitals snapshot for the event the companion app has *selected* — the same shape as
     # `vitals_at_patient_last_event`, keyed by event uuid instead of "the patient's latest", so a
     # chat scoped to an older worklist row answers about that row's rhythm and not a newer one.
@@ -145,7 +174,8 @@ TEMPLATES: dict[str, str] = {
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
                e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
                e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
-               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.why_json AS why_json,
+               e.timestamp AS ts
     """,
     # Vitals snapshot for a bed's most recent event — the bed-scoped form of T5 ("vitals at the
     # event for the patient in Bed xx", where "the event" is that bed's latest MonitoredEvent).
@@ -157,7 +187,8 @@ TEMPLATES: dict[str, str] = {
         RETURN p.pseudonym AS patient, b.label AS bed, u.name AS unit,
                e.event_type AS event_type, e.criticality AS criticality, e.mews_risk AS mews_risk,
                e.hr AS hr, e.sbp AS sbp, e.dbp AS dbp,
-               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.timestamp AS ts
+               e.spo2 AS spo2, e.rr AS rr, e.temp AS temp, e.why_json AS why_json,
+               e.timestamp AS ts
     """,
     # "This patient" scoping (session patient) — critical (call-worthy) events for one patient.
     "critical_events_for_patient": """

@@ -154,20 +154,21 @@ def test_event_scoped_intents_are_parameterized(phrase, event_type):
 
 
 @pytest.mark.parametrize(
-    "query",
+    "query, focus",
     [
-        "what were the vitals at the time of the event?",
-        "what was the heart rate during the event",
-        "show me the blood pressure",
-        "what was the SpO2",
-        "respiratory rate please",
-        "what was the patient's temperature",
-        "give me the BP and HR",
+        ("what were the vitals at the time of the event?", None),
+        ("what was the heart rate during the event", "hr"),
+        ("show me the blood pressure", "bp"),
+        ("what was the SpO2", "spo2"),
+        ("respiratory rate please", "rr"),
+        ("what was the patient's temperature", "temp"),
+        ("give me the BP and HR", None),  # two vitals: answer all, not one
     ],
 )
-def test_vitals_intent_when_patient_scoped(query):
+def test_vitals_intent_when_patient_scoped(query, focus):
     intent = match_intent(query, now=NOW, patient_ref="PT7878")
-    assert intent == ("vitals_at_patient_last_event", {"patient_id": "PT7878"})
+    assert intent == ("vitals_at_patient_last_event",
+                      {"patient_id": "PT7878", **({"focus": focus} if focus else {})})
 
 
 def test_vitals_intent_prefers_the_selected_event_over_the_patients_latest():

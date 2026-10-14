@@ -31,6 +31,7 @@ class OutboundAlert:
     event_id: str
     spoken_alert: str  # the report spoken after the PIN gate
     bed: str | None = None
+    event_type: str | None = None  # the rhythm, so the ack confirmation can name the event
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))

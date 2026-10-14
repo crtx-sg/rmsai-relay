@@ -32,19 +32,21 @@ _NUM = r"(?:" + "|".join(sorted({*_ONES, *_TEENS}, key=len, reverse=True)) + r")
 # "unit one bed oh one" / "bed one" / "bed unit one bed oh one" -> a bed label. Number words after
 # unit/bed become digits; an optional leading "bed" (from "...on bed unit one...") is absorbed so the
 # rebuilt label isn't doubled.
-# "bin" is how STT hears "bed" on a phone line ("acknowledge the alarms with bin three"); it only
-# counts when a bed number follows.
+# "bin" is how STT hears "bed" on a phone line ("acknowledge the alarms with bin three"), and also
+# "vid"/"bid"/"bad"/"bet" ("last reported event on vid nine", live 2026-10-14); each only counts
+# when a bed number follows.
+_BED_WORD = r"(?:bed|bin|vid|bid|bad|bet)"
 # "bed number two" / "bed no. two": the number word may be introduced (live call 2026-10-09:
 # "What is the event on bed number two?" missed the graph and the LLM answered from history).
 _BED_NO = r"(?:(?:number|no\.?|num|#)\s*)?"
 _BED_SPOKEN = re.compile(
-    rf"\b(?:bed\s+)?(?:unit\s+({_NUM})\s+)?(?:bed|bin)\s+{_BED_NO}((?:{_NUM})(?:\s+{_NUM})*)\b",
+    rf"\b(?:bed\s+)?(?:unit\s+({_NUM})\s+)?{_BED_WORD}\s+{_BED_NO}((?:{_NUM})(?:\s+{_NUM})*)\b",
     re.IGNORECASE)
 # Typed bed shorthand: "Bed01", "bed 1", "bed01" (digit label, no unit prefix) -> canonical
 # "bed Unit1-Bed01" (default single POC unit, 2-digit label), so it matches the graph Bed node the
 # same way the app's "Unit1 / Bed01" worklist label reads. The negative lookbehind keeps it from
 # firing on the "Bed" inside an already-canonical "Unit1-Bed01" label (that "Bed" follows a "-").
-_BED_TYPED = re.compile(r"(?<![-\w])(?:bed|bin)\s*(?:(?:number|no\.?|num|#)\s*)?0*(\d{1,2})\b",
+_BED_TYPED = re.compile(rf"(?<![-\w]){_BED_WORD}\s*(?:(?:number|no\.?|num|#)\s*)?0*(\d{{1,2}})\b",
                         re.IGNORECASE)
 # A spoken patient pseudonym: "P T nine nine eight two two four" (after acronym collapse, "PT nine
 # nine …") or "PT 998224" -> "PT998224", the form the graph and the de-identifier use.

@@ -155,6 +155,30 @@ BARGE_IN = {
 _BARGE_IN_WORD = re.compile(r"^\W*(?:ok(?:ay)?|stop|wait|hold on)\W*$", re.IGNORECASE)
 
 
+# A clinician pausing mid-question ("What was the… MEWS score… for bed seven") reaches the agent as
+# separate turns. Live call 2026-10-14: "What was the" got "I don't have information on that", and
+# the MEWS answer to the next piece was cancelled when the piece after it arrived, so the MEWS was
+# never heard. A piece that ends on a dangling word, or whose answer was cancelled before it played,
+# is carried and prefixed to the next piece instead. Prepositions that can end a real question
+# ("which bed is PT998224 on?", "what is it for?") are not dangling: that piece is answered.
+_DANGLING = re.compile(
+    r"\b(?:the|a|an|of|to|with|about|from|by|and|or|was|is|are|were|what|which|whats|my|his|her|"
+    r"their)\W*$", re.IGNORECASE)
+_CARRY_S = 10.0  # a carried piece older than this is dropped, not joined
+
+
+def is_dangling(text: str) -> bool:
+    """True for a piece that cannot be a whole question: it ends mid-phrase ("What was the")."""
+    return bool(_DANGLING.search(text or ""))
+
+
+def join_carried(carry: tuple[str, float] | None, text: str, now: float) -> str:
+    """`text` prefixed with a recent carried piece (see `_DANGLING`), else `text` unchanged."""
+    if carry and now - carry[1] <= _CARRY_S:
+        return f"{carry[0].rstrip()} {text.lstrip()}".strip()
+    return text
+
+
 def is_barge_in(text: str) -> bool:
     """A transcript that means "stop talking and listen" (kept short: it is acted on mid-speech)."""
     return bool(_BARGE_IN_WORD.match(text or ""))
@@ -405,6 +429,7 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             self._awake_until = 0.0  # monotonic deadline; audio Q&A is open until then
             self._greeting_gate = greeting_gate  # async () -> bool: caller present and answered
             self._latency = latency
+            self._carry: tuple[str, float] | None = None  # unanswered start of a split question
 
         async def on_enter(self) -> None:
             if not self._greeting:
@@ -443,14 +468,31 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                       flush=True)
 
         async def llm_node(self, chat_ctx, tools, model_settings):
-            text = last_user_text(chat_ctx)
+            text = join_carried(self._carry, last_user_text(chat_ctx), time.monotonic())
+            self._carry = None
             print(f"[worker] heard: {text!r}", flush=True)
+            is_auth = getattr(self._handler, "is_authenticated", None)
+            if is_auth and is_auth(self._session_id) and is_dangling(text):
+                # Wait for the rest of the question rather than answer half of it.
+                self._carry = (text, time.monotonic())
+                print("[worker] incomplete question; waiting for the rest", flush=True)
+                return
             loop = asyncio.get_running_loop()
             started = time.monotonic()
-            reply = await loop.run_in_executor(
-                None, partial(self._handler.respond, text, session_id=self._session_id,
-                              spoken=True)  # audio turn: short spoken answers, fillers ignored
-            )
+            try:
+                reply = await loop.run_in_executor(
+                    None, partial(self._handler.respond, text, session_id=self._session_id,
+                                  spoken=True)  # audio turn: short spoken answers, fillers ignored
+                )
+            except asyncio.CancelledError:
+                # The next piece of the same question arrived before this answer was spoken: join
+                # them, or the first piece (e.g. "what was the MEWS score") is lost. Never an ack:
+                # the handler already recorded it, so repeating it would only muddle the next turn.
+                if "acknowledg" not in text.lower():
+                    self._carry = (text, time.monotonic())
+                print("[worker] answer cancelled by the next speech; carrying the question",
+                      flush=True)
+                raise
             if self._latency is not None:
                 self._latency.handler_done(time.monotonic() - started)
             print(f"[worker] reply: {reply!r}", flush=True)

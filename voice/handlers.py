@@ -155,7 +155,17 @@ class OrchestratorHandler(Handler):
         return result.answer
 
 
-_ACK_CONFIRMED = "Thank you, I've recorded your acknowledgment. Goodbye."
+_ACK_VERB = re.compile(r"\b(?:acknowledge[ds]?|ack)\b", re.IGNORECASE)
+_BED_LABEL = re.compile(r"\bUnit\d+-Bed\d+\b")
+_PATIENT_ID = re.compile(r"\bPT\d{3,}\b", re.IGNORECASE)
+
+
+def _named_targets(text: str) -> tuple[set[str], set[str]]:
+    """Bed labels and patient ids the clinician named ("acknowledge bed seven", "PT4543")."""
+    from kb.graph.spoken import normalize_spoken_query  # noqa: PLC0415
+
+    norm = normalize_spoken_query(text)
+    return set(_BED_LABEL.findall(norm)), {p.upper() for p in _PATIENT_ID.findall(norm)}
 
 
 class OutboundHandler(OrchestratorHandler):
@@ -185,9 +195,31 @@ class OutboundHandler(OrchestratorHandler):
         print(f"[voice] alert text: {self.alert.spoken_alert!r}", flush=True)
         return self.alert.spoken_alert
 
+    def _this_event(self) -> str:
+        """The called event in words: 'the ventricular fibrillation alert for patient PT998224 on
+        bed 2'. Said back on every acknowledgment, so the clinician hears WHICH event was closed
+        after a call that also discussed other patients. Pseudonym only (rule 6), never a name."""
+        from orchestrator.report import spoken_bed, spoken_event  # noqa: PLC0415
+
+        event_type, bed = getattr(self.alert, "event_type", None), getattr(self.alert, "bed", None)
+        what = f"the {spoken_event(event_type)} alert" if event_type else "the alert"
+        where = f" on {spoken_bed(bed)}" if bed else ""
+        return f"{what} for patient {self.alert.patient_ref}{where}"
+
+    def _names_other_event(self, text: str) -> bool:
+        beds, patients = _named_targets(text)
+        other_bed = any(not str(getattr(self.alert, "bed", "") or "").endswith(b) for b in beds)
+        return other_bed or any(p != self.alert.patient_ref for p in patients)
+
     def _authenticated_turn(self, session_id: str, text: str, *, spoken: bool = False) -> str:
+        # "Acknowledge bed seven" on a call about bed 2: only the called event can be closed here.
+        if _ACK_VERB.search(text) and self._names_other_event(text):
+            return (f"On this call I can only acknowledge {self._this_event()}. Please "
+                    f"acknowledge other events in the app.")
+        beds, patients = _named_targets(text)
+        names_this = bool(beds or patients) and _ACK_VERB.search(text)  # "acknowledge bed two"
         # A backchannel "yeah"/"okay" over the alert is not an acknowledgment ("yes" still is).
-        if not (spoken and is_filler(text)) and parse_ack(text) == "yes":
+        if names_this or (not (spoken and is_filler(text)) and parse_ack(text) == "yes"):
             if self.driver is not None:
                 from kb.graph.events import set_event_status  # noqa: PLC0415
 
@@ -196,7 +228,7 @@ class OutboundHandler(OrchestratorHandler):
                              subject=self.alert.patient_ref, outcome="acknowledged")
             print(f"[voice] acknowledgment received -> MonitoredEvent {self.alert.event_id} "
                   f"status=acknowledged (Neo4j updated)", flush=True)
-            return _ACK_CONFIRMED
+            return f"Thank you, I've recorded your acknowledgment of {self._this_event()}. Goodbye."
         return super()._authenticated_turn(session_id, text, spoken=spoken)
 
 

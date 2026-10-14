@@ -26,7 +26,7 @@ from common.vitals_format import fmt_vital
 from kb.graph.driver import GraphDriver
 from kb.graph.events import is_pending
 from kb.graph.llm_router import route as llm_route
-from kb.graph.lookup import looks_like_event_listing, match_intent
+from kb.graph.lookup import looks_like_event_listing, match_intent, names_unresolved_bed
 from kb.graph.templates import EVENT_HISTORY, describe_event_history, run_template
 from kb.hybrid.answer import _MIN_OVERLAP, is_relevant
 from kb.hybrid.retriever import HybridRetriever
@@ -34,6 +34,7 @@ from kb.vector.answer import _best_overlap
 from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
 
+from .report import spoken_bed, spoken_event
 from .guardrails import UNGROUNDED_ANSWER, Guardrails, ungrounded_identifiers
 
 def explain_decline(result, overlap: float, top_score: float = 0.0, *,
@@ -69,6 +70,10 @@ _EVENT_LISTING_HINT = (
     "I can only list events I can show you on the dashboard: by patient (a PT number, or this "
     "patient), by bed number, by event type, or by status (pending, acknowledged, withheld). For "
     "example: pending events on bed 2.")
+# A bed the clinician named that did not resolve to a number. Never handed to the LLM router: live,
+# "last reported event on vid nine" was routed to the call's own event and read out bed 2's vitals.
+_BED_HINT = ("I couldn't tell which bed you meant. Please say the bed number again, for example: "
+             "bed seven.")
 # "say that again" — re-voice the previous answer from working memory (basic conversational memory).
 _REPEAT = re.compile(
     r"\b(repeat( that| it| again| the (last|previous|prior)[\w ]*)?|say (that|it) again|"
@@ -304,6 +309,142 @@ def _mews_from_explanation(why_json) -> str | None:
     return text + (f"; contributing: {comps}" if comps else "")
 
 
+# --- spoken (phone) answers for one event record --------------------------------------------------
+
+# Templates whose single row is one event record (rhythm, time, MEWS, vitals): on a call these are
+# said as a sentence a listener can follow, not the text form's "hr 195; sbp 43; S P O 2 84".
+_RECORD_TEMPLATES = {
+    "vitals_at_event", "vitals_at_patient_last_event", "vitals_at_patient_event_of_type",
+    "vitals_at_selected_event", "vitals_for_bed_last_event", "mews_at_selected_event",
+    "mews_at_patient_last_event", "bed_last_event",
+}
+_SPOKEN_VITAL = {"hr": "heart rate {}", "spo2": "oxygen saturation {} percent",
+                 "rr": "respiratory rate {}", "temp": "temperature {} degrees"}
+# MEWS component names as the vendored scorer writes them -> words for the ear.
+_SPOKEN_COMPONENT = {"systolic bp": "systolic blood pressure", "spo2": "oxygen saturation",
+                     "temp": "temperature", "resp rate": "respiratory rate"}
+_FOCUS_NAME = {"hr": "Heart rate", "bp": "Blood pressure", "spo2": "Oxygen saturation",
+               "rr": "Respiratory rate", "temp": "Temperature"}
+
+
+def _spoken_vitals(r: dict, focus: str | None = None) -> list[str]:
+    out = []
+    for key in ("hr", "bp", "spo2", "rr", "temp"):
+        if focus and key != focus:
+            continue
+        if key == "bp":
+            if r.get("sbp") is not None and r.get("dbp") is not None:
+                out.append(f"blood pressure {_fmt_value('sbp', r['sbp'])} over "
+                           f"{_fmt_value('dbp', r['dbp'])}")
+            elif r.get("sbp") is not None:
+                out.append(f"systolic blood pressure {_fmt_value('sbp', r['sbp'])}")
+        elif r.get(key) is not None:
+            out.append(_SPOKEN_VITAL[key].format(_fmt_value(key, r[key])))
+    return out
+
+
+def _spoken_time(ts) -> str:
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    t = datetime.fromtimestamp(ts, tz=timezone.utc)
+    if t.date() == datetime.now(timezone.utc).date():
+        return f"at {t:%H:%M} UTC"
+    return f"on {t.day} {t:%B} at {t:%H:%M} UTC"
+
+
+def _spoken_record(row: dict, focus: str | None = None) -> str:
+    """One event record said aloud: 'Patient PT998224 on bed 2: ventricular fibrillation at 07:16
+    UTC, Critical criticality, MEWS 9, Critical risk. Vitals: heart rate 195, blood pressure 43 over
+    30, …'. `focus` ('mews' or one vital) answers just that part (live 2026-10-14: the full dump was
+    read for "what was the MEWS score", and MEWS was given as a band without the score)."""
+    r = {k: v for k, v in row.items() if v is not None}
+    event = r.get("event_type") or r.get("event") or r.get("reported_event")
+    head = f"Patient {r['patient']}" if r.get("patient") else "This patient"
+    if r.get("bed"):
+        head += f" on {spoken_bed(r['bed'])}"
+    head += f": {spoken_event(event)}" if event else ""
+    if r.get("ts") is not None:
+        head += f" {_spoken_time(r['ts'])}"
+
+    mews = None
+    try:
+        mews = json.loads(r["why_json"])["vitals"]["mews"] if r.get("why_json") else None
+    except (ValueError, KeyError, TypeError):
+        mews = None
+    if mews and mews.get("score") is not None:
+        mews_text = f"MEWS {mews['score']}, {mews.get('risk', '').lower()} risk".rstrip(", ")
+    elif r.get("mews_risk"):
+        mews_text = f"MEWS risk {str(r['mews_risk']).lower()}"
+    else:
+        mews_text = ""
+
+    if focus == "mews":
+        if not mews_text:
+            return f"{head}. No MEWS score is recorded for this event."
+        comps = [f"{_SPOKEN_COMPONENT.get(str(c['name']).lower(), str(c['name']).lower())} "
+                 f"{c['value']} scores {c['score']}"
+                 for c in (mews or {}).get("components") or []
+                 if isinstance(c, dict) and c.get("score")]
+        return f"{head}. {mews_text}." + (f" Contributing: {', '.join(comps)}." if comps else "")
+    if focus in _FOCUS_NAME:
+        vitals = _spoken_vitals(r, focus)
+        if not vitals:
+            return f"{head}. {_FOCUS_NAME[focus]} was not recorded for this event."
+        return f"{head}. {vitals[0][0].upper()}{vitals[0][1:]}."
+
+    parts = [head]
+    if r.get("criticality"):
+        parts.append(f"rated {str(r['criticality']).lower()}")
+    if mews_text:
+        parts.append(mews_text)
+    text = ", ".join(parts) + "."
+    if (vitals := _spoken_vitals(r)):
+        text += " Vitals: " + ", ".join(vitals) + "."
+    status = r.get("status")
+    if status in ("acknowledged", "resolved"):
+        text += f" It has been {status}."
+    elif status and r.get("alert_gate"):
+        text += " It is awaiting acknowledgment."
+    return text
+
+
+def _spoken_list(items: list[str]) -> str:
+    items = [str(i) for i in items if i]
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _answer_clinical_history(rows: list[dict], focus: str | None = None) -> str:
+    """A patient's clinical background (diagnoses, medications, surgeries, symptoms) from the graph.
+    Pseudonym only. Abbreviated condition names are expanded ("MI" -> myocardial infarction)."""
+    from kb.graph.entities import canonical_condition  # noqa: PLC0415
+
+    if not rows:
+        return "No clinical history is recorded for this patient."
+    r = rows[0]
+    pt = r.get("patient") or "this patient"
+    conditions = [canonical_condition(c) if canonical_condition(c) != c.strip().lower() else c
+                  for c in r.get("conditions") or [] if c]
+    sections = {
+        "conditions": ("History", conditions),
+        "medications": ("Medications", r.get("medications") or []),
+        "surgeries": ("Prior surgeries", r.get("surgeries") or []),
+        "symptoms": ("Recorded symptoms", r.get("symptoms") or []),
+    }
+    if focus == "allergies":
+        return f"Allergies are not recorded in this system for patient {pt}."
+    if focus in sections:
+        label, items = sections[focus]
+        if not items:
+            return f"No {label.lower()} are recorded for patient {pt}."
+        return f"Patient {pt}. {label}: {_spoken_list(items)}."
+    who = f"Patient {pt}"
+    sex = {"m": "male", "f": "female"}.get(str(r.get("gender") or "").lower())
+    if r.get("age") and sex:
+        who += f", {r['age']} year old {sex}"
+    lines = [f"{label}: {_spoken_list(items)}." for label, items in sections.values() if items]
+    return f"{who}. " + (" ".join(lines) if lines else "No clinical history is recorded.")
+
+
 def _trend_word(values: list) -> str:
     """Coarse trend direction from the first vs last reading."""
     if len(values) < 2:
@@ -330,18 +471,6 @@ _EMPTY_ANSWERS = {
 }
 
 
-def _spoken_bed(label) -> str:
-    """'Unit1-Bed05' -> 'bed 5' (the POC has one unit; the unit is in the full text answer)."""
-    m = re.search(r"Bed0*(\d+)$", str(label or ""))
-    return f"bed {m.group(1)}" if m else (f"bed {label}" if label else "an unknown bed")
-
-
-def _spoken_event(event) -> str:
-    """'VENTRICULAR_TACHYCARDIA' -> 'ventricular tachycardia'; short codes (SVT, PVC) stay as-is."""
-    text = str(event or "an event").replace("_", " ")
-    return text if len(text) <= 4 else text.lower()
-
-
 def _times(n: int) -> str:
     return "" if n == 1 else " twice" if n == 2 else f" {n} times"
 
@@ -362,7 +491,7 @@ def _spoken_summary(rows: list[dict], name: str | None) -> str:
                 continue
             counts: dict[tuple, int] = {}
             for r in tier:  # rows arrive most recent first; keep that order
-                key = (_spoken_bed(r.get("bed")), _spoken_event(r.get("event")))
+                key = (spoken_bed(r.get("bed")), spoken_event(r.get("event")))
                 counts[key] = counts.get(key, 0) + 1
             items = [f"{bed} {event}{_times(c)}" for (bed, event), c in counts.items()]
             parts.append(f"{len(tier)} {level}: {', '.join(items)}.")
@@ -371,7 +500,7 @@ def _spoken_summary(rows: list[dict], name: str | None) -> str:
     if name == "alarm_counts":
         top = rows[0].get("alarms", 0)
         leaders = [r for r in rows if r.get("alarms") == top]
-        who = [f"{_spoken_bed(r.get('bed'))}, patient {r.get('patient')}" for r in leaders]
+        who = [f"{spoken_bed(r.get('bed'))}, patient {r.get('patient')}" for r in leaders]
         listed = who[0] if len(who) == 1 else ", ".join(who[:-1]) + " and " + who[-1]
         each = " each" if len(leaders) > 1 else ""
         text = f"Most alarms: {top}{each}, on {listed}."
@@ -399,12 +528,12 @@ def _spoken_event_summary(rows: list[dict]) -> str:
     beds = {r.get("bed") for r in rows if r.get("bed")}
     patients = {r.get("patient") for r in rows if r.get("patient")}
     if len(beds) == 1:
-        who.append(_spoken_bed(next(iter(beds))).capitalize())
+        who.append(spoken_bed(next(iter(beds))).capitalize())
     if len(patients) == 1:
         who.append(f"patient {next(iter(patients))}")
     counts: dict[str, int] = {}
     for r in rows:  # newest first, as the templates return them
-        name = _spoken_event(_event(r))
+        name = spoken_event(_event(r))
         counts[name] = counts.get(name, 0) + 1
     kinds = ", ".join(f"{name}{_times(c)}" for name, c in counts.items())
     head = f"{', '.join(who)}: " if who else ""
@@ -415,7 +544,7 @@ def _spoken_event_summary(rows: list[dict]) -> str:
         pending = sum(1 for r in rows if is_pending(r))
         text += f" {pending} unacknowledged." if pending else " Nothing awaiting acknowledgment."
     if len(beds) > 1 and len(patients) == 1:
-        text += f" Beds: {', '.join(_spoken_bed(b) for b in sorted(beds))}."
+        text += f" Beds: {', '.join(spoken_bed(b) for b in sorted(beds))}."
     return text
 
 
@@ -436,12 +565,12 @@ def _answer_event_history(rows: list[dict], params: dict, *, spoken: bool = Fals
     if spoken:
         kinds: dict[str, int] = {}
         for r in rows:
-            k = _spoken_event(r.get("event"))
+            k = spoken_event(r.get("event"))
             kinds[k] = kinds.get(k, 0) + 1
         text = f"{n} {one}: " + ", ".join(f"{k}{_times(c)}" for k, c in kinds.items()) + "."
         beds = sorted({r["bed"] for r in rows if r.get("bed")})
         if len(beds) > 1 and not params.get("bed"):
-            text += f" Beds: {', '.join(_spoken_bed(b) for b in beds)}."
+            text += f" Beds: {', '.join(spoken_bed(b) for b in beds)}."
         if (params.get("status") or "any") == "any":
             pending = sum(1 for r in rows if r.get("status") == "pending")
             text += f" {pending} pending." if pending else " None pending."
@@ -619,10 +748,13 @@ class Orchestrator:
         with tracer.span("retrieve") as sp:
             intent = match_intent(user_text, now=now, patient_ref=state.patient_ref,
                                   event_ref=state.event_ref)
-            listing_declined = intent is None and looks_like_event_listing(user_text)
+            decline_hint = None if intent is not None else (
+                _EVENT_LISTING_HINT if looks_like_event_listing(user_text)
+                else _BED_HINT if names_unresolved_bed(user_text) else None)
+            listing_declined = decline_hint is not None
             if listing_declined:
-                print("[orchestrator] event listing with no resolvable filter: declined with a hint",
-                      flush=True)
+                print("[orchestrator] unresolvable target (event listing or bed): declined with a "
+                      "hint", flush=True)
             if intent is None and self.llm_router and not listing_declined:
                 # The regexes only fire on phrasings someone anticipated. When one misses a question
                 # that is plainly about a bed/patient/event, ask the model which template was meant
@@ -677,7 +809,7 @@ class Orchestrator:
         elif action == "decline":
             answer_text = _DECLINE
         elif mode == "operational" and listing_declined:
-            answer_text = _EVENT_LISTING_HINT
+            answer_text = decline_hint
         elif mode == "operational" and name == EVENT_HISTORY:
             answer_text = _answer_event_history(operational_rows, params, spoken=spoken)
             model_input = self._model_input([(kb_context, True)])
@@ -685,9 +817,16 @@ class Orchestrator:
             # Structured graph result -> deterministic, crisp answer. No LLM is called, so NO prompt
             # is built: conversation history and recalled past interactions never touch an operational
             # answer. (They are only useful for free-text follow-ups, below.)
-            answer_text = (_spoken_summary(operational_rows, name)
-                           if spoken and operational_rows and len(operational_rows) > 1
-                           else _answer_operational(operational_rows, name))
+            focus = params.get("focus") or ("mews" if name.startswith("mews_") else None)
+            if name == "patient_clinical_history":
+                answer_text = _answer_clinical_history(operational_rows, focus)
+            elif spoken and operational_rows and len(operational_rows) == 1 \
+                    and name in _RECORD_TEMPLATES:
+                answer_text = _spoken_record(operational_rows[0], focus)
+            else:
+                answer_text = (_spoken_summary(operational_rows, name)
+                               if spoken and operational_rows and len(operational_rows) > 1
+                               else _answer_operational(operational_rows, name))
             # The rows that informed it (audit only): a de-id failure must not lose this answer.
             model_input = self._model_input([(kb_context, True)])
         else:

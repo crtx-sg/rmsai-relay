@@ -247,3 +247,53 @@ def test_process_bus_event_live_stages_alert_and_places_call(monkeypatch):
     assert staged is not None
     assert staged.patient_ref == ev.window.patient_ref and staged.event_id == ev.window.event_id
     assert "Alert for patient" in staged.spoken_alert
+
+
+# --- which event an acknowledgment closes (live call 2026-10-14) ----------------------------------
+
+def _vf_call(tmp_path, monkeypatch):
+    import kb.graph.events as events
+    from voice.handlers import OutboundHandler
+
+    recorded = []
+    monkeypatch.setattr(events, "set_event_status", lambda d, uuid, status: recorded.append(uuid))
+    alert = OutboundAlert("room1", "PT998224", "E-VF", "Alert…", "Unit1/Unit1-Bed02",
+                          event_type="VENTRICULAR_FIBRILLATION")
+    h = OutboundHandler(_FakeOrch(), _FakeWorking(), alert, driver=object(),
+                        audit=AuditLog(tmp_path / "a.jsonl"))
+    h.respond("one two three four", session_id="room1")
+    return h, recorded
+
+
+def test_ack_confirmation_names_the_called_event(tmp_path, monkeypatch):
+    h, recorded = _vf_call(tmp_path, monkeypatch)
+    out = h.respond("Acknowledge this event", session_id="room1")
+    assert "ventricular fibrillation alert for patient PT998224 on bed 2" in out
+    assert recorded == ["E-VF"]
+
+
+def test_ack_naming_another_bed_is_refused_not_applied_to_this_call(tmp_path, monkeypatch):
+    # The call also discussed bed 7; "acknowledge bed seven" must not close bed 2's VF.
+    h, recorded = _vf_call(tmp_path, monkeypatch)
+    out = h.respond("acknowledge the event on bed seven", session_id="room1")
+    assert recorded == [] and "only acknowledge" in out and "in the app" in out
+    out = h.respond("acknowledge PT986685", session_id="room1")
+    assert recorded == []
+
+
+def test_ack_naming_this_bed_or_patient_is_applied(tmp_path, monkeypatch):
+    h, recorded = _vf_call(tmp_path, monkeypatch)
+    h.respond("acknowledge bed two", session_id="room1")
+    assert recorded == ["E-VF"]
+
+
+def test_scripted_confirm_back_names_the_event():
+    from types import SimpleNamespace
+
+    from orchestrator.outbound_flow import _confirm_back
+
+    ev = SimpleNamespace(event_type="VENTRICULAR_FIBRILLATION",
+                         window=SimpleNamespace(patient_ref="PT998224"))
+    assert _confirm_back(ev, "Unit1/Unit1-Bed02") == (
+        "I heard you acknowledge the ventricular fibrillation alert for patient PT998224 on bed 2 "
+        "— is that correct?")

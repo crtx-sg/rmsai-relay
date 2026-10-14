@@ -290,6 +290,7 @@ def _place_live_call(
     alert = OutboundAlert(
         session_id=room, patient_ref=w.patient_ref, event_id=w.event_id,
         spoken_alert=spoken_report(event, bed=bed_label, config=config), bed=bed_label,
+        event_type=event.event_type,
     )
     alert_store.put(alert)
     # Dispatch the agent into this room — in the background, WHILE the call is dialled. The

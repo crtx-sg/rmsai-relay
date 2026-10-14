@@ -21,6 +21,42 @@ _BED_LABEL = re.compile(r"\bUnit\d+-Bed\d+\b", re.IGNORECASE)
 _HOURS = re.compile(r"\b(\d+)\s*h(?:ours?)?\b", re.IGNORECASE)
 _MINUTES = re.compile(r"\b(\d+)\s*m(?:in(?:utes?)?)?\b", re.IGNORECASE)
 # Vitals question: any vital-sign term.
+# Which single vital a question asks about ("what was the heart rate?"): the spoken answer then gives
+# that one, not all six. Checked in order; "vitals" alone matches none of these.
+_VITAL_FOCUS = (
+    ("hr", re.compile(r"\b(heart\s+rate|hr|pulse)\b", re.IGNORECASE)),
+    ("bp", re.compile(r"\b(blood\s+pressure|bp|systolic|diastolic)\b", re.IGNORECASE)),
+    ("spo2", re.compile(r"\b(spo2|oxygen|saturation|sats)\b", re.IGNORECASE)),
+    ("rr", re.compile(r"\b(respiratory\s+rate|resp\s+rate|breathing|rr)\b", re.IGNORECASE)),
+    ("temp", re.compile(r"\b(temperature|temp|fever)\b", re.IGNORECASE)),
+)
+# The patient's clinical background (graph: diagnoses, medications, surgeries, symptoms), as opposed
+# to their monitor *events*. "past medical history" used to list events; "what medications is the
+# patient on" matched nothing at all.
+_CLINICAL_HISTORY = re.compile(
+    r"\b(medical\s+history|past\s+history|clinical\s+history|background|medications?|meds|"
+    r"drugs?|prescri\w*|diagnos[ie]s|comorbidit\w*|co-morbidit\w*|conditions?|surger(?:y|ies)|"
+    r"operations?|procedures?|allerg\w*|symptoms?|history)\b", re.IGNORECASE)
+_HISTORY_FOCUS = (
+    ("medications", re.compile(r"\b(medications?|meds|drugs?|prescri\w*)\b", re.IGNORECASE)),
+    ("conditions", re.compile(r"\b(diagnos[ie]s|comorbidit\w*|co-morbidit\w*|conditions?)\b",
+                              re.IGNORECASE)),
+    ("surgeries", re.compile(r"\b(surger(?:y|ies)|operations?|procedures?)\b", re.IGNORECASE)),
+    ("symptoms", re.compile(r"\bsymptoms?\b", re.IGNORECASE)),
+    ("allergies", re.compile(r"\ballerg\w*", re.IGNORECASE)),
+)
+_PATIENT_WORD = re.compile(r"\b(patient|patient's|his|her|their|he|she|they)\b", re.IGNORECASE)
+_LAST_EVENT = re.compile(
+    r"\b(?:last|latest|most\s+recent|recent|current)\s+(?:\w+\s+)?(?:event|alarm|alert)\b",
+    re.IGNORECASE)
+
+
+def _focus(q: str, table) -> str | None:
+    """The one item of `table` the question names; None for none or several ("BP and HR")."""
+    hits = [name for name, rx in table if rx.search(q)]
+    return hits[0] if len(hits) == 1 else None
+
+
 _VITALS = re.compile(
     r"\b(vitals?|vital\s+signs?|heart\s+rate|blood\s+pressure|"
     r"spo2|oxygen|saturation|respiratory\s+rate|resp\s+rate|temperature|hr|bp|rr)\b",
@@ -104,6 +140,13 @@ def looks_like_event_listing(query: str) -> bool:
         _STRONG_LIST_VERB.search(q) or history_status(q.lower()))
 
 
+def names_unresolved_bed(query: str) -> bool:
+    """The question names a bed but no bed number survived normalization ("on bed nein")."""
+    q = normalize_spoken_query(query or "")
+    return bool(re.search(r"\bbed\b", q, re.IGNORECASE)) and not _BED_LABEL.search(q) \
+        and not _WHERE.search(q.lower())
+
+
 def _history(*, now, status=None, patient=None, bed=None, etype=None, hours=None, critical=False):
     """(EVENT_HISTORY, params). `window_hours` only labels the answer; `since` filters."""
     params = {"status": status or "any"}
@@ -170,29 +213,46 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # MEWS for the selected event, else the session patient's latest. Without this, "what is the
     # MEWS score?" fell through to document retrieval, where no patient data is in context and a
     # small model invented a patient (observed 2026-10-05).
-    if _MEWS.search(q) and not _DEFINITIONAL.search(q) and not bed:
-        if event_ref:
+    # A named bed wins: "MEWS score for the last event on bed seven" is about bed 7, not the call.
+    bed_label = bed if bed and any(ch.isdigit() for ch in bed) else None
+    if _MEWS.search(q) and not _DEFINITIONAL.search(q):
+        if bed_label:
+            return "bed_last_event", {"bed": bed_label, "focus": "mews"}
+        if not bed and event_ref:
             return "mews_at_selected_event", {"event_uuid": event_ref}
-        if patient_ref:
+        if not bed and patient_ref:
             return "mews_at_patient_last_event", {"patient_id": patient_ref}
+
+    # The patient's clinical background (diagnoses, medications, surgeries, symptoms) — never the
+    # monitor events ("prior events", "event history" stay listings below).
+    history_patient = named or patient_ref
+    if (history_patient and _CLINICAL_HISTORY.search(q) and not _DEFINITIONAL.search(q)
+            and not re.search(r"\b(events?|alarms?|alerts?|episodes?)\b", q)
+            and (named or _PATIENT_WORD.search(q) or re.search(r"\b(medical|past|clinical)\s+"
+                                                              r"history\b", q))):
+        params = {"patient_id": history_patient}
+        if (focus := _focus(q, _HISTORY_FOCUS)):
+            params["focus"] = focus
+        return "patient_clinical_history", params
+
 
     # T5 — vitals at the event: a named bed wins (an explicit target beats the session's), then a
     # named rhythm for the session patient, then the selected/called event, then the patient's
     # latest.
     if _VITALS.search(q) and "trend" not in q:
+        focus = {"focus": f} if (f := _focus(q, _VITAL_FOCUS)) else {}
         if bed:
-            return "vitals_for_bed_last_event", {"bed": bed}
+            return "vitals_for_bed_last_event", {"bed": bed, **focus}
         if etype and patient_ref:
             return "vitals_at_patient_event_of_type", {
-                "patient_id": patient_ref, "event_type": etype, "event_uuid": event_ref}
+                "patient_id": patient_ref, "event_type": etype, "event_uuid": event_ref, **focus}
         if event_ref:
-            return "vitals_at_selected_event", {"event_uuid": event_ref}
+            return "vitals_at_selected_event", {"event_uuid": event_ref, **focus}
         if patient_ref:
-            return "vitals_at_patient_last_event", {"patient_id": patient_ref}
+            return "vitals_at_patient_last_event", {"patient_id": patient_ref, **focus}
 
-    # The generic _BED capture takes any word after "bed" ("which bed HAS the…"); the rules below
-    # only trust a real label (normalize_spoken_query turns "bed three" into "Unit1-Bed03").
-    bed_label = bed if bed and any(ch.isdigit() for ch in bed) else None
+    # (`bed_label` above: the generic _BED capture takes any word after "bed" — "which bed HAS
+    # the…"; the rules below only trust a real label, as normalize_spoken_query writes it.)
 
     # Event history — listings answered from `list_events`, the same rows the app's Events tab and
     # `cli.events` show, with the one `pending` definition (alerted, not acknowledged/resolved).
@@ -259,6 +319,10 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # Alarm counts — "which patient has the most alarms?", "how many alarms per bed?".
     if _ALARM_COUNTS.search(q) and not bed_label:
         return "alarm_counts", {}
+
+    # "What was the last (reported) event on bed nine?": that one event, not the bed's listing.
+    if bed_label and _LAST_EVENT.search(q):
+        return "bed_last_event", {"bed": bed_label}
 
     # Alarms/events on a named bed ("what are the alarms in bed three?").
     if bed_label and _ALARM_WORD.search(q):

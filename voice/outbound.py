@@ -213,7 +213,7 @@ _ACK_YES = {"yes", "yeah", "yep", "acknowledge", "acknowledged", "confirm", "con
 _ACK_NO = {"no", "nope", "negative", "deny", "denied", "incorrect", "not", "dont", "don't"}
 # Words that may sit next to an ack word without changing it ("yes I acknowledge", "copy that").
 _ACK_FILLER = {"i", "we", "that", "it", "this", "the", "alert", "event", "is", "ok", "okay",
-               "thanks", "thank", "you", "received", "understood", "got", "and", "please"}
+               "thanks", "thank", "you", "received", "understood", "got", "and", "please", "kindly"}
 _QUESTION = {"what", "whats", "which", "who", "why", "how", "when", "where", "can", "could",
              "would", "should", "is", "are", "do", "does", "did"}
 
