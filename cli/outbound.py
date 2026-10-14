@@ -18,7 +18,7 @@ from common.bed_assignment import BedAssignmentStub
 from common.config import DEFAULT, Config
 from common.deid import get_deidentifier
 from common.providers import DeidentifyingLLM, get_llm_provider
-from inference.ecg_model import get_ecg_model
+from inference.ecg_model import ModelLoadError, get_ecg_model
 from inference.pipeline import process_window
 from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
@@ -85,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # `--checkpoint` with no values means "stub, ignore the env"; omitting it falls back to config.
     checkpoints = DEFAULT.ecg_checkpoints if args.checkpoint is None else args.checkpoint
-    model = get_ecg_model(checkpoints)  # real wrapper if checkpoints present, else stub
+    try:  # real wrapper if checkpoints are given (they must load), else the stub
+        model = get_ecg_model(checkpoints, required=True)
+    except ModelLoadError as exc:
+        parser.error(f"{exc}. Fix ECG_CHECKPOINTS/--checkpoint, or pass --checkpoint with no "
+                     "value to run the stub on purpose.")
     vitals = MewsVitalsAnalysis()
     beds = BedAssignmentStub()
 

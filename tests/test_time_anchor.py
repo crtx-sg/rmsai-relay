@@ -9,7 +9,7 @@ import pytest
 
 from cli.ingest import main as ingest_main
 from ingest.hdf5_reader import read_hdf5_file
-from ingest.time_anchor import rebase_to_now
+from ingest.time_anchor import rebase_by_patient
 
 _FIXTURE = next((Path(__file__).resolve().parents[1] / "data" / "fixtures").glob("*.h5"))
 NOW = 2_000_000_000.0
@@ -17,7 +17,7 @@ NOW = 2_000_000_000.0
 
 def test_last_event_is_now_and_all_spacing_is_kept():
     source = list(read_hdf5_file(_FIXTURE))
-    shifted = rebase_to_now(source, NOW)
+    shifted = rebase_by_patient(source, NOW)
     assert max(w.event_timestamp for w in shifted) == NOW
     delta = NOW - max(w.event_timestamp for w in source)
     for a, b in zip(source, shifted):
@@ -30,7 +30,7 @@ def test_last_event_is_now_and_all_spacing_is_kept():
             assert [s.timestamp - new[0].timestamp for s in new] == pytest.approx(
                 [s.timestamp - hist[0].timestamp for s in hist])
         assert b.signals == a.signals and b.patient_ref == a.patient_ref
-    assert rebase_to_now([], NOW) == []
+    assert rebase_by_patient([], NOW) == []
 
 
 def test_ingest_reports_the_source_time_when_re_anchoring(capsys, monkeypatch):

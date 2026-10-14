@@ -1,7 +1,7 @@
 """Neo4j connection wrapper + read-only guard.
 
 `GraphDriver` is a thin helper over the official driver with separate read/write entry points and
-a `assert_read_only` check used to keep the LLM text-to-Cypher fallback (Phase 2B.4) safe.
+an `assert_read_only` check that every template and raw `cli.graph` query passes through.
 """
 
 from __future__ import annotations

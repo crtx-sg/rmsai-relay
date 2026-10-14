@@ -1,8 +1,7 @@
 """Operational lookup: natural-language intent -> parameterized template.
 
-Tries a small library of intent rules first (the tested, parameterized templates). Free LLM
-text-to-Cypher is a **read-only allowlisted fallback only** — any generated statement is run
-through `run_read_only`, which refuses writes.
+Tries a small library of intent rules first (the tested, parameterized templates). Raw Cypher
+(the `cli.graph lookup` dev path) runs through `run_read_only`, which refuses writes.
 """
 
 from __future__ import annotations
@@ -10,7 +9,6 @@ from __future__ import annotations
 import re
 
 from common.event_types import event_type_from_text
-from common.interfaces import LLMProvider
 
 from .driver import GraphDriver
 from .entities import condition_id
@@ -295,8 +293,8 @@ def _looks_like_cypher(query: str) -> bool:
     return bool(re.match(r"\s*(MATCH|OPTIONAL\s+MATCH|WITH|CALL|RETURN|UNWIND)\b", query))
 
 
-def lookup(driver: GraphDriver, query: str, *, now: float, llm: LLMProvider | None = None) -> dict:
-    """Resolve a query to rows via a template (preferred) or a read-only Cypher fallback."""
+def lookup(driver: GraphDriver, query: str, *, now: float) -> dict:
+    """Resolve a query to rows: raw read-only Cypher as given, else an intent template."""
     if _looks_like_cypher(query):
         # Raw Cypher path — run only if read-only (refuses writes).
         return {"mode": "raw_cypher", "rows": driver.run_read_only(query)}
@@ -305,9 +303,5 @@ def lookup(driver: GraphDriver, query: str, *, now: float, llm: LLMProvider | No
     if intent:
         name, params = intent
         return {"mode": "template", "template": name, "rows": run_template(driver, name, **params)}
-
-    if llm is not None:
-        cypher = llm.generate(f"Translate to a single read-only Cypher query: {query}")
-        return {"mode": "llm_cypher", "cypher": cypher, "rows": driver.run_read_only(cypher)}
 
     return {"mode": "declined", "rows": []}

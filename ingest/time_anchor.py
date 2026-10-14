@@ -3,12 +3,9 @@
 ecg_sigma gives datasets without absolute time (MIT-BIH, AFDB, VFDB, INCART) a synthetic date:
 2025-01-01 + a per-record offset of up to 28 days + the event's position in the recording. PTB-XL
 keeps its real 1995-96 acquisition dates. Neither reads as "now" on a worklist, and "events in the
-last N hours" never matches. `rebase_to_now` shifts every timestamp of one recording by the same
-amount, so the last event lands at `now` and all spacing (between events, and within each vital's
-history, which MEWS trends use) is exactly as recorded.
-
-`cli.ingest` anchors per patient (`rebase_by_patient`), so several recordings of one patient keep
-their real spacing. The original time is not lost: `cli.ingest` reports it as `source_ts` in its output and audit entry.
+last N hours" never matches. `rebase_by_patient` shifts every timestamp of a patient's recordings
+by the same amount, so their last event lands at `now` and all spacing (between events, between
+recordings, and within each vital's history, which MEWS trends use) is exactly as recorded. The original time is not lost: `cli.ingest` reports it as `source_ts` in its output and audit entry.
 """
 
 from __future__ import annotations
@@ -40,10 +37,3 @@ def rebase_by_patient(windows: list[SignalWindow], now: float) -> list[SignalWin
         latest[w.patient_ref] = max(latest.get(w.patient_ref, w.event_timestamp), w.event_timestamp)
     return [_shift_window(w, now - latest[w.patient_ref]) for w in windows]
 
-
-def rebase_to_now(windows: list[SignalWindow], now: float) -> list[SignalWindow]:
-    """One recording's windows, shifted so the latest event is at `now` (order unchanged)."""
-    if not windows:
-        return []
-    delta = now - max(w.event_timestamp for w in windows)
-    return [_shift_window(w, delta) for w in windows]

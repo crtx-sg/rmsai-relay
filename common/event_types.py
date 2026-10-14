@@ -126,11 +126,6 @@ def is_valid_event_type(event_type: str) -> bool:
     return event_type in CLASS_NAMES
 
 
-def is_false_positive(event_type: str) -> bool:
-    """A `NORMAL_SINUS` prediction is, by definition, a false positive."""
-    return event_type == NORMAL_SINUS
-
-
 def load_upstream_class_names() -> list[str]:
     """Return `CLASS_NAMES` from the vendored ecgtranscnn package (for the parity test).
 

@@ -413,6 +413,7 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | `[real_samples] ../ecg_sigma/packages/ecg_pkg_v2 is not an ecgpkg` | run via `tools`, which can't see `../ecg_sigma` | use the `real-samples` service |
 | `real-samples` fails to start: bind source path does not exist | package not at `../ecg_sigma/packages` | set `ECGPKG_HOST_DIR=/abs/path/to/packages` (and `ECGPKG_NAME` if not `ecg_pkg_v2`) |
 | `pick` exits 2: `… not held out for this model` | package ≠ checkpoint's training package | use the matching package, or `--allow-mismatch` knowingly |
+| `cli.ingest: error: ECG checkpoint(s) not found` (or `failed to load`) | `ECG_CHECKPOINTS`/`--checkpoint` points at missing or wrong weights; ingest no longer falls back to the stub | fix the path ([§1](#1-bring-up-and-confirm-the-real-model-is-loaded)); `--checkpoint` with no value runs the stub on purpose |
 | Accuracy ≈ 0, `ST_ELEVATION` predictions, `"model": "stub"` | stub fallback | [§1 table](#1-bring-up-and-confirm-the-real-model-is-loaded) |
 | Worklist empty / `cli.kb_dump --list` returns `[]` | something ran with `RMSAI_ALLOW_LIVE_GRAPH_RESET=1` (`cli.kb_eval`, graph tests) and reset the **live** Neo4j | redo §2, then republish (§5) |
 | In-app chat gets no reply | voice worker restarted after the app connected | `$RMSAI cli.dispatch --all-inbox` |

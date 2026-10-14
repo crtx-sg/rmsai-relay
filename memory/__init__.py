@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from .episodic import Episode, EpisodicMemory
-from .semantic import SemanticMemory
 from .working import WorkingMemory
 
-__all__ = ["Episode", "EpisodicMemory", "SemanticMemory", "WorkingMemory"]
+__all__ = ["Episode", "EpisodicMemory", "WorkingMemory"]

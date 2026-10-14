@@ -24,7 +24,7 @@ from common.audit import AuditLog
 from common.config import DEFAULT
 from common.ecg_model_stub import StubECGModel
 from common.preflight import service_unreachable
-from inference.ecg_model import get_ecg_model
+from inference.ecg_model import ModelLoadError, get_ecg_model
 from inference.metrics import EvalRecord, classify_outcome, format_summary, summarize
 from inference.pipeline import process_window
 from inference.serialize import event_summary_line, event_to_dict
@@ -87,7 +87,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # `--checkpoint` with no values means "stub, ignore the env"; omitting it falls back to config.
     checkpoints = DEFAULT.ecg_checkpoints if args.checkpoint is None else args.checkpoint
-    model = get_ecg_model(checkpoints)
+    try:  # configured checkpoints must load: never publish stub predictions as real alerts
+        model = get_ecg_model(checkpoints, required=True)
+    except ModelLoadError as exc:
+        parser.error(f"{exc}. Fix ECG_CHECKPOINTS/--checkpoint, or pass --checkpoint with no "
+                     "value to run the stub on purpose.")
     vitals = MewsVitalsAnalysis()
     audit = AuditLog(DEFAULT.audit_log_path)
 
@@ -107,10 +111,15 @@ def main(argv: list[str] | None = None) -> int:
     now = time.time()
 
     def _windows():
+        if anchor == "source":  # stream: one event's waveforms in memory at a time
+            for f in files:
+                for w in read_hdf5_file(f, strict_units=args.strict_units):
+                    yield w, w
+            return
         # Per-patient anchoring needs every recording first: a patient may span several files.
+        # shortcut: holds every window of the run in memory; fine for demo-sized --dir runs.
         source = [w for f in files for w in read_hdf5_file(f, strict_units=args.strict_units)]
-        shifted = rebase_by_patient(source, now) if anchor == "now" else source
-        yield from zip(source, shifted)
+        yield from zip(source, rebase_by_patient(source, now))
 
     for source_window, window in _windows():
         source_ts = source_window.event_timestamp

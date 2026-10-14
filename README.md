@@ -305,8 +305,8 @@ fields populate on fresh `ingest → consume`; older events show "raw ECG is arc
 
 ### Operational query matrix (the verification target)
 
-Every row is answerable through tested, read-only, parameterized Cypher templates (free
-text-to-Cypher is an allowlisted read-only fallback only):
+Every row is answerable through tested, read-only, parameterized Cypher templates (no free
+text-to-Cypher; questions the rules miss go to the LLM router, which picks a template):
 
 | # | Query | Store |
 |---|-------|-------|
@@ -2165,7 +2165,7 @@ uv run python -m cli.graph chain           # rebuild every patient's FOLLOWED_BY
 uv run python -m cli.kb "..."              # hybrid (vector + graph) KB query
 uv run python -m cli.kb_dump <event_id>    # dump one event: graph node + report file + vector chunks
 uv run python -m cli.kb_eval               # vector vs hybrid over the gold question set
-uv run python -m cli.memory demo           # working + episodic + semantic memory round-trip
+uv run python -m cli.memory demo           # working + episodic memory round-trip
 uv run python -m cli.speech_check          # offline Piper TTS → Whisper STT round-trip
 uv run python -m cli.text_chat             # inbound query by text (PIN-gated, KB-grounded)
 uv run python -m cli.voice                 # offline typed-text voice demo (no audio hardware)

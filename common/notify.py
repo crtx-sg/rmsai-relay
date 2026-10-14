@@ -149,8 +149,3 @@ def notifier_from_env(name: str = "simulated", *, deliver: bool = True,
     return SignalWireSmsNotifier(config.signalwire_space, config.signalwire_project_id,
                                  config.signalwire_api_token, config.outbound_from)
 
-
-def get_notifier(name: str = "simulated", **kwargs) -> Notifier:
-    if name == "signalwire":
-        return SignalWireSmsNotifier(**kwargs)
-    return SimulatedSmsNotifier(**kwargs)

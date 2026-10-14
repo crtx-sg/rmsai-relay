@@ -9,7 +9,7 @@ conditions a single patient happens to have.
 from __future__ import annotations
 
 from .driver import GraphDriver
-from .entities import condition_id, slugify, treatment_id
+from .entities import canonical_condition, condition_id, slugify, treatment_id
 
 # Which conditions a medication class manages (for MANAGES edges) — small POC map.
 _MANAGES: dict[str, list[str]] = {
@@ -47,11 +47,13 @@ def ingest_patient_record(driver: GraphDriver, history: dict, bed: tuple | None 
     conditions += [c for c in history.get("prior_diagnoses", []) if c and c.lower() != "none"]
     for name in conditions:
         driver.run_write(
-            "MERGE (c:Condition {id:$cid}) SET c.name=$name "
+            # Canonical name, never overwritten: the raw "MI"/"CAD" names made the linker match
+            # them inside other words.
+            "MERGE (c:Condition {id:$cid}) SET c.name=coalesce(c.name,$name) "
             "WITH c MATCH (p:Patient {id:$pid}) "
             "MERGE (p)-[r:HAS_DIAGNOSIS]->(c) "
             "SET r.status=coalesce(r.status,'active'), r.severity=coalesce(r.severity,'unknown')",
-            cid=condition_id(name), name=name, pid=pid,
+            cid=condition_id(name), name=canonical_condition(name), pid=pid,
         )
 
     for sym in history.get("symptoms", []):

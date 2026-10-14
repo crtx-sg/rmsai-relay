@@ -28,6 +28,7 @@ from typing import Any
 
 from common.config import DEFAULT, Config
 from live.artifact_tokens import ArtifactTokenStore
+from voice.livekit_cloud import _http_url
 
 # A published `patient` field must be a pseudonym, never PHI. Enforced by construction (fail-closed):
 # publishing anything that isn't a `PT####`-style pseudonym raises rather than leaking a name.
@@ -157,16 +158,6 @@ class InboxPublisher:
         self._send(build_status_message(event_id, status))
 
 
-def _server_api_url(url: str) -> str:
-    """The LiveKit *server API* (RoomService/twirp) is HTTP, not the WebSocket signaling URL.
-    Convert `ws(s)://` -> `http(s)://` so `send_data` hits the API, not the RTC socket."""
-    if url.startswith("ws://"):
-        return "http://" + url[len("ws://"):]
-    if url.startswith("wss://"):
-        return "https://" + url[len("wss://"):]
-    return url
-
-
 def _livekit_send_fn(config: Config = DEFAULT) -> Callable[[str, bytes], None]:  # pragma: no cover - needs SDK + live server
     """Return a `send_fn(room, data)` that publishes a RELIABLE data message via the LiveKit API."""
     from voice.livekit_cloud import is_configured  # noqa: PLC0415
@@ -183,7 +174,7 @@ def _livekit_send_fn(config: Config = DEFAULT) -> Callable[[str, bytes], None]: 
 
         async def _go():
             lk = api.LiveKitAPI(
-                url=_server_api_url(config.livekit_url),
+                url=_http_url(config.livekit_url),
                 api_key=config.livekit_api_key,
                 api_secret=config.livekit_api_secret,
             )

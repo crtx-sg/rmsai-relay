@@ -11,7 +11,6 @@ from .event_types import (
     CLASS_NAMES,
     NORMAL_SINUS,
     EventType,
-    is_false_positive,
     is_valid_event_type,
 )
 from .interfaces import ECGModel, EventStore, LLMProvider, VitalsAnalysis
@@ -45,7 +44,6 @@ __all__ = [
     "CLASS_NAMES",
     "NORMAL_SINUS",
     "EventType",
-    "is_false_positive",
     "is_valid_event_type",
     "ECGModel",
     "EventStore",

@@ -427,3 +427,12 @@ def test_turn_latency_reports_an_interrupted_reply_without_a_total():
     lat.handler_done(1.9)
     line = lat.on_metrics(TTSMetrics(speech_id="s2", ttfb=-1.0, cancelled=True))
     assert "tts=cancelled" in line and "-> first audio" not in line
+
+
+def test_turn_latency_forgets_turns_that_never_spoke():
+    lat = TurnLatency(emit=lambda _l: None)
+    for i in range(500):  # wake-gate drops / fillers: an EOU metric, never a TTS one
+        lat.on_metrics(EOUMetrics(speech_id=f"d{i}", end_of_utterance_delay=0.1))
+    assert len(lat._eou) <= 32
+    lat.on_metrics(EOUMetrics(speech_id="s9", end_of_utterance_delay=1.0))
+    assert lat.on_metrics(TTSMetrics(speech_id="s9", ttfb=0.2)) is not None  # latest still joins

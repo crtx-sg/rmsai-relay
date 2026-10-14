@@ -139,23 +139,35 @@ class EcgTransConvModel(ECGModel):
             return self._labels[idx], float(probs[idx].item())
 
 
+class ModelLoadError(RuntimeError):
+    """Checkpoints were configured but could not be loaded (`get_ecg_model(..., required=True)`)."""
+
+
 def get_ecg_model(
-    checkpoint_path: str | Path | Sequence[str | Path] | None = None, **kwargs,
+    checkpoint_path: str | Path | Sequence[str | Path] | None = None, *, required: bool = False,
+    **kwargs,
 ) -> ECGModel:
     """Return the real wrapper if every checkpoint exists, else the deterministic stub (O1).
 
     `checkpoint_path` takes one path or several; several load as a softmax-averaging ensemble
-    (`models/real_v2/fold{0..4}.pt` is the recommended artifact).
+    (`models/real_v2/fold{0..4}.pt` is the recommended artifact). No checkpoint means the stub.
+    With `required=True`, checkpoints that are given but missing or unloadable raise
+    `ModelLoadError` instead: the stub picks a class by hashing the signal, so a silent fallback
+    published "VF, 0.9" alerts that rang a real phone.
     """
     if not checkpoint_path:
         return StubECGModel()
     paths = _as_paths(checkpoint_path)
     missing = [str(p) for p in paths if not p.exists()]
     if missing:
+        if required:
+            raise ModelLoadError(f"ECG checkpoint(s) not found: {', '.join(missing)}")
         _log.error("ECG checkpoint(s) not found, using stub: %s", ", ".join(missing))
         return StubECGModel()
     try:
         return EcgTransConvModel(paths, **kwargs)
     except Exception as exc:  # noqa: BLE001
+        if required:
+            raise ModelLoadError(f"failed to load ECG checkpoint: {exc}") from exc
         _log.error("failed to load ECG checkpoint, using stub: %s", exc)
     return StubECGModel()

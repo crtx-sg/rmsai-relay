@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from common.notify import SimulatedSmsNotifier, get_notifier, is_valid_number
+from common.notify import SimulatedSmsNotifier, is_valid_number
 
 
 def test_valid_number_shared():
@@ -26,6 +26,3 @@ def test_sms_invalid_number_fails():
     n = SimulatedSmsNotifier()
     assert not n.send("bogus", "alert")
 
-
-def test_get_notifier_default_simulated():
-    assert isinstance(get_notifier("simulated"), SimulatedSmsNotifier)

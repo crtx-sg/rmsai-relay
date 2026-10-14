@@ -52,6 +52,23 @@ def test_get_ecg_model_falls_back_to_stub_without_weights():
     assert isinstance(model3, StubECGModel)
 
 
+def test_required_checkpoint_that_fails_raises_instead_of_stub():
+    from inference.ecg_model import ModelLoadError
+
+    with pytest.raises(ModelLoadError):
+        get_ecg_model("does/not/exist.pt", required=True)
+    assert isinstance(get_ecg_model(None, required=True), StubECGModel)  # none given: stub on purpose
+
+
+def test_ingest_cli_stops_when_configured_checkpoint_is_missing(capsys):
+    from cli.ingest import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--file", "data/fixtures/PT1155_2026-06.h5", "--checkpoint", "does/not/exist.pt"])
+    assert exc.value.code == 2
+    assert "not found" in capsys.readouterr().err
+
+
 def test_stub_predicts_valid_class_deterministically():
     w = _window()
     model = get_ecg_model()

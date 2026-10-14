@@ -28,34 +28,13 @@ from kb.graph.events import is_pending
 from kb.graph.llm_router import route as llm_route
 from kb.graph.lookup import looks_like_event_listing, match_intent
 from kb.graph.templates import EVENT_HISTORY, describe_event_history, run_template
+from kb.hybrid.answer import _MIN_OVERLAP, is_relevant
 from kb.hybrid.retriever import HybridRetriever
 from kb.vector.answer import _best_overlap
 from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
 
 from .guardrails import UNGROUNDED_ANSWER, Guardrails, ungrounded_identifiers
-
-_MIN_OVERLAP = 0.18
-
-
-def is_relevant(result, overlap: float, top_score: float, *,
-                min_relevance: float, min_overlap: float = _MIN_OVERLAP) -> bool:
-    """Whether retrieval found something worth answering from.
-
-    Three independent ways to vouch, any one of which is enough: the graph returned a fact, the best
-    passage *means* the same thing (semantic similarity, which survives rewording), or it *says* the
-    same words. The lexical arm alone used to decide — which refused correctly-retrieved passages
-    that happened to be phrased differently from the question, the single largest source of
-    "I don't have information on that". The two arms fail in different directions, so keeping both
-    costs nothing: word overlap carries the hashing embedder, whose similarity scores do not
-    separate on-topic from off-topic at all.
-    """
-    if result.relationships:
-        return True
-    if not result.passages:
-        return False
-    return top_score >= min_relevance or overlap >= min_overlap
-
 
 def explain_decline(result, overlap: float, top_score: float = 0.0, *,
                     min_relevance: float = 0.60, min_overlap: float = _MIN_OVERLAP) -> str:

@@ -13,7 +13,7 @@ from pathlib import Path
 from common.protocol_loader import CareProtocol, load_protocols
 
 from .driver import GraphDriver
-from .entities import condition_id, slugify, treatment_id
+from .entities import condition_id, treatment_id
 
 
 def _event_type_to_condition_id(event_type: str) -> str | None:
@@ -55,7 +55,7 @@ def load_protocol(driver: GraphDriver, proto: CareProtocol) -> None:
                 driver.run_write(
                     "MERGE (t:Treatment {id:$tid}) SET t.name=coalesce(t.name,$name) "
                     "WITH t MATCH (s:ProtocolStep {id:$sid}) MERGE (s)-[:RECOMMENDS]->(t)",
-                    tid=treatment_id(slugify(drug)), name=drug, sid=sid,
+                    tid=treatment_id(drug), name=drug, sid=sid,  # synonyms fold: "ACE-I" = the patient's node
                 )
 
 

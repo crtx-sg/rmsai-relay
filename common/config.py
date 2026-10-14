@@ -66,13 +66,7 @@ def _b(name: str, default: bool) -> bool:
 
 
 def _list(name: str) -> tuple[str, ...]:
-    """Comma- or whitespace-separated value list from the environment; empty when unset."""
-    raw = os.environ.get(name, "").replace(",", " ")
-    return tuple(part for part in raw.split() if part)
-
-
-def _paths(name: str) -> tuple[str, ...]:
-    """Comma- or whitespace-separated path list from the environment; empty when unset."""
+    """Comma- or whitespace-separated values (numbers, paths) from the environment; () when unset."""
     raw = os.environ.get(name, "").replace(",", " ")
     return tuple(part for part in raw.split() if part)
 
@@ -429,7 +423,7 @@ class Config:
             episodic_recall=_b("EPISODIC_RECALL", False),
             audit_log_path=os.environ.get("AUDIT_LOG_PATH", "data/audit.jsonl"),
             report_dir=os.environ.get("REPORT_DIR", "data/reports"),
-            ecg_checkpoints=_paths("ECG_CHECKPOINTS"),
+            ecg_checkpoints=_list("ECG_CHECKPOINTS"),
             ecg_plot_enabled=_b("ECG_PLOT_ENABLED", True),
             ingest_time_anchor=os.environ.get("INGEST_TIME_ANCHOR", "source").strip().lower(),
             plot_dir=os.environ.get("PLOT_DIR", "data/plots"),

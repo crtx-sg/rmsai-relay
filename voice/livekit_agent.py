@@ -32,10 +32,9 @@ from functools import partial
 from common.config import DEFAULT, Config
 
 from .adapters import STTAdapter, TTSAdapter, build_stt, build_tts, speakable
-from .handlers import EchoHandler, Handler, build_handler, build_outbound_handler
+from .handlers import Handler, build_handler, build_outbound_handler
 from .livekit_cloud import is_configured
 from .outbound_alert import OutboundAlertStore
-from .session import VoiceSession
 
 # LiveKit plugins register themselves at import time, and that registration MUST run on the main
 # thread (prewarm/job init runs in worker threads). So import silero at module top, not lazily.
@@ -68,19 +67,6 @@ def quiet_noisy_loggers(level: int = logging.WARNING) -> None:
         logging.getLogger(name).setLevel(level)
     for name in _VERY_NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.ERROR)
-
-
-def build_session(
-    *, session_id: str, stt: STTAdapter | None = None, tts: TTSAdapter | None = None,
-    handler: Handler | None = None,
-) -> VoiceSession:
-    """Construct the offline `VoiceSession` (STT/TTS from config) used by the echo/CLI demo."""
-    return VoiceSession(
-        stt=stt or build_stt(),
-        tts=tts or build_tts(),
-        handler=handler or EchoHandler(),
-        session_id=session_id,
-    )
 
 
 # --- greeting gate: speak only once the phone call is answered ----------------------------------
@@ -176,6 +162,9 @@ def is_barge_in(text: str) -> bool:
 
 # --- per-turn latency -----------------------------------------------------------------------------
 
+_MAX_PENDING_TURNS = 32
+
+
 class TurnLatency:
     """Joins the SDK's per-turn metrics with our handler time into one `[latency]` line per turn.
 
@@ -198,6 +187,10 @@ class TurnLatency:
         speech_id = getattr(metrics, "speech_id", None)
         if kind == "EOUMetrics" and speech_id:
             self._eou[speech_id] = metrics
+            # Turns that never speak (wake-gate drops, fillers) get no TTS metric: keep only the
+            # latest few, or the long-lived inbox room's job grows this dict for days.
+            while len(self._eou) > _MAX_PENDING_TURNS:
+                self._eou.pop(next(iter(self._eou)))
             return None
         if kind != "TTSMetrics" or speech_id not in self._eou:
             return None  # e.g. the greeting (no user turn) or a metric we don't report

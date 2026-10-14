@@ -10,7 +10,6 @@ from common.event_types import (
     EventType,
     condition_code_to_name,
     event_type_from_text,
-    is_false_positive,
     is_valid_event_type,
     load_upstream_class_names,
     load_upstream_condition_codes,
@@ -74,13 +73,6 @@ def test_sixteen_classes():
 
 def test_enum_matches_tuple():
     assert tuple(e.value for e in EventType) == CLASS_NAMES
-
-
-def test_false_positive_only_normal_sinus():
-    assert is_false_positive("NORMAL_SINUS")
-    for name in CLASS_NAMES:
-        if name != "NORMAL_SINUS":
-            assert not is_false_positive(name)
 
 
 def test_validity():

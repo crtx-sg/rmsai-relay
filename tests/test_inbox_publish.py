@@ -22,7 +22,6 @@ from ingest.hdf5_reader import read_hdf5_file
 from live.artifact_tokens import ArtifactTokenStore
 from live.inbox import (
     InboxPublisher,
-    _server_api_url,
     artifact_kinds_for,
     build_event_message,
 )
@@ -170,9 +169,11 @@ def test_inbox_push_failure_does_not_poison_event(patched):
 
 
 def test_server_api_url_converts_ws_to_http():
-    assert _server_api_url("ws://localhost:7880") == "http://localhost:7880"
-    assert _server_api_url("wss://x.livekit.cloud") == "https://x.livekit.cloud"
-    assert _server_api_url("http://localhost:7880") == "http://localhost:7880"
+    from voice.livekit_cloud import _http_url
+
+    assert _http_url("ws://localhost:7880") == "http://localhost:7880"
+    assert _http_url("wss://x.livekit.cloud") == "https://x.livekit.cloud"
+    assert _http_url("http://localhost:7880") == "http://localhost:7880"
 
 
 def test_publish_status_message():
