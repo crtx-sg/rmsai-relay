@@ -93,6 +93,22 @@ _FOR_OTHER = re.compile(
 _PATIENT_TARGET = re.compile(
     r"\b(?:this|that|current)\s+(?:patient|event|alert|alarm|rhythm|arrhythmia|case)\b|"
     r"\bthe\s+patient(?:'s)?\b|\b(?:his|her|him|he|she|patient's)\b", re.IGNORECASE)
+# Every patient ranked sickest first: "list patients by criticality", "patients for bed rounds",
+# "who should I see first", "sickest patients", "triage list". (Before the MEWS rule, whose
+# "criticality" would otherwise answer for the call's own event.)
+_PATIENT_RANKING = re.compile(
+    r"\b(?:bed|ward|unit)\s+rounds?\b|\brounds?\s+(?:list|order)\b|\bfor\s+(?:the\s+)?rounds?\b|"
+    r"\bdo(?:ing)?\s+(?:my\s+|the\s+)?rounds?\b|\bsickest\b|\btriage\s+(?:list|order)\b|"
+    r"\bwho\s+should\s+(?:i|we)\s+(?:see|review|visit)\s+first\b|"
+    r"\b(?:most|least)\s+(?:critical|sick|unwell|urgent|unstable)\s+patients?\b|"
+    r"\b(?:which|what)\s+patients?\b.*\b(?:most|least)\s+(?:critical|sick|unwell|urgent|unstable)\b|"
+    r"\bpatients?\b.*\b(?:by|in\s+order\s+of|ordered\s+by|sorted\s+by|ranked\s+by)\s+"
+    r"(?:criticality|severity|acuity|priority|urgency|mews)\b|"
+    r"\b(?:rank|order|sort|prioriti[sz]e)\w*\s+(?:the\s+|all\s+|my\s+)?patients?\b|"
+    r"\b(?:list|show|give|tell)\b.*\bpatients?\b.*\b(?:criticality|severity|acuity|priority)\b",
+    re.IGNORECASE)
+_BED_ORDER = re.compile(r"\b(?:in\s+)?bed\s+order\b|\bby\s+bed(?:\s+number)?\b|"
+                        r"\border\s+of\s+(?:the\s+)?beds?\b", re.IGNORECASE)
 _EMERGENCY_WORDS = re.compile(
     r"\b(?:coding|arrest\w*|code\s+blue|unresponsive|not\s+breathing|collaps\w*|no\s+pulse|"
     r"pulseless)\b", re.IGNORECASE)
@@ -307,6 +323,10 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # small model invented a patient (observed 2026-10-05).
     # A named bed wins: "MEWS score for the last event on bed seven" is about bed 7, not the call.
     bed_label = bed if bed and any(ch.isdigit() for ch in bed) else None
+
+    # The ward ranked sickest first (or walked in bed order when asked): rounds / triage lists.
+    if _PATIENT_RANKING.search(q) and not named and not bed_label:
+        return "patients_by_criticality", ({"order": "bed"} if _BED_ORDER.search(q) else {})
 
     # The called/selected event itself: rhythm, confidence, time, false positive, why alerted,
     # criticality, and what to do. Only with no other target named (a bed, a patient, a rhythm).

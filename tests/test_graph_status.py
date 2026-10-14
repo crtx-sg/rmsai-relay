@@ -77,3 +77,17 @@ def test_reassigned_patient_has_one_current_bed(graph):
     rows = graph.run_read("MATCH (:Patient {id:'PT9001'})-[r:ASSIGNED_TO]->(b) "
                           "WHERE r.current RETURN b.label AS bed")
     assert [r["bed"] for r in rows] == ["Unit1-Bed02"]
+
+
+def test_ranking_counts_only_open_alerts(graph):
+    from kb.graph.templates import run_template
+
+    _persist(graph)
+    graph.run_write("MATCH (e:MonitoredEvent {id:'E1'}) SET e.alert_gate = true, e.criticality = 'High'")
+    row = run_template(graph, "patients_by_criticality")[0]
+    assert (row["patient"], row["bed"], row["open_alerts"], row["open_criticality"]) == (
+        "PT9001", "Unit1-Bed01", 1, "High")
+    set_event_status(graph, "E1", "acknowledged")
+    row = run_template(graph, "patients_by_criticality")[0]
+    assert row["open_alerts"] == 0 and row["open_criticality"] is None
+    assert row["latest_event"] == "ATRIAL_FIBRILLATION"

@@ -564,6 +564,58 @@ def _answer_mews_meaning(score: int, escalation: str | None) -> str:
     return f"{text} {escalation.strip()}" if escalation else text
 
 
+_RANK = {"Critical": 3, "High": 2, "Medium": 1, "Low": 0}
+_SPOKEN_PATIENTS_MAX = 10  # a phone list longer than this is cut, with a count of the rest
+
+
+def _mews_score(why_json) -> int | None:
+    try:
+        return int(json.loads(why_json)["vitals"]["mews"]["score"])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _answer_patient_ranking(rows: list[dict], *, order: str | None = None,
+                            spoken: bool = False) -> str:
+    """Every patient, sickest first (or in bed order): open alerts by their most severe criticality,
+    then the latest MEWS score, then the newest. One short line each: bed, patient, criticality,
+    rhythm, MEWS, open alerts."""
+    if not rows:
+        return "No patients have recorded events."
+
+    def _key(r):
+        if order == "bed":
+            m = re.search(r"(\d+)$", str(r.get("bed") or ""))
+            return (0, int(m.group(1))) if m else (1, 0)
+        return (-_RANK.get(r.get("open_criticality") or "", -1), -(_mews_score(r.get("why_json")) or -1),
+                -(r.get("ts") or 0))
+
+    rows = sorted(rows, key=_key)
+
+    def _line(r) -> str:
+        bed = spoken_bed(r.get("bed")) if spoken else f"bed {r.get('bed') or 'unassigned'}"
+        who = f"{bed[0].upper()}{bed[1:]}, {r.get('patient')}"
+        score = _mews_score(r.get("why_json"))
+        mews = f"MEWS {score}" if score is not None else (
+            f"MEWS risk {str(r['mews_risk']).lower()}" if r.get("mews_risk") else "")
+        n = int(r.get("open_alerts") or 0)
+        if n:
+            parts = [str(r.get("open_criticality") or "").lower(), spoken_event(r.get("open_event")),
+                     mews, f"{n} open alert{'s' if n != 1 else ''}"]
+        else:
+            parts = ["no open alerts", f"latest {spoken_event(r.get('latest_event'))}", mews]
+        return f"{who}: " + ", ".join(p for p in parts if p)
+
+    head = f"{len(rows)} patient{'s' if len(rows) != 1 else ''}, " + (
+        "in bed order" if order == "bed" else "sickest first")
+    shown = rows[:_SPOKEN_PATIENTS_MAX] if spoken else rows
+    if spoken:
+        text = f"{head}. " + " ".join(f"{i}. {_line(r)}." for i, r in enumerate(shown, 1))
+        rest = len(rows) - len(shown)
+        return text + (f" And {rest} more; ask for the rest by bed." if rest else "")
+    return f"{head}:\n" + "\n".join(f"{i}. {_line(r)}" for i, r in enumerate(shown, 1))
+
+
 def _spoken_list(items: list[str]) -> str:
     items = [str(i) for i in items if i]
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
@@ -1069,6 +1121,9 @@ class Orchestrator:
                                else "I couldn't find that event.")
             elif name == "action_items_for_event":
                 answer_text = _answer_action_items(operational_rows)
+            elif name == "patients_by_criticality":
+                answer_text = _answer_patient_ranking(operational_rows, order=params.get("order"),
+                                                      spoken=spoken)
             elif name == "event_count_since":
                 answer_text = _answer_event_count(operational_rows, params.get("window"))
             elif spoken and operational_rows and len(operational_rows) == 1 \

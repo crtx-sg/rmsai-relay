@@ -375,7 +375,7 @@ query covers gets a short list of what can be asked; it is never answered by the
 | This event | vitals · heart rate / blood pressure / oxygen / resp rate / temperature · MEWS score · criticality · what rhythm · how confident · when · false positive? · why was I alerted · ECG strip · heart-rate trend · what should I do now · protocol for this event |
 | This patient | past medical history · medications · diagnoses · surgeries · symptoms · allergies (not recorded) · age · which bed · prior / unacknowledged / critical events |
 | Another bed or patient | last event / vitals / MEWS / events / pending on bed N · protocol for bed N · report for bed N · which bed is PT… on · events / history / medications of PT… |
-| The ward | unacknowledged events / worklist · most severe alarm · critical events in the last 24 h · alarms per bed · patients with a rhythm · withheld / acknowledged events · outstanding action items · patterns · how many events today |
+| The ward | patients sickest first ("list patients by criticality", "bed rounds", "who should I see first"; "…in bed order") · unacknowledged events / worklist · most severe alarm · critical events in the last 24 h · alarms per bed · patients with a rhythm · withheld / acknowledged events · outstanding action items · patterns · how many events today |
 | The documents | protocols (VT/VF, AFib RVR, …) · MEWS escalation · what a MEWS of N means · hyperkalaemia · critical alarm SOP; topics with no document are declined |
 | The call | acknowledge (names the event it closes; another bed's event is refused) · no / not correct · repeat that · thank you / goodbye |
 

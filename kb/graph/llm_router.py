@@ -49,7 +49,10 @@ CATALOGUE: dict[str, tuple[str, str | None]] = {
     "trend_last_event_of_type": ("HR/BP trend for the last event of a rhythm type", "event_type"),
     "patients_with_event_type": ("every patient who had a given rhythm type", "event_type"),
     "outstanding_action_items": ("open action items across the unit", None),
-    "worklist": ("the worklist: unacknowledged High/Critical events (pending alarms)", None),
+    "worklist": ("the worklist: every unacknowledged event (pending alarms), most severe first",
+                 None),
+    "patients_by_criticality": ("every patient ranked sickest first (criticality, MEWS): bed "
+                                "rounds, triage, who to see first", None),
     "alarm_counts": ("alarm counts per patient and bed, most first (who has the most alarms)",
                      None),
     "cohort_patterns": ("demographic / co-morbidity patterns vs event type", None),

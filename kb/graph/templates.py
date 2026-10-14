@@ -34,6 +34,37 @@ TEMPLATES: dict[str, str] = {
         ORDER BY CASE e.criticality WHEN 'Critical' THEN 0 WHEN 'High' THEN 1
                                     WHEN 'Medium' THEN 2 ELSE 3 END, e.timestamp DESC
     """,
+    # Every patient, sickest first — "list patients by criticality", "patients for bed rounds".
+    # Patients with open (alerted, unacknowledged) alerts come first, by the most severe open alert;
+    # then by the latest event's MEWS band; then newest. The MEWS *score* (in `why_json`) breaks ties
+    # within a band in the answer renderer. One row per patient, with the current bed.
+    "patients_by_criticality": """
+        MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
+        WITH p, e ORDER BY e.timestamp DESC
+        WITH p, collect(e) AS evs
+        WITH p, evs[0] AS latest,
+             [x IN evs WHERE coalesce(x.alert_gate, false)
+                             AND NOT coalesce(x.status, 'reported') IN $closed] AS open
+        WITH p, latest, open,
+             reduce(top = null, x IN open |
+                    CASE WHEN top IS NULL OR
+                              (CASE x.criticality WHEN 'Critical' THEN 3 WHEN 'High' THEN 2
+                                    WHEN 'Medium' THEN 1 ELSE 0 END) >
+                              (CASE top.criticality WHEN 'Critical' THEN 3 WHEN 'High' THEN 2
+                                    WHEN 'Medium' THEN 1 ELSE 0 END)
+                         THEN x ELSE top END) AS worst
+        OPTIONAL MATCH (p)-[r:ASSIGNED_TO]->(b:Bed) WHERE coalesce(r.current, true)
+        WITH p, latest, open, worst, head(collect(b.label)) AS bed
+        RETURN p.pseudonym AS patient, bed, size(open) AS open_alerts,
+               worst.criticality AS open_criticality, worst.event_type AS open_event,
+               latest.event_type AS latest_event, latest.criticality AS latest_criticality,
+               latest.mews_risk AS mews_risk, latest.why_json AS why_json, latest.timestamp AS ts
+        ORDER BY CASE worst.criticality WHEN 'Critical' THEN 3 WHEN 'High' THEN 2
+                      WHEN 'Medium' THEN 1 WHEN 'Low' THEN 0 ELSE -1 END DESC,
+                 CASE latest.mews_risk WHEN 'Critical' THEN 3 WHEN 'High' THEN 2
+                      WHEN 'Medium' THEN 1 ELSE 0 END DESC,
+                 latest.timestamp DESC
+    """,
     # Alarm counts per patient + bed, most first: "which patient has the most alarms?"
     "alarm_counts": """
         MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)
@@ -395,6 +426,7 @@ TEMPLATE_DEFAULTS: dict[str, dict] = {
     "worklist": {"since": 0, "levels": WORKLIST_LEVELS, "closed": CLOSED_STATUSES},
     "alarm_counts": {"levels": WORKLIST_LEVELS, "closed": CLOSED_STATUSES},
     "event_count_since": {"closed": CLOSED_STATUSES},
+    "patients_by_criticality": {"closed": CLOSED_STATUSES},
 }
 
 
