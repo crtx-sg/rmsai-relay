@@ -7,8 +7,8 @@ pressure, respiratory rate, temperature, and oxygen saturation.
 
 ## Scoring
 Each component contributes 0 to 3 points based on how far it deviates from the normal range. The
-total score determines the risk level: a total of 0 to 1 is low risk, 2 to 3 is medium risk, 4 to
-5 is high risk, and 6 or more is critical risk.
+total score determines the risk level: a total of 0 to 2 is low risk, 3 to 4 is medium risk, 5 to
+6 is high risk, and 7 or more is critical risk.
 
 ## Escalation thresholds
 A score of 4 or more should trigger urgent bedside review by the responsible clinician. A score of
