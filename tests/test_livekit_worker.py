@@ -436,3 +436,11 @@ def test_turn_latency_forgets_turns_that_never_spoke():
     assert len(lat._eou) <= 32
     lat.on_metrics(EOUMetrics(speech_id="s9", end_of_utterance_delay=1.0))
     assert lat.on_metrics(TTSMetrics(speech_id="s9", ttfb=0.2)) is not None  # latest still joins
+
+
+def test_a_queued_stale_qa_run_skips_the_handler_but_pin_and_ack_runs_do_not():
+    agent = _make_agent(authenticated=True)
+    agent._turn_no = 2  # a newer turn arrived while turn 1 waited for the lock
+    assert agent._respond_serial("old question", 1) == ""
+    assert agent._respond_serial("new question", 2) == "echo:new question"
+    assert agent._respond_serial("acknowledge", None) == "echo:acknowledge"  # never skipped

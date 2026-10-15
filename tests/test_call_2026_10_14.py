@@ -51,6 +51,22 @@ def test_carried_piece_joins_the_next_one_and_routes_to_mews_for_the_bed():
     assert join_carried(("What was the", t), "later", t + 60) == "later"  # stale piece dropped
 
 
+def test_a_reasked_question_replaces_the_carry_not_joins_it():
+    # Live call 2026-10-15: a stuck answer was cancelled by each re-ask and the turns snowballed.
+    t = time.monotonic()
+    q1 = "Can you provide the list of critical patients in this unit?"
+    q2 = "Can you list the cri-critical patients in this unit?"
+    assert join_carried((q1, t), q2, t + 2) == q2
+    assert join_carried(("Can you list the", t), "Make a list of critical patients", t + 2) \
+        == "Make a list of critical patients"
+    # a fragment still completes the held question
+    assert join_carried(("Can you list the order in which I should do", t), "Patient rounds",
+                        t + 2) == "Can you list the order in which I should do Patient rounds"
+    # "what about …" continues the held question rather than starting a new one
+    assert join_carried(("What was the MEWS score", t), "what about for bed seven", t + 2) \
+        == "What was the MEWS score what about for bed seven"
+
+
 # --- routing ---------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("q", ["What was the last reported event on bed seven?",

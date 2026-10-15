@@ -246,6 +246,11 @@ def _fmt_value(key: str, value) -> str:
     return str(value).replace("_", " ")
 
 
+# shortcut: the audit copy of graph rows is cut here, since de-id (~0.5 ms/char) runs before the
+# spoken reply; move the audit write off the reply path if full rows must be kept.
+_AUDIT_MAX_CHARS = 8000
+
+
 def _render_operational(name: str, rows: list[dict]) -> str:
     """Render template rows as readable text (not raw dicts), so the answer reads as prose.
 
@@ -257,7 +262,10 @@ def _render_operational(name: str, rows: list[dict]) -> str:
         return "## Matching records (patient knowledge graph)\n(no matching records)"
     lines = []
     for row in rows:
-        pairs = [f"{k}: {_fmt_value(k, v)}" for k, v in row.items() if v is not None]
+        # why_json is a multi-KB explanation blob (read only for MEWS): rendering it made de-id of
+        # a 12-row ranking take ~36 s and the voice reply never arrived.
+        pairs = [f"{k}: {_fmt_value(k, v)}" for k, v in row.items()
+                 if v is not None and k != "why_json"]
         lines.append(f"- {', '.join(pairs)}")
     # No internal template name in the header — it leaks into the model's answer as snake_case noise.
     return "## Matching records (patient knowledge graph)\n" + "\n".join(lines)
@@ -1108,7 +1116,7 @@ class Orchestrator:
             answer_text = decline_hint
         elif mode == "operational" and name == EVENT_HISTORY:
             answer_text = _answer_event_history(operational_rows, params, spoken=spoken)
-            model_input = self._model_input([(kb_context, True)])
+            model_input = self._model_input([(kb_context[:_AUDIT_MAX_CHARS], True)])
         elif mode == "operational":
             # Structured graph result -> deterministic, crisp answer. No LLM is called, so NO prompt
             # is built: conversation history and recalled past interactions never touch an operational
@@ -1134,7 +1142,7 @@ class Orchestrator:
                                if spoken and operational_rows and len(operational_rows) > 1
                                else _answer_operational(operational_rows, name))
             # The rows that informed it (audit only): a de-id failure must not lose this answer.
-            model_input = self._model_input([(kb_context, True)])
+            model_input = self._model_input([(kb_context[:_AUDIT_MAX_CHARS], True)])
         else:
             # Free-text/hybrid: the LLM needs conversation history (multi-turn follow-ups). Built ONLY
             # here — only when the model is actually invoked. Recalled "past interactions" are added

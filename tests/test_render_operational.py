@@ -97,3 +97,9 @@ def test_answer_operational_ecg_strip_availability():
 def test_answer_operational_empty():
     assert _answer_operational([]) == "No matching records."
     assert _answer_operational(None) == "No matching records."
+
+
+def test_render_operational_omits_why_json_blob():
+    rows = [{"patient": "PT1", "why_json": '{"vitals": {"mews": {"score": 4}}}'}]
+    out = _render_operational("patients_by_criticality", rows)
+    assert "PT1" in out and "why_json" not in out and "mews" not in out

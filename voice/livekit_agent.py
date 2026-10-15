@@ -169,6 +169,11 @@ _DANGLING = re.compile(
     re.IGNORECASE)
 _DANGLING_MAX_WORDS = 4
 _CARRY_S = 10.0  # a carried piece older than this is dropped, not joined
+# A piece that opens its own question supersedes the carry instead of being glued to it. Live call
+# 2026-10-15: three re-asked questions were joined into one ever-growing turn, none answered.
+_NEW_QUESTION = re.compile(
+    r"^\W*(?:can|could|would|will|what(?!\s+about\b)|what's|whats|which|who|how|when|where|why|"
+    r"list|show|give|tell|make|kindly|please)\b", re.IGNORECASE)
 
 
 def is_dangling(text: str) -> bool:
@@ -188,8 +193,9 @@ def can_carry(text: str, *, authenticated: bool, push_to_talk: bool) -> bool:
 
 
 def join_carried(carry: tuple[str, float] | None, text: str, now: float) -> str:
-    """`text` prefixed with a recent carried piece (see `_DANGLING`), else `text` unchanged."""
-    if carry and now - carry[1] <= _CARRY_S:
+    """`text` prefixed with a recent carried piece (see `_DANGLING`), else `text` unchanged. A piece
+    that starts a new question replaces the carried one (`_NEW_QUESTION`)."""
+    if carry and now - carry[1] <= _CARRY_S and not _NEW_QUESTION.match(text or ""):
         return f"{carry[0].rstrip()} {text.lstrip()}".strip()
     return text
 
@@ -451,6 +457,7 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             self._latency = latency
             self._carry: tuple[str, float] | None = None  # unanswered start of a split question
             self._turn_lock = threading.Lock()
+            self._turn_no = 0  # newest audio turn; an older queued run skips the handler
 
         async def on_enter(self) -> None:
             if not self._greeting:
@@ -509,12 +516,14 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                     self._carry = (text, time.monotonic())
                     print(f"[worker] answer {why}; carrying the question", flush=True)
 
+            self._turn_no += 1
             loop = asyncio.get_running_loop()
             started = time.monotonic()
             try:
                 # One handler run at a time: a cancelled run keeps going in its thread, and the next
                 # turn must not interleave with it (same chat history, same LLM).
-                reply = await loop.run_in_executor(None, partial(self._respond_serial, text))
+                reply = await loop.run_in_executor(None, partial(
+                    self._respond_serial, text, self._turn_no if carry_ok else None))
             except asyncio.CancelledError:
                 # The next piece of the same question arrived before this answer was ready.
                 _carry("cancelled by the next speech")
@@ -537,8 +546,13 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             if is_locked and is_locked(self._session_id):
                 asyncio.ensure_future(self._hang_up_after(self.session.current_speech))
 
-        def _respond_serial(self, text: str) -> str:
+        def _respond_serial(self, text: str, turn_no: int | None = None) -> str:
             with self._turn_lock:  # audio turn: short spoken answers, fillers ignored
+                # A cancelled run can't be stopped, but a Q&A run still waiting here is skipped:
+                # the re-ask behind it must not sit through an answer nobody will hear. PIN and
+                # ack turns pass no turn_no (they have side effects and always run).
+                if turn_no is not None and turn_no != self._turn_no:
+                    return ""
                 return self._handler.respond(text, session_id=self._session_id, spoken=True)
 
         async def _hang_up_after(self, speech) -> None:
