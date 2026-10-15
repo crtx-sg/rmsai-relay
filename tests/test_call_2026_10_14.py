@@ -15,7 +15,7 @@ import pytest
 from kb.graph.lookup import match_intent, names_unresolved_bed
 from orchestrator.orchestrator import _answer_clinical_history, _spoken_record
 from voice.livekit_agent import is_dangling, join_carried
-from voice.outbound import parse_ack
+from voice.outbound import is_ack_reply, parse_ack
 
 NOW = 1_000_000.0
 EV, PT = "feb5d443", "PT998224"
@@ -144,3 +144,15 @@ def test_clinical_history_expands_abbreviations():
 
 def test_kindly_acknowledge_this_is_an_ack():
     assert parse_ack("Kindly acknowledge this") == "yes"
+
+
+@pytest.mark.parametrize("q", ["Can you acknowledge this even?", "Could you please acknowledge it",
+                               "would you acknowledge the alert?"])
+def test_polite_ack_request_is_an_ack(q):  # live 2026-10-15: answered with the worklist
+    assert parse_ack(q) == "yes" and is_ack_reply(q)
+
+
+@pytest.mark.parametrize("q", ["Can you tell me who acknowledged bed seven?",
+                               "is bed two acknowledged?", "can you not acknowledge it yet"])
+def test_ack_questions_and_refusals_still_do_not_ack(q):
+    assert parse_ack(q) != "yes"

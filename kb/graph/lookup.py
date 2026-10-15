@@ -417,8 +417,12 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         return _history(now=now, patient=scope_patient, bed=bed_label, etype=etype, hours=hours,
                         critical=critical)
 
-    # T1 — critical events in the last N hours.
+    # T1 — critical events in the last N hours. A named bed/patient scopes it: live 2026-10-15,
+    # "what is a critical event on bed five?" read out all 10 unit-wide events, not bed 5's one.
     if "critical" in q and "event" in q:
+        if bed_label or scope_patient:
+            return _history(now=now, patient=scope_patient, bed=bed_label, hours=hours,
+                            critical=True)
         hours = int(m.group(1)) if (m := _HOURS.search(q)) else 24
         return "critical_events_since", {"since": now - hours * 3600}
 

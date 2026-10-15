@@ -219,7 +219,11 @@ _ACK_FILLER = {"i", "we", "that", "thats", "it", "its", "ive", "weve", "this", "
                "event", "alarm", "is", "ok", "okay", "thanks", "thank", "you", "received",
                "understood", "got", "and", "please", "kindly", "sir", "maam", "bye", "goodbye",
                "very", "much", "receipt", "of", "have", "has", "been", "all", "good", "for", "now",
-               "a", "an", "so", "well"}
+               "a", "an", "so", "well", "even"}  # "even": STT for "event" (live 2026-10-15)
+# A polite request is a command, not a question: live 2026-10-15 "Can you acknowledge this even?"
+# was answered with the worklist and the alert stayed open.
+_POLITE_ACK = re.compile(
+    r"^\W*(?:can|could|would|will)\s+you\s+(?:please\s+|kindly\s+)?(?=ack)", re.IGNORECASE)
 _QUESTION = {"what", "whats", "which", "who", "whos", "why", "how", "when", "where", "can",
              "could", "would", "should", "is", "are", "was", "were", "do", "does", "did", "has",
              "have", "will", "any", "tell"}
@@ -230,12 +234,15 @@ _HARMLESS_NO = re.compile(
 
 
 def _ack_tokens(text: str) -> list[str]:
-    return re.findall(r"[a-z]+", _HARMLESS_NO.sub(" ", re.sub(r"['’]", "", text.lower())))
+    text = _POLITE_ACK.sub("", text.lower())
+    return re.findall(r"[a-z]+", _HARMLESS_NO.sub(" ", re.sub(r"['’]", "", text)))
 
 
 def is_question(text: str) -> bool:
     """A question, not an answer: '?' or a question word first ("is bed two acknowledged",
     "who acknowledged bed seven"). STT often drops the '?', so the first word matters."""
+    if _POLITE_ACK.match(text):
+        return False
     tokens = _ack_tokens(text)
     return "?" in text or bool(tokens and tokens[0] in _QUESTION)
 
