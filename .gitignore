@@ -55,3 +55,6 @@ infra/data/
 config/hospitals/*.yaml
 !config/hospitals/default.yaml
 !config/hospitals/*.example.yaml
+
+# VibeWise learning notes (local only)
+.vibe-wise/
