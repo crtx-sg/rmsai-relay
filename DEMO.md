@@ -50,7 +50,7 @@ uv run python -m cli.call                                             # simulate
 
 | Need | How | Check |
 |---|---|---|
-| Vendored model + simulator | `git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn && git -C external/ecgtranscnn checkout bac4a01` | `ls external/ecgtranscnn/ecg_transcovnet/checkpoint.py` |
+| Vendored model + simulator | `git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn && git -C external/ecgtranscnn checkout a843ccf` | `ls external/ecgtranscnn/ecg_transcovnet/checkpoint.py` |
 | `real_v2` weights (gitignored upstream) | `make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn` | `ls external/ecgtranscnn/models/real_v2/fold{0..4}.pt` |
 | ecg_sigma training package | a sibling checkout at `../ecg_sigma/packages/ecg_pkg_v2`, or `export ECGPKG_HOST_DIR=/abs/path/to/packages` in your shell (Compose does not read the repo `.env`) | `ls ../ecg_sigma/packages/ecg_pkg_v2/{package.json,manifest.csv}` |
 | `.env` | `cp .env.example .env`, then set `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `HOSPITAL_ID` **and** `ECG_CHECKPOINTS` (below) | `grep ^ECG_CHECKPOINTS .env` |

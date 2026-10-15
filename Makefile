@@ -33,8 +33,9 @@ setup-all:
 	uv run python -m spacy download en_core_web_sm
 
 # (Re)install the vendored ecgtranscnn editable. Run this after ANY `uv sync` you do by hand.
+# --python .venv: without it uv installs into an active conda env (CONDA_PREFIX) instead.
 external:
-	uv pip install -e external/ecgtranscnn
+	uv pip install --python .venv -e external/ecgtranscnn
 
 # Copy the real-ECG model weights in from a local ecgtranscnn working copy (~42 MB: the 5-fold
 # ensemble plus best_model.pt, the single-model fallback that .env.example documents).

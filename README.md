@@ -748,7 +748,7 @@ They share the same `.env` and the same datastores, so you can mix them.
 ```bash
 # 1. Vendor the ECG model + simulator (gitignored; baked into the image, so clone it FIRST)
 git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn
-git -C external/ecgtranscnn checkout bac4a01
+git -C external/ecgtranscnn checkout a843ccf
 
 # 1b. Model weights (optional). They are gitignored upstream, so the clone carries none — copy
 #     them from a local ecgtranscnn working copy that has them. Without this the pipeline still
@@ -831,7 +831,7 @@ what the container expects.
 ```bash
 # 1. Vendor the ECG model + simulator (gitignored; see external/ecgtranscnn/PLACEHOLDER.md)
 git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn
-git -C external/ecgtranscnn checkout bac4a01
+git -C external/ecgtranscnn checkout a843ccf
 #    Weights are gitignored upstream; copy them from a local ecgtranscnn working copy:
 #    make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn   (skip it to run on the stub)
 
@@ -953,8 +953,8 @@ pip** — the clone carries the `scripts/` simulators and the `models/` metadata
 not. It is gitignored but **baked into the image**, so clone it *before* the first build:
 
 ```bash
-git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn   # pinned: bac4a01
-git -C external/ecgtranscnn checkout bac4a01
+git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn   # pinned: a843ccf
+git -C external/ecgtranscnn checkout a843ccf
 cp .env.example .env    # then set LIVEKIT_API_KEY / LIVEKIT_API_SECRET / HOSPITAL_ID
 ```
 

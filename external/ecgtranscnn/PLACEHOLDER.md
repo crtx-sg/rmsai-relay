@@ -8,14 +8,16 @@ we **wrap** them (`inference/`, `ingest/`, generator), never reimplement.
 
 ```bash
 git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn
-git -C external/ecgtranscnn checkout bac4a01
+git -C external/ecgtranscnn checkout a843ccf
 make external    # (re)install it editable
 ```
 
 - **Source:** https://github.com/crtx-sg/ecgtranscnn (MIT)
-- **Pinned commit:** `bac4a01`. Was `0bc646da5409c319e75fe87eebae276d0725d096`; that snapshot
-  predates the real-ECG work and has no `checkpoint.py`/`classes.py`, so a 13-class checkpoint
-  cannot load through it.
+- **Pinned commit:** `a843ccf` (branch `audit-fixes`): MEWS tables per Subbe 2001, no MEWS from
+  missing vitals, 200 Hz input check, simulated second-degree AV block that drops beats,
+  pyinotify removed. Was `bac4a01`, and before that `0bc646da5409c319e75fe87eebae276d0725d096`,
+  which predates the real-ECG work and has no `checkpoint.py`/`classes.py`, so a 13-class
+  checkpoint cannot load through it.
 
 Prefer the clone (not `pip install git+...`) so the `scripts/` simulators come with it.
 
