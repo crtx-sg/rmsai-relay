@@ -318,7 +318,11 @@ def resolve_handler(room_name: str, alert_store, *, mode: str = "orchestrator"):
     llm = DEFAULT.llm_provider
     embedder = DEFAULT.embedder
     if alert is not None:
-        handler, greeting, cleanup = build_outbound_handler(alert, embedder=embedder, llm=llm)
+        from orchestrator.call_queue import CallQueue  # noqa: PLC0415
+
+        handler, greeting, cleanup = build_outbound_handler(
+            alert, embedder=embedder, llm=llm,
+            on_answered=CallQueue(alert_store.redis).mark_answered)
         try:
             alert_store.delete(room_name)
         except Exception:  # noqa: BLE001

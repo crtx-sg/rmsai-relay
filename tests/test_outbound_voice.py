@@ -187,13 +187,16 @@ def test_pin_lockout_refuses_the_right_pin_afterwards(tmp_path):
 def test_resolve_handler_picks_outbound_when_alert_present(monkeypatch):
     import voice.livekit_agent as la
 
-    monkeypatch.setattr(la, "build_outbound_handler", lambda alert, **k: (f"OUT:{alert.event_id}", "g", None))
+    built = {}
+    monkeypatch.setattr(la, "build_outbound_handler",
+                        lambda alert, **k: (built.update(k), (f"OUT:{alert.event_id}", "g", None))[1])
     monkeypatch.setattr(la, "build_handler", lambda mode, **k: ("IN", "g2", None))
 
     class _Store:
         def __init__(self, alert):
             self._a = alert
             self.deleted = []
+            self.redis = object()
 
         def get(self, room):
             return self._a
@@ -205,6 +208,7 @@ def test_resolve_handler_picks_outbound_when_alert_present(monkeypatch):
     store = _Store(alert)
     h, _, _ = la.resolve_handler("room1", store)
     assert h == "OUT:E1" and store.deleted == ["room1"]  # alert consumed
+    assert built["on_answered"].__name__ == "mark_answered"  # the PIN marks the queued call answered
 
     assert la.resolve_handler("room2", _Store(None))[0] == "IN"  # no alert -> inbound
     assert la.resolve_handler("room3", None)[0] == "IN"  # no store -> inbound

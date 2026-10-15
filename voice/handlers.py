@@ -179,10 +179,14 @@ class OutboundHandler(OrchestratorHandler):
     from the worker side.
     """
 
-    def __init__(self, orchestrator, working_memory, alert: OutboundAlert, *, driver=None, **kwargs) -> None:
+    def __init__(self, orchestrator, working_memory, alert: OutboundAlert, *, driver=None,
+                 on_answered=None, **kwargs) -> None:
         super().__init__(orchestrator, working_memory, **kwargs)
         self.alert = alert
         self.driver = driver
+        # Called with the event id once the PIN passes, so a consumer crash doesn't re-ring
+        # (`CallQueue.mark_answered`).
+        self._on_answered = on_answered
 
     def _on_authenticated(self, session_id: str) -> str:
         # Scope every subsequent turn to this patient, then speak the alert that prompted the call.
@@ -190,6 +194,12 @@ class OutboundHandler(OrchestratorHandler):
         # (a VF call answered vitals from a VT event 0.4s newer, observed 2026-10-13).
         self.working.set_authenticated(session_id, patient_ref=self.alert.patient_ref,
                                        event_ref=self.alert.event_id)
+        if self._on_answered is not None:
+            try:
+                self._on_answered(self.alert.event_id)
+            except Exception as exc:  # noqa: BLE001 - best effort: never block the alert
+                print(f"[voice] could not mark {self.alert.event_id} answered: "
+                      f"{type(exc).__name__}", flush=True)
         print(f"[voice] speaking event alert for {self.alert.patient_ref} "
               f"(event {self.alert.event_id})", flush=True)
         # Built from structured fields only (pseudonym, bed, rhythm, vitals): safe to log (rule 6).
@@ -386,7 +396,7 @@ def build_handler(
 
 
 def build_outbound_handler(
-    alert: OutboundAlert, *, embedder: str = "hashing", llm: str = "echo",
+    alert: OutboundAlert, *, embedder: str = "hashing", llm: str = "echo", on_answered=None,
 ) -> tuple[Handler, str | None, "callable | None"]:
     """Build the outbound (event-seeded) handler for the worker. Returns (handler, greeting, cleanup).
 
@@ -396,7 +406,7 @@ def build_outbound_handler(
     from orchestrator.chat import build_orchestrator  # noqa: PLC0415
 
     orch, driver = build_orchestrator(embedder=embedder, llm=llm)
-    handler = OutboundHandler(orch, orch.working, alert, driver=driver)
+    handler = OutboundHandler(orch, orch.working, alert, driver=driver, on_answered=on_answered)
     return handler, handler.greeting(), driver.close
 
 

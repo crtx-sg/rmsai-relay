@@ -136,6 +136,42 @@ def test_crashed_holder_job_is_recovered_once_its_lease_lapses():
     assert q2.claim().event_id == "a"   # the orphan is re-queued, most severe first
 
 
+def test_crash_after_the_pin_does_not_ring_again():
+    r = _FakeRedis()
+    q1, q2 = CallQueue(r), CallQueue(r)
+    q1.push(_job("a", "Critical", 1000))
+    assert q1.claim().event_id == "a"
+    q1.mark_answered("a")               # the clinician passed the PIN, then consumer 1 died
+    r.delete(q1.active_key)             # its lease expires
+    assert q2.recover() == 0 and q2.claim() is None
+    assert r.hget(q2.jobs_key, "a") is None  # dropped, not left to be found again
+
+
+def test_crash_before_the_pin_still_rings_again():
+    r = _FakeRedis()
+    q1, q2 = CallQueue(r), CallQueue(r)
+    q1.push(_job("a", "Critical", 1000))
+    assert q1.claim().event_id == "a"   # ringing, no PIN yet, when consumer 1 died
+    r.delete(q1.active_key)
+    assert q2.claim().event_id == "a"
+
+
+def test_right_pin_marks_the_call_answered(tmp_path):
+    from common.audit import AuditLog
+    from tests.test_outbound_voice import _FakeOrch, _FakeWorking
+    from voice.handlers import OutboundHandler
+    from voice.outbound_alert import OutboundAlert
+
+    answered = []
+    h = OutboundHandler(_FakeOrch(), _FakeWorking(), OutboundAlert("room1", "PT1", "E-VF", "Alert"),
+                        driver=object(), audit=AuditLog(tmp_path / "a.jsonl"),
+                        on_answered=answered.append)
+    h.respond("nine nine nine nine", session_id="room1")
+    assert answered == []               # a wrong PIN is not an answer
+    h.respond("one two three four", session_id="room1")
+    assert answered == ["E-VF"]
+
+
 def test_dispatcher_places_calls_one_at_a_time_and_survives_a_failing_one():
     q = CallQueue(_FakeRedis())
     for i, c in enumerate(["High", "Critical", "High"]):

@@ -17,6 +17,11 @@ One call at a time holds across processes too: a dispatcher must `claim()` the s
 call). Two consumers used to run two dispatchers, and a second consumer's startup `recover()`
 re-queued the call the first one was placing, so the clinician was rung twice.
 
+A call the clinician answered (right PIN, `mark_answered`) is not re-queued by `recover()`: a crash
+after the PIN used to ring them a second time for the same event. Demo POC limits: a call cut off
+between the PIN and the end of the spoken alert is not placed again (the event stays pending on the
+worklist), and a restarted consumer can still re-queue a call that is ringing but not yet answered.
+
 Jobs carry the bus payload (already on our own Redis, keyed by pseudonym), never names.
 """
 
@@ -32,6 +37,8 @@ from common.criticality import criticality_rank
 _QUEUE = "rmsai:calls:queue"
 _JOBS = "rmsai:calls:jobs"
 _ACTIVE = "rmsai:calls:active"  # the one call being placed system-wide (event id), with a lease
+_ANSWERED = "rmsai:calls:answered:{event_id}"  # set by the voice worker on the right PIN
+_ANSWERED_TTL_S = 24 * 3600
 _LEASE_S = 60  # renewed every _LEASE_S/3 during a call; a crashed holder frees the slot after this
 # Renew / release the slot only while it still holds OUR event id (atomic compare-and-act). A plain
 # EXPIRE or GET-then-DEL could extend or free a slot another process had claimed after ours lapsed.
@@ -131,6 +138,12 @@ class CallQueue:
         e.g. the laptop slept through a call, and another process may now be dialling)."""
         return bool(self.redis.eval(_RENEW, 1, self.active_key, event_id, self.lease_s))
 
+    def mark_answered(self, event_id: str) -> None:
+        """The clinician passed the PIN on this event's call: `recover()` must not ring them again.
+        A key of its own (one SET, not an edit of the job JSON) so it can't recreate a job `done()`
+        already deleted."""
+        self.redis.set(_ANSWERED.format(event_id=event_id), "1", ex=_ANSWERED_TTL_S)
+
     def done(self, event_id: str) -> None:
         self.redis.hdel(self.jobs_key, event_id)
         self.redis.eval(_RELEASE, 1, self.active_key, event_id)
@@ -140,7 +153,12 @@ class CallQueue:
 
     def recover(self) -> int:
         """Re-queue jobs that were popped but never finished (the process died mid-call). The job
-        another process is dialling right now (it holds the call slot) is left alone."""
+        another process is dialling right now (it holds the call slot) is left alone, and a job whose
+        call was already answered is dropped instead.
+
+        shortcut: "answered" = the right PIN, so a call cut off before the alert finished is not
+        re-placed, and a call still ringing can be re-queued; track call state in the worker if a
+        real deployment needs either."""
         queued = {_s(m) for m in self.redis.zrange(self.queue_key, 0, -1)}
         active = self.redis.get(self.active_key)
         if active is not None:
@@ -148,7 +166,13 @@ class CallQueue:
         n = 0
         for event_id, raw in self.redis.hgetall(self.jobs_key).items():
             event_id = _s(event_id)
-            if event_id not in queued:
+            if event_id in queued:
+                continue
+            if self.redis.get(_ANSWERED.format(event_id=event_id)) is not None:
+                self.redis.hdel(self.jobs_key, event_id)
+                print(f"[calls] not re-calling {event_id}: already answered before the crash",
+                      flush=True)
+            else:
                 self.redis.zadd(self.queue_key, {event_id: CallJob.from_json(raw).score})
                 n += 1
         return n
