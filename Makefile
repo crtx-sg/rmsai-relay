@@ -9,7 +9,7 @@
 # ecgtranscnn working copy (ECGTRANSCNN_DIR). Without it the pipeline runs the deterministic stub.
 
 .DEFAULT_GOAL := setup
-.PHONY: setup setup-all external weights test lint \
+.PHONY: setup setup-all external weights check-ecg test lint \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps docker-shell \
         stores-up stores-down stores-check phone-up phone-down phone-logs phone-transcript demo-up demo-phone-up demo-check demo-down
 
@@ -113,6 +113,12 @@ demo-phone-up:
 # Read-only: is the running demo healthy and started in the right order? Exit 0 = ready.
 demo-check:
 	@./infra/demo-check.sh
+
+# Vendored ecgtranscnn at its pin, the same code on the host .venv and in the Docker image (and in
+# running containers), and ECG_CHECKPOINTS present and identical to $(ECGTRANSCNN_DIR). Run after
+# moving the pin, `make weights` or `make docker-build`.
+check-ecg:
+	@ECGTRANSCNN_DIR=$(ECGTRANSCNN_DIR) ./infra/check-ecg.sh
 
 # Stop and remove every demo container (incl. the telephony phone worker). Volumes are kept, so the
 # graph, vectors and KB survive; `make demo-up` brings it all back.
