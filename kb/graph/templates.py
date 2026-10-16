@@ -232,6 +232,15 @@ TEMPLATES: dict[str, str] = {
         RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event, e.timestamp AS ts,
                e.hr AS hr, e.hr_history AS hr_history, e.hr_history_ts AS hr_history_ts
     """,
+    # Each vital's recorded history (oldest-first) at an event: "last 3 respiratory readings".
+    "vital_readings_for_event": """
+        MATCH (e:MonitoredEvent {uuid: $event_uuid})
+        OPTIONAL MATCH (p:Patient)-[:HAD_EVENT]->(e)
+        OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
+        RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event_type, e.timestamp AS ts,
+               e.hr_history AS hr, e.sbp_history AS sbp, e.dbp_history AS dbp,
+               e.spo2_history AS spo2, e.rr_history AS rr, e.temp_history AS temp
+    """,
     # How many events since a time ("how many events today?"): total, alerted and still pending.
     "event_count_since": """
         MATCH (p:Patient)-[:HAD_EVENT]->(e:MonitoredEvent)

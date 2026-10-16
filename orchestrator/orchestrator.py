@@ -403,6 +403,28 @@ def _spoken_vitals(r: dict, focus: str | None = None) -> list[str]:
     return out
 
 
+_READING_LABEL = {"hr": "heart rate", "sbp": "systolic blood pressure",
+                  "dbp": "diastolic blood pressure", "spo2": "oxygen saturation",
+                  "rr": "respiratory rate", "temp": "temperature"}
+
+
+def _answer_vital_readings(row: dict, focus: str | None, n: int) -> str:
+    """'Patient PT942338 on bed 1, last 3 readings before the event, oldest first: respiratory rate
+    15, 15, 16.' Systolic and diastolic are listed apart: they are sampled at different times."""
+    head = f"Patient {row['patient']}" if row.get("patient") else "This patient"
+    if row.get("bed"):
+        head += f" on {spoken_bed(row['bed'])}"
+    keys = {"bp": ("sbp", "dbp")}.get(focus, (focus,)) if focus else _VITAL_KEYS
+    parts = []
+    for key in keys:
+        label = _READING_LABEL[key]
+        if hist := row.get(key):
+            parts.append(f"{label} {', '.join(_fmt_value(key, v) for v in hist[-n:])}")
+        else:
+            parts.append(f"{label} not recorded")
+    return f"{head}, last {n} readings before the event, oldest first: {'; '.join(parts)}."
+
+
 def _spoken_time(ts) -> str:
     from datetime import datetime, timezone  # noqa: PLC0415
 
@@ -1132,6 +1154,9 @@ class Orchestrator:
             elif name == "patients_by_criticality":
                 answer_text = _answer_patient_ranking(operational_rows, order=params.get("order"),
                                                       spoken=spoken)
+            elif name == "vital_readings_for_event":
+                answer_text = (_answer_vital_readings(operational_rows[0], focus, params.get("n", 3))
+                               if operational_rows else "I couldn't find that event.")
             elif name == "event_count_since":
                 answer_text = _answer_event_count(operational_rows, params.get("window"))
             elif spoken and operational_rows and len(operational_rows) == 1 \

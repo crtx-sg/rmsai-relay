@@ -78,6 +78,11 @@ def test_event_persisted_and_queryable_by_bed_and_time(setup):
     vitals = run_template(driver, "vitals_at_event", event_uuid=result.event_uuid)
     assert vitals[0]["hr"] == 145.0
 
+    # every vital's history stored, not just HR (the fixture records all six)
+    row = driver.run_read("MATCH (e:MonitoredEvent {id:$id}) RETURN e AS e", id=result.event_uuid)[0]["e"]
+    for field in ("hr", "sbp", "dbp", "spo2", "rr", "temp"):
+        assert row[f"{field}_history"] and len(row[f"{field}_history"]) == len(row[f"{field}_history_ts"])
+
 
 def test_action_items_from_care_guidance(setup):
     from kb.graph.templates import run_template

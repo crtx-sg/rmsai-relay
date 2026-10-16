@@ -12,12 +12,16 @@ from common.event_types import event_type_from_text
 
 from .driver import GraphDriver
 from .entities import condition_id
-from .spoken import normalize_spoken_query
+from .spoken import _ONES, normalize_spoken_query
 from .templates import EVENT_HISTORY, run_template
 
 _BED = re.compile(r"\bbed\s+([A-Za-z0-9_-]+)", re.IGNORECASE)
 # A full label typed as-is ("events on Unit1-Bed02"): no "bed " before it, so _BED misses it.
 _BED_LABEL = re.compile(r"\bUnit\d+-Bed\d+\b", re.IGNORECASE)
+# A series of recorded values ("last three respiratory readings"), not the snapshot at the event.
+_READINGS = re.compile(r"\b(?:readings?|measurements?)\b", re.IGNORECASE)
+_LAST_N = re.compile(r"\b(?:last|previous|past|recent)\s+(\d+|" + "|".join(_ONES) + r")\b",
+                     re.IGNORECASE)
 _HOURS = re.compile(r"\b(\d+)\s*h(?:ours?)?\b", re.IGNORECASE)
 _MINUTES = re.compile(r"\b(\d+)\s*m(?:in(?:utes?)?)?\b", re.IGNORECASE)
 # Vitals question: any vital-sign term.
@@ -27,7 +31,7 @@ _VITAL_FOCUS = (
     ("hr", re.compile(r"\b(heart\s+rate|hr|pulse)\b", re.IGNORECASE)),
     ("bp", re.compile(r"\b(blood\s+pressure|bp|systolic|diastolic)\b", re.IGNORECASE)),
     ("spo2", re.compile(r"\b(spo2|oxygen|saturation|sats)\b", re.IGNORECASE)),
-    ("rr", re.compile(r"\b(respiratory\s+rate|resp\s+rate|breathing|rr)\b", re.IGNORECASE)),
+    ("rr", re.compile(r"\b(respirat\w*|resp\s+rate|breathing|rr)\b", re.IGNORECASE)),
     ("temp", re.compile(r"\b(temperature|temp|fever)\b", re.IGNORECASE)),
 )
 # The patient's clinical background (graph: diagnoses, medications, surgeries, symptoms), as opposed
@@ -313,6 +317,14 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         if event_ref:  # the called event's trend, not a newer event of the same patient
             return "hr_trend_for_event", {"event_uuid": event_ref}
         return "hr_trend_for_patient_last_event", {"patient_id": patient_ref}
+
+    # The last N recorded readings of a vital (or every vital) before the called/selected event.
+    if event_ref and _READINGS.search(q) and not bed and not named:
+        word = m.group(1) if (m := _LAST_N.search(q)) else ""
+        n = int(word) if word.isdigit() else _ONES.get(word, 3)
+        focus = _focus(q, _VITAL_FOCUS)
+        return "vital_readings_for_event", {"event_uuid": event_ref, "n": n or 3,
+                                            **({"focus": focus} if focus else {})}
 
     # List all patients who had an event of a type ("show all patients with an AFib event").
     if etype and _ALL_PATIENTS.search(q):

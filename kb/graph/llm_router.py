@@ -40,6 +40,8 @@ CATALOGUE: dict[str, tuple[str, str | None]] = {
     "events_for_patient": ("this patient's event history", "session_patient"),
     "hr_trend_for_patient_last_event": ("HR trend at this patient's last event", "session_patient"),
     "vitals_at_selected_event": ("vitals at the selected worklist event", "session_event"),
+    "vital_readings_for_event": ("the last few recorded readings of the vitals before the "
+                                 "selected event (a series, not one snapshot)", "session_event"),
     "mews_at_selected_event": ("MEWS score / criticality of the selected worklist event", "session_event"),
     "mews_at_patient_last_event": ("MEWS score / criticality at this patient's latest event",
                                    "session_patient"),
@@ -62,7 +64,7 @@ CATALOGUE: dict[str, tuple[str, str | None]] = {
 #: rather than about clinical literature? Deliberately imprecise — precision is the model's job.
 #: This exists purely to keep the router (and its seconds of latency) off the document path.
 _OPERATIONAL = re.compile(
-    r"\b(bed|patient|ward|unit|event|events|vitals?|vital signs|heart rate|hr|bp|blood pressure|"
+    r"\b(bed|patient|ward|unit|event|events|vitals?|readings?|vital signs|heart rate|hr|bp|blood pressure|"
     r"spo2|sats|mews|trend|trending|ecg|strip|rhythm|episode|alert|alarm|acknowledg\w*|status|"
     r"reported|outstanding|action items?|protocol for|last (hour|24|day)|today|tonight|"
     r"overnight|so far|right now|currently)\b",
