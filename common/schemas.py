@@ -111,7 +111,7 @@ class SignalWindow(BaseModel):
 # --------------------------------------------------------------------------------------
 
 TrendDirection = Literal["improving", "deteriorating", "stable", "insufficient_data"]
-MEWSRisk = Literal["Low", "Medium", "High", "Critical"]
+MEWSRisk = Literal["Low", "Medium", "High", "Critical", "Unknown"]
 
 
 class MEWSComponentScore(BaseModel):
@@ -123,11 +123,19 @@ class MEWSComponentScore(BaseModel):
 
 
 class MEWS(BaseModel):
-    score: int
-    risk: MEWSRisk
+    # None / "Unknown" when a required vital is missing: never a 0 / "Low" that looks reassuring.
+    score: Optional[int] = None
+    risk: MEWSRisk = "Unknown"
     # Per-vital sub-scores, so an explanation can say *which* vitals drive the total. Optional:
     # empty when MEWS was degraded (a vital missing) or the payload predates the field.
     components: list[MEWSComponentScore] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)  # required vitals absent (when Unknown)
+
+    def label(self) -> str:
+        """'MEWS 4 (Medium)' or 'MEWS unavailable (missing Systolic, Temp)'."""
+        if self.score is None:
+            return "MEWS unavailable" + (f" (missing {', '.join(self.missing)})" if self.missing else "")
+        return f"MEWS {self.score} ({self.risk})"
 
 
 class VitalTrend(BaseModel):

@@ -42,6 +42,21 @@ def build_event_report(event: DeviceEvent, patient_context: dict) -> str:
     return f"{base}\n\n{render_patient_context(patient_context)}\n"
 
 
+_SPOKEN_VITAL = {"Systolic": "systolic blood pressure", "Temp": "temperature",
+                 "SpO2": "oxygen saturation", "HR": "heart rate", "RespRate": "respiratory rate"}
+
+
+def _spoken_mews(mews) -> str:
+    """'MEWS 4 (Medium)', or 'MEWS unavailable, no systolic blood pressure or temperature'."""
+    if mews.score is not None:
+        return mews.label()
+    names = [_SPOKEN_VITAL.get(m, m) for m in mews.missing]
+    if not names:
+        return "MEWS unavailable"
+    return "MEWS unavailable, no " + (names[0] if len(names) == 1
+                                       else ", ".join(names[:-1]) + " or " + names[-1])
+
+
 def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config = DEFAULT) -> str:
     """A concise spoken alert for the outbound call (the full markdown is for the chart/vector)."""
     w = event.window
@@ -72,7 +87,7 @@ def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config 
         lead, override_txt = f"Detected {detected}", ""
     return (
         f"Alert for patient {w.patient_ref}{where}. {lead}, "
-        f"{crit} criticality, MEWS {a.mews.score} ({a.mews.risk}), "
+        f"{crit} criticality, {_spoken_mews(a.mews)}, "
         f"confidence {event.confidence:.0%}.{guidance_txt}{override_txt}"
     )
 
@@ -83,6 +98,6 @@ def report_summary(event: DeviceEvent) -> str:
     fp = " (false positive)" if event.is_false_positive else ""
     return (
         f"{event.event_type}{fp} for {w.patient_ref}, "
-        f"MEWS {event.analysis.mews.score} ({event.analysis.mews.risk}), "
+        f"{event.analysis.mews.label()}, "
         f"confidence {event.confidence:.2f}"
     )

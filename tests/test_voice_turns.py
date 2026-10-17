@@ -258,7 +258,7 @@ def test_without_the_pin_a_reused_room_shares_nothing(tmp_path):
                             audit=AuditLog(tmp_path / "a.jsonl"))
     h.begin_session("room")
     out = h.respond("what is the latest alarm", session_id="room", spoken=True)
-    assert "authenticate" in out and orch.calls == []
+    assert "PIN" in out and orch.calls == []
 
 
 # --- named beds / patients reach the graph; event lists are never truncated -----------------------

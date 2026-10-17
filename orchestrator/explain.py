@@ -94,7 +94,8 @@ def explain_event(event, config: Config = DEFAULT) -> dict:
             not_alerting.append(_trend_entry(event, name, t))
     vitals = {
         "mews": {"score": a.mews.score, "risk": a.mews.risk, "threshold": mews_thr,
-                 "triggered": a.mews.score >= mews_thr, "components": components},
+                 "triggered": a.mews.score is not None and a.mews.score >= mews_thr,
+                 "missing": a.mews.missing, "components": components},
         "deteriorating": deteriorating,
         "not_alerting": not_alerting,
         "trend_triggered": bool(deteriorating) and config.criticality_escalate_on_deteriorating,

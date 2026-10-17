@@ -359,7 +359,7 @@ def _mews_from_explanation(why_json) -> str | None:
         return None
     try:
         m = json.loads(why_json)["vitals"]["mews"]
-        text = f"MEWS {m['score']} ({m['risk']})"
+        text = f"MEWS {m['score']} ({m['risk']})" if m["score"] is not None else "MEWS unavailable"
     except (ValueError, KeyError, TypeError):
         return None
     comps = ", ".join(f"{c['name']} {c['value']} scores {c['score']}"
@@ -455,6 +455,8 @@ def _spoken_record(row: dict, focus: str | None = None) -> str:
         mews = None
     if mews and mews.get("score") is not None:
         mews_text = f"MEWS {mews['score']}, {mews.get('risk', '').lower()} risk".rstrip(", ")
+    elif r.get("mews_risk") == "Unknown":
+        mews_text = "MEWS unavailable"
     elif r.get("mews_risk"):
         mews_text = f"MEWS risk {str(r['mews_risk']).lower()}"
     else:

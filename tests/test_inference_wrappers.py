@@ -149,8 +149,10 @@ def test_vitals_analysis_degrades_without_required_vitals():
     w = _window()
     w.vitals.clear()
     analysis = MewsVitalsAnalysis().analyze(w, event_type="NORMAL_SINUS")
-    assert analysis.mews.score == 0
-    assert any("Insufficient vitals" in g for g in analysis.care_guidance)
+    # unknown, never a reassuring 0 / Low; the gap is not spoken as care guidance (2026-10-17)
+    assert analysis.mews.score is None and analysis.mews.risk == "Unknown"
+    assert "Systolic" in analysis.mews.missing
+    assert not any("Insufficient vitals" in g for g in analysis.care_guidance)
 
 
 def test_correlation_notes_use_prediction():

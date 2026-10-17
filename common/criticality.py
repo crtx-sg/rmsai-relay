@@ -39,7 +39,8 @@ _EVENT_CRITICALITY: dict[str, Criticality] = {
     "ST_ELEVATION": "Critical",
 }
 
-# MEWS risk maps straight onto the same scale.
+# MEWS risk maps straight onto the same scale. "Unknown" is absent: it adds nothing, so the
+# rhythm alone decides (user decision 2026-10-17).
 _MEWS_CRITICALITY: dict[str, Criticality] = {
     "Low": "Low",
     "Medium": "Medium",
@@ -58,7 +59,7 @@ def criticality(event_type: str, mews_risk: str) -> Criticality:
 def assess_criticality(
     event_type: str,
     mews_risk: str,
-    mews_score: int,
+    mews_score: int | None,
     deteriorating: bool,
     *,
     normal_event: str = "NORMAL_SINUS",
@@ -75,7 +76,7 @@ def assess_criticality(
     base = criticality(event_type, mews_risk)
     escalate = (
         event_type != normal_event
-        or mews_score >= mews_threshold
+        or (mews_score is not None and mews_score >= mews_threshold)
         or (escalate_on_deteriorating and deteriorating)
     )
     if escalate and _RANK[base] < _RANK["High"]:
@@ -96,7 +97,7 @@ def vitals_override(event, config) -> tuple[bool, str]:
     Returns `(triggered, reason)` — the reason is a short, loggable phrase for clarity.
     """
     score = event.analysis.mews.score
-    if score >= config.criticality_mews_threshold:
+    if score is not None and score >= config.criticality_mews_threshold:
         return True, f"MEWS {score} >= threshold {config.criticality_mews_threshold}"
     if config.criticality_escalate_on_deteriorating and is_deteriorating(event.analysis):
         return True, "vitals deteriorating"

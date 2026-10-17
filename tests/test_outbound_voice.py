@@ -128,7 +128,7 @@ def test_outbound_handler_pin_then_alert_then_followup(tmp_path):
 
     assert "PIN" in h.greeting()
     # PHI refused before auth
-    assert "authenticate" in h.respond("tell me about the patient", session_id="room1").lower()
+    assert h.respond("tell me about the patient", session_id="room1").startswith("Please say or enter")
     # correct PIN -> speak THIS event's alert (not the generic greeting) + bind the patient
     assert h.respond("one two three four", session_id="room1") == alert.spoken_alert
     assert working.get_or_create("room1").patient_ref == "PT1155"
@@ -154,6 +154,8 @@ def test_outbound_handler_ack_sets_event_status(tmp_path, monkeypatch):
 
     assert "acknowledg" in reply.lower()
     assert recorded == {"uuid": "E1", "status": "acknowledged"}
+    # the call ends after "Goodbye" (2026-10-17: the line stayed open for more queries)
+    assert h.is_ended("room1") and not h.is_locked("room1")
 
 
 def test_outbound_handler_no_or_question_does_not_ack(tmp_path, monkeypatch):

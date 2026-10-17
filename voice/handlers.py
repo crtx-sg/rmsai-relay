@@ -38,7 +38,9 @@ _FILLER = re.compile(
     r"^\W*(?:(?:ok(?:ay)?|yeah|yep|yup|uh[- ]?huh|mm+[- ]?h?mm+|mhm+|hmm+|right|all ?right|"
     r"got it|sure|cool|fine|i see|oh|ah|um+|uh+|"
     # barge-in words (voice.livekit_agent.is_barge_in): they stop the agent; nothing to answer
-    r"stop|wait|hold on)\W*)+$", re.IGNORECASE)
+    r"stop|wait|hold on|"
+    # STT sound-event tags, not speech: "[phone beeping]", "[outro jingle]" (live 2026-10-17)
+    r"\[[^\]]*\]|\([^)]*\))\W*)+$", re.IGNORECASE)
 
 
 def _voice(spoken: bool) -> dict:
@@ -75,6 +77,7 @@ class OrchestratorHandler(Handler):
         self.audit = audit or AuditLog()
         self.max_attempts = max_attempts
         self._attempts: dict[str, int] = {}
+        self._ended: set[str] = set()  # acknowledged: hang up after "Goodbye"
 
     def greeting(self) -> str:
         return f"Remote clinical line. {_PROMPT_PIN}"
@@ -89,6 +92,7 @@ class OrchestratorHandler(Handler):
         """
         self.working.clear(session_id)
         self._attempts.pop(session_id, None)
+        self._ended.discard(session_id)
 
     def is_authenticated(self, session_id: str) -> bool:
         """Whether this session passed the PIN gate — i.e. is in the post-alert Q&A phase.
@@ -102,6 +106,10 @@ class OrchestratorHandler(Handler):
     def is_locked(self, session_id: str) -> bool:
         """True once this call used up its PIN attempts; the worker then hangs up."""
         return self._attempts.get(session_id, 0) >= self.max_attempts
+
+    def is_ended(self, session_id: str) -> bool:
+        """True once the call should hang up: PIN lockout, or the alert was acknowledged."""
+        return self.is_locked(session_id) or session_id in self._ended
 
     def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
         state = self.working.get_or_create(session_id)
@@ -133,8 +141,8 @@ class OrchestratorHandler(Handler):
                 return _LOCKED
             return f"That PIN was not recognised. {_PROMPT_PIN}"
 
-        # not a PIN at all -> refuse PHI, prompt (no attempt charged)
-        return f"I can't share patient information until you authenticate. {_PROMPT_PIN}"
+        # not a PIN at all -> just the prompt (no attempt charged, no PHI)
+        return _PROMPT_PIN
 
     def _on_authenticated(self, session_id: str) -> str:
         """First message spoken right after the PIN is accepted. Overridable (see OutboundHandler)."""
@@ -245,6 +253,7 @@ class OutboundHandler(OrchestratorHandler):
                              subject=self.alert.patient_ref, outcome="acknowledged")
             print(f"[voice] acknowledgment received -> MonitoredEvent {self.alert.event_id} "
                   f"status=acknowledged (Neo4j updated)", flush=True)
+            self._ended.add(session_id)
             return f"Thank you, I've recorded your acknowledgment of {self._this_event()}. Goodbye."
         # A short "no" / "that's not correct" (an answer to the alert or the confirm-back, not a
         # question): say the alert stays open, instead of "I don't have that patient information".

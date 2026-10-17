@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-10-12 voice-toggle-1";
+const APP_BUILD = "2026-10-17 mews-unknown-1";
 
 const LK = window.LivekitClient;
 
@@ -533,7 +533,7 @@ function renderInfo(i) {
         (${esc(rh.status || "")}; threshold ${pct(rh.threshold)})</dd>${truth}
       <dt>model</dt><dd>${esc(i.model_id || "–")}</dd></dl>
     <h3>Vitals</h3><dl>
-      <dt>MEWS</dt><dd>${esc(mews.score)} (${esc(mews.risk)}; threshold ${esc(mews.threshold)})${comps.length ? ` — ${comps.join(", ")}` : ""}</dd>
+      <dt>MEWS</dt><dd>${mews.score == null ? `unavailable${(mews.missing || []).length ? ` (missing ${esc(mews.missing.join(", "))})` : ""}` : `${esc(mews.score)} (${esc(mews.risk)}; threshold ${esc(mews.threshold)})`}${comps.length ? ` — ${comps.join(", ")}` : ""}</dd>
       <dt>deteriorating</dt><dd>${trends.length ? trends.join("") : "none"}</dd>${quiet.length
         ? `<dt>trends, not alerting</dt><dd>${quiet.join("")}</dd>` : ""}</dl>
     <h3>Criticality &amp; decision</h3><dl>

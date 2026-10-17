@@ -40,7 +40,8 @@ def render_event_report(event: DeviceEvent, config: Config = DEFAULT) -> str:
         "",
         "## Clinical Analysis",
         "",
-        f"- MEWS: **{a.mews.score}** ({a.mews.risk})",
+        f"- MEWS: **{a.mews.score}** ({a.mews.risk})" if a.mews.score is not None
+        else f"- {a.mews.label()}",
     ]
     if a.vital_trends:
         lines.append("- Vital trends:")

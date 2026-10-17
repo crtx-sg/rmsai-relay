@@ -47,7 +47,7 @@ def event_to_dict(event: DeviceEvent, *, include_signals: bool = False,
         "uncertain": event.uncertain,
         "low_confidence": event.low_confidence,
         "criticality": event_criticality(event, config),
-        "mews": {"score": a.mews.score, "risk": a.mews.risk,
+        "mews": {"score": a.mews.score, "risk": a.mews.risk, "missing": a.mews.missing,
                  "components": [c.model_dump() for c in a.mews.components]},
         "vital_trends": {n: t.model_dump(exclude_none=True) for n, t in a.vital_trends.items()},
         "care_guidance": a.care_guidance,
@@ -123,7 +123,8 @@ def dict_to_event(payload: dict[str, Any]) -> DeviceEvent:
     )
     mews = payload["mews"]
     analysis = ClinicalAnalysis(
-        mews=MEWS(score=int(mews["score"]), risk=mews["risk"],
+        mews=MEWS(score=None if mews["score"] is None else int(mews["score"]), risk=mews["risk"],
+                  missing=mews.get("missing", []),
                   components=[MEWSComponentScore(**c) for c in mews.get("components", [])]),
         vital_trends={
             n: VitalTrend(**{k: v for k, v in t.items() if k in VitalTrend.model_fields})

@@ -79,9 +79,8 @@ class MewsVitalsAnalysis(VitalsAnalysis):
         else:
             missing = [k for k in _MEWS_REQUIRED if k not in vitals]
             _log.error("MEWS degraded — missing vitals %s", missing)
-            mews = MEWS(score=0, risk="Low")
+            mews = MEWS(missing=missing)  # unknown: a data gap, not care guidance
             mews_res = None
-            care_guidance.append(f"Insufficient vitals for MEWS (missing {', '.join(missing)})")
 
         # --- Per-vital trends ---
         trends = {name: self._trend(name, window.vitals_history[name])

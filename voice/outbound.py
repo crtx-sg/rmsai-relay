@@ -208,7 +208,7 @@ def place_with_retries(
     return CallOutcome.NO_ANSWER, attempts  # exhausted -> notify_failed
 
 
-_ACK_YES = {"yes", "yeah", "yep", "acknowledge", "acknowledged", "acknowledging", "confirm",
+_ACK_YES = {"yes", "yeah", "yep", "acknowledge", "acknowledges", "acknowledged", "acknowledging", "confirm",
             "confirmed", "affirmative", "copy", "roger", "correct", "right", "noted"}
 _ACK_NO = {"no", "nope", "negative", "deny", "denied", "incorrect", "not", "dont", "cant",
            "cannot", "wont", "didnt", "isnt", "wasnt", "never", "wrong"}

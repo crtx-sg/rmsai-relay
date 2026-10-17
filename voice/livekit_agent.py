@@ -472,7 +472,8 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                     return
                 print(f"[worker] caller answered after {waited:.1f}s", flush=True)
             print(f"[worker] speaking greeting: {self._greeting!r}", flush=True)
-            self.session.say(self._greeting)
+            # Not interruptible: a "hello" on pickup or line noise used to cut the PIN prompt off.
+            self.session.say(self._greeting, allow_interruptions=False)
 
         async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
             """Wake-word gate for follow-up audio (raise StopResponse to drop a turn silently)."""
@@ -542,8 +543,8 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                     if handle.interrupted and not heard:
                         _carry("interrupted before it was heard")
                 speech.add_done_callback(_on_done)
-            is_locked = getattr(self._handler, "is_locked", None)
-            if is_locked and is_locked(self._session_id):
+            is_ended = getattr(self._handler, "is_ended", None)
+            if is_ended and is_ended(self._session_id):
                 asyncio.ensure_future(self._hang_up_after(self.session.current_speech))
 
         def _respond_serial(self, text: str, turn_no: int | None = None) -> str:
@@ -556,12 +557,12 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                 return self._handler.respond(text, session_id=self._session_id, spoken=True)
 
         async def _hang_up_after(self, speech) -> None:
-            """PIN lockout: let the "ending the call" line play, then end the call for everyone."""
+            """PIN lockout or acknowledged: let the last line play, then end the call for everyone."""
             from livekit.agents import get_job_context  # noqa: PLC0415
 
             if speech is not None:
                 await speech.wait_for_playout()
-            print(f"[worker] PIN lockout -> ending call {self._session_id}", flush=True)
+            print(f"[worker] call done (ack or PIN lockout) -> ending call {self._session_id}", flush=True)
             await get_job_context().delete_room()
 
     return HandlerAgent
