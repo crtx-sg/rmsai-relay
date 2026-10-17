@@ -96,7 +96,7 @@ note(96, 74, "Event pipeline  WRITES  the knowledge base   ·   Conversation pip
      fs=9.5, color="#334155")
 
 # --- shared databases (middle, right) ----------------------------------------------------------
-db1 = box(119, 43, 29, 13, "Neo4j  (graph)\npatient · event · report ·\nconditions · beds · status", fs=8.2)
+db1 = box(119, 43, 29, 13, "Neo4j  (graph)\npatient · event (+ vital histories) ·\nreport · conditions · beds · status", fs=8.2)
 db2 = box(153, 43, 32, 13, "Qdrant  (vector)\nclinical docs + uploads +\nreport narratives", fs=8.2)
 
 # consumer writes to both DBs
@@ -137,7 +137,7 @@ note((d2["x"] + d2["w"] + db1["x"]) / 2, d2["cy"] + 3.2, "status?", fs=7.2, colo
 
 ax.text(96, -1.5,
         "Call queue:  score = (3 − severity rank) · 10¹³ + enqueue ms  →  every Critical before any High, first-come within a level   ·   "
-        "a job stays in the hash until its call hangs up, so recover() re-queues it after a consumer restart   ·   "
+        "recover() re-queues unfinished jobs after a consumer restart, except calls already answered (right PIN)   ·   "
         "WebRTC / text dispatch inline (no queue)",
         ha="center", va="center", fontsize=8.2, color="#7c2d12", style="italic")
 
@@ -203,4 +203,5 @@ ax.legend(handles=arr_legend, loc="upper right", bbox_to_anchor=(0.995, 0.985),
 
 out = Path(__file__).resolve().parents[1] / "architecture.png"
 fig.savefig(out, dpi=150, bbox_inches="tight", facecolor="white")
-print(f"wrote {out}")
+fig.savefig(out.with_suffix(".svg"), bbox_inches="tight", facecolor="white")  # vector, for slides
+print(f"wrote {out} + .svg")

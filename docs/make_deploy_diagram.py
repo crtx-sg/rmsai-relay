@@ -118,8 +118,8 @@ vwp = box(123, 76, 21, 25, "voice-worker-phone", "rmsai-agent-phone · :8082\nan
 
 # --- backing stores ----------------------------------------------------------------------------
 lk = box(31, 42, 21, 20, "livekit", ":7880 / 7881 / 7882udp\n\nlocal media server\ninbox room\nWebRTC call rooms", C_LK)
-neo = box(54, 42, 21, 20, "neo4j", ":7687 / 7474\n\npatients · events\nreports · status\nbeds · protocols")
-red = box(77, 42, 23, 20, "redis", ":6379 (in memory)\n\nstream rmsai.events\ncall queue (ZSET+HASH)\nstaged call alerts", C_REDIS)
+neo = box(54, 42, 21, 20, "neo4j", ":7687 / 7474\n\npatients · events\n(+ vital histories)\nreports · status\nbeds · protocols")
+red = box(77, 42, 23, 20, "redis", ":6379 (in memory)\n\nstream rmsai.events\ncall queue (ZSET+HASH)\nstaged call alerts\nanswered-call keys (24 h)", C_REDIS)
 qd = box(102, 42, 19, 20, "qdrant", ":6333\n\nclinical docs\nuploads\nreport narratives")
 oll = box(123, 42, 21, 20, "Ollama", ":11434 on the host\n(or model-server,\nprofile llm)\n\nllama3.2:3b")
 
@@ -245,4 +245,5 @@ ax.legend(handles=handles, loc="lower left", bbox_to_anchor=(2.6, 10), bbox_tran
 
 out = Path(__file__).resolve().parents[1] / "deployment.png"
 fig.savefig(out, dpi=140, bbox_inches="tight", facecolor="white")
-print(f"wrote {out}")
+fig.savefig(out.with_suffix(".svg"), bbox_inches="tight", facecolor="white")  # vector, for slides
+print(f"wrote {out} + .svg")
