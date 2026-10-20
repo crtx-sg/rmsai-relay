@@ -2,9 +2,9 @@
 
 Step-by-step guide to real phone calls: the relay calls a clinician's phone about a critical event,
 and a clinician calls in to ask about events. Everything else (the app, WebRTC calls, local demos)
-needs none of this; see [README § Local-only mode](README.md#local-only-mode-no-livekit-cloud-no-phone-carrier).
+needs none of this; see [DEMO.md § Local-only mode](DEMO.md#local-only-mode-no-livekit-cloud-no-phone-carrier).
 
-How it works and why: [README § Phone calls](README.md#phone-calls-livekit-cloud--signalwire)
+How it works and why: [§ Phone calls](#phone-calls-livekit-cloud--signalwire) below
 and the call-flow diagrams in [ARCHITECTURE.md](ARCHITECTURE.md#telephony-split--phone-calls-on-a-second-livekit).
 
 > **Status (2026-10-13):** verified end to end on the dev accounts: outbound alert calls (PIN →
@@ -39,7 +39,7 @@ local. It connects *out* to LiveKit Cloud, so no ports need opening, and WSL2 is
 
 | Need | Notes |
 |---|---|
-| The local stack runs | `make docker-up` works; see the README's Setup |
+| The local stack runs | `make docker-up` works; see [INSTALL.md](INSTALL.md) |
 | A **LiveKit Cloud** project | free tier is fine for development |
 | A **SignalWire** account **out of trial mode** | trial mode blocks Domain App traffic and international calls. Leave it by adding a card and funding ≥ $5 (a promotional credit may not count) |
 | A phone to test with | the destination; for an international number (e.g. `+91…`) check that SignalWire permits that country |
@@ -225,6 +225,10 @@ make demo-phone-up        # = CONSUME_ARGS="--channel voice --caller livekit --t
 | `cli.call` answered but silence | the phone worker isn't running, or isn't on Cloud | step 7 |
 | Calling in rings out / is rejected | the number has no `rmsai-inbound` resource, or the caller isn't allowed | step 5; `outbound.inbound_allowed_numbers` in the hospital file |
 | `no destination: pass --number or set OUTBOUND_CALL_NUMBER …` | a real call with no destination | set `outbound.call_number` in the hospital file, or pass `--number` (`--to` for `cli.call`) |
+| Events alert in the app but **no phone rings**; the consumer log shows `-> answered (attempts 1)` plus a `[webrtc] join room to take the call:` token | the consumer runs `--transport webrtc` (the `make demo-up` default; the "answer" is simulated) | `make demo-phone-up` |
+| The call connects but the caller hears **silence**; the phone worker logs `ElevenLabs API error 401 … quota` | the ElevenLabs credits ran out (TTS and STT both fail) | top up, or switch `TTS_BACKEND`/`STT_BACKEND` to piper/whisper |
+| `--notifier signalwire needs …` | SMS keys missing | set the keys it names in `.env`, and `outbound.from` in the hospital file |
+| A call went unanswered but no SMS arrived | the consumer log says which: `[sms] SIMULATED, not sent` (consumer runs without `--notifier`), `rejected (…)` (SignalWire's code), or `sent via signalwire` | `make demo-phone-up`; or check SignalWire's **Logs → Messages** (carrier filtering abroad) |
 
 **Note on retries:** a SIP error such as `603` counts as "no answer", so the relay retries
 (`OUTBOUND_MAX_RETRIES`, every `OUTBOUND_RETRY_DELAY_S`) and then, with `--notifier signalwire`, sends
@@ -241,8 +245,114 @@ empty log after a `603` means the INVITE was refused at the door.
 - **Inbound:** SWML `connect` presents no SIP credentials, so the LiveKit inbound trunk is restricted
   by the called number and the allowed-caller list. The agent's PIN gate applies on top.
 - **Data:** call audio passes through SignalWire and LiveKit Cloud (and ElevenLabs, if it is the
-  STT/TTS backend). Synthetic or public data only until BAAs or self-hosted SIP are in place
-  (CLAUDE.md rules 4/5).
+  STT/TTS backend), and the SMS fallback sends the pseudonymized alert text through SignalWire.
+  Synthetic or public data only until BAAs or self-hosted SIP are in place (CLAUDE.md rules 4/5).
 - **SMS:** the SMS fallback sends through SignalWire's Messages API (`--notifier signalwire`, the
   `make demo-phone-up` default) from the same number, which must be SMS-capable (Phone Numbers →
   your number). Sent texts appear under **Logs → Messages**.
+
+---
+
+## Phone calls (LiveKit Cloud + SignalWire)
+
+**Two LiveKits.** A LiveKit SIP bridge can only connect calls into rooms on its own server, and the
+local LiveKit has no SIP service. So phone calls run on a second LiveKit, a **LiveKit Cloud** project
+(`LIVEKIT_SIP_URL`), while the app inbox, chat and WebRTC stay on the local one. `Config.telephony()`
+(`common/config.py`) is the config the call paths use: in split mode it swaps only the LiveKit
+URL/key/secret, the agent name (`rmsai-agent-phone`), the worker health port (`8082`), clears the public URL, and turns off
+inbox auto-redispatch. Redis (staged alerts), the stores and the numbers are shared. With
+`LIVEKIT_SIP_URL` unset everything behaves as a single server, exactly as before.
+
+**The carrier is SignalWire**, a native SIP trunk both ways (`TELEPHONY_CARRIER=signalwire`, the
+default and only value):
+
+| | SignalWire |
+|---|---|
+| Outbound (relay → phone) | LiveKit outbound trunk → SignalWire Domain App → SWML `connect` → PSTN |
+| Inbound (phone → agent) | number's SWML `connect` → LiveKit inbound trunk (matched on the number + allowed callers) → individual rule |
+| SMS | SignalWire Messages API, from the same number |
+| Account requirement | **out of trial mode** (trial blocks Domain App traffic) |
+| Carrier-side config | two SWML scripts (`cli.sip_setup --swml`) + a Domain App SIP address |
+
+### Call flow (technical)
+
+What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-split--phone-calls-on-a-second-livekit).
+
+**Outbound alert (`cli.consume --transport sip`; the same dial for `cli.call --caller livekit`):**
+0. The consumer gates the event (`should_call`), pushes it to the app worklist straight away, and
+   **queues the call** (Redis `rmsai:calls:*`, highest criticality first, then first-come). One
+   dispatcher places queued calls one at a time, each waiting for the previous hang-up. A queued
+   call is skipped if the event was acknowledged (e.g. in the app) while it waited, and an unfinished
+   call is re-queued after a consumer restart. Log lines: `[queued] … call N in queue`, `[calls]
+   dialling …` / `skip …`, `[call] … -> answered`.
+1. At dial time it **stages the spoken alert in Redis** under the room name
+   `rmsai-outbound-<event_id>` (TTL 15 min). `cli.call` uses `rmsai-call-<id>` and stages nothing.
+2. It **dispatches** `rmsai-agent-phone` into that room on the telephony LiveKit, in parallel with
+   the dial (the agent joins in 1-4 s while the phone rings), so it is there when the phone answers.
+3. It **dials**: `CreateSIPParticipant` on the telephony LiveKit with `LIVEKIT_SIP_TRUNK_ID`, the
+   number (`--number`, else the hospital's `outbound.call_number`), caller ID `outbound.from`,
+   `ringing_timeout=SIP_RINGING_TIMEOUT_S`, `max_call_duration=SIP_MAX_CALL_DURATION_S` and
+   `wait_until_answered`.
+4. LiveKit Cloud sends the SIP INVITE through the outbound trunk, over TLS with digest credentials
+   to the Domain App, whose SWML `connect` (`answer_on_bridge`) rings the PSTN number and answers
+   the LiveKit leg only when the phone does.
+5. **Answered:** the phone joins the room as a participant. The worker finds the staged alert
+   (`OutboundHandler`): PIN, then the spoken alert, then grounded Q&A (wake word), then
+   "acknowledge" sets the event `acknowledged`. "This event" in a question means the called event.
+6. **Not answered, or a SIP error** (any failure, including `408` or `603`, counts as no answer):
+   the relay re-stages the alert, re-dispatches the agent and retries `OUTBOUND_MAX_RETRIES` times,
+   `OUTBOUND_RETRY_DELAY_S` apart. Then, with `--notifier signalwire` (the `make demo-phone-up`
+   default), it texts the alert (status stays `reported` if delivered, else `notify_failed`; an event acknowledged
+meanwhile is not texted and stays `acknowledged`). With
+   the default `simulated` nothing is sent: the log says `[sms] SIMULATED, not sent` and the event
+   records `sms_simulated` / `notify_failed`. An invalid or unset trunk or number fails fast with
+   no retry.
+
+**Inbound call-in:**
+1. The SignalWire number's SWML `connect`s to `sip:<number>@<LIVEKIT_SIP_URI>;transport=tcp`.
+2. The inbound trunk matches the called number and accepts only allowed callers; the
+   **individual** rule creates a `rmsai-call-…` room per call and dispatches `rmsai-agent-phone`.
+3. The room has no staged alert, so the worker runs the **PIN-gated Q&A** handler.
+
+### Configure (`.env`)
+
+| Key | What |
+|---|---|
+| `LIVEKIT_SIP_URL` / `LIVEKIT_SIP_API_KEY` / `LIVEKIT_SIP_API_SECRET` | the LiveKit Cloud project (Settings → Keys) |
+| `LIVEKIT_SIP_URI` | its SIP host (Settings → SIP URI), without `sip:`, e.g. `abc123.sip.livekit.cloud` |
+| `outbound.from` *(hospital file)* | the SignalWire number (E.164): caller ID, trunk number, and the SMS sender |
+| `outbound.call_number` / `outbound.inbound_allowed_numbers` *(hospital file)* | default call destination; who may call in (the explicit list, else the on-call number, else nobody) |
+| `LIVEKIT_SIP_TRUNK_ID` | the outbound trunk's `ST_…` id, printed by `cli.sip_setup` (not by `--dry-run`) |
+| `LIVEKIT_SIP_AGENT_NAME` / `LIVEKIT_SIP_WORKER_HTTP_PORT` | phone worker identity; defaults `rmsai-agent-phone` / `8082` |
+| `SIGNALWIRE_SPACE` / `_PROJECT_ID` / `_API_TOKEN` | the SignalWire API: SMS (`--notifier signalwire`) and read-only checks |
+| `SIGNALWIRE_SIP_DOMAIN` / `_SIP_USER` / `_SIP_USERNAME` / `_SIP_PASSWORD` | the outbound script's Domain App SIP address, its user part, and its credentials |
+
+### SMS fallback
+
+`--notifier simulated|signalwire` on `cli.consume` and `cli.outbound` selects the SMS backend for
+the text channel **and** for voice calls that go unanswered after retries.
+
+**When it fires:** the call is not answered after `1 + max_retries` attempts (ring timeout, busy,
+or any SIP error such as `408` or `603`). An answered call, including one taken by voicemail,
+sends no SMS. Nor does an event acknowledged elsewhere (e.g. in the app) while the call rang; it stays
+acknowledged. An invalid number or missing trunk fails fast and is never texted.
+
+**What it sends:** "Missed call from RMS relay. <spoken alert>" to the call's destination
+(`--number`, else the hospital's `outbound.call_number`), from the hospital's `outbound.from`.
+
+| Result | `delivered_sms` | Event status |
+|---|---|---|
+| sent | `sms_delivered` | `reported` (alerted, awaiting an ack) |
+| rejected / network error | `sms_failed` | `notify_failed` |
+| `--notifier simulated` (nothing sent; log: `[sms] SIMULATED, not sent`) | `sms_simulated` | `notify_failed` |
+
+Each attempt is audited as `sms_fallback`. The SignalWire sender uses its REST Messages API over
+stdlib HTTP (no SDK) and needs `SIGNALWIRE_SPACE`, `SIGNALWIRE_PROJECT_ID`, `SIGNALWIRE_API_TOKEN`
+and an SMS-capable `outbound.from`. A send logs `[sms] sent via signalwire to +9198…1234 (message
+<sid>)`; a rejection returns "not delivered" with SignalWire's code logged and the number masked,
+and never crashes the event. `make demo-phone-up` uses it by default
+(`DEMO_PHONE_NOTIFIER=simulated` to send nothing). Each message costs about $0.18 per segment to
+India; an alert text is typically 2 segments.
+
+**International delivery:** texts from a US number to non-US mobiles may be filtered by the
+destination's carriers; SignalWire's **Logs → Messages** shows the delivery status.

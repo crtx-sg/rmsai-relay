@@ -233,7 +233,7 @@ truth → outcome for labelled events, and the event id.
 
 ## Knowledge graph (Neo4j)
 
-The graph's node and edge types are described in the README's **Knowledge-base data model**
+The graph's node and edge types are described in ARCHITECTURE.md's **Knowledge-base data model**
 section. Every query below is read-only, except `cli.graph chain`, which rebuilds edges.
 
 ### Neo4j Browser (visual tree)

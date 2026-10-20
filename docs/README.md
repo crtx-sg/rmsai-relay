@@ -15,4 +15,4 @@ and evaluation are reproducible.
 
 `samples/` holds documents that are **not** part of that corpus: synthetic reference material for
 exercising the `cli.kb_upload` path end-to-end. Because the glob is non-recursive they are only in
-the KB if you upload them, which is the point — see README §3a.
+the KB if you upload them, which is the point — see TESTING.md §3a.

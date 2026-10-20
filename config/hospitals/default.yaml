@@ -1,5 +1,5 @@
 # Hospital policy defaults: vital trends, escalation, outbound alerting.
-# Full explanation: README.md, "Per-hospital configuration" and "Vital trends".
+# Full explanation: CONFIGURATION.md, "Per-hospital configuration" and "Vital trends".
 #
 # ---- How settings combine -------------------------------------------------------------------------
 #   1. this file                      every setting, the defaults for any hospital

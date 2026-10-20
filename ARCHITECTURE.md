@@ -2,7 +2,7 @@
 
 A plain-language map of how `rmsai-relay` works end-to-end: what runs when the ECG model is invoked,
 how the LLM answers questions, how the voice pipeline speaks, and which model sits where. For the
-phase plan, contracts, and config keys see [README.md](README.md).
+phase plan see [README.md](README.md); config keys, [CONFIGURATION.md](CONFIGURATION.md).
 
 ![rmsai-relay architecture and pipeline flow](architecture.png)
 
@@ -112,7 +112,7 @@ a fixed points table over the vitals) and per-vital **Mann-Kendall trends** (a *
 test** for a monotonic trend, yielding a p-value — nothing trained or learned). A trend only counts as
 *deteriorating* when it is also clinically significant: the change over the window reaches the
 hospital's `min_change` and the latest reading is outside the vital's normal range, moving away
-(`common/vitals_trends.py`; README, "Vital trends"). Then the FP gate: a *confident*
+(`common/vitals_trends.py`; CONFIGURATION.md, "Vital trends"). Then the FP gate: a *confident*
 `NORMAL_SINUS` (≥ `FP_SUPPRESS_MIN_CONFIDENCE`) is flagged a **false positive**. The output is a
 `DeviceEvent` = the window + predicted type + confidence + MEWS + criticality + care guidance + a
 markdown report.
@@ -131,7 +131,7 @@ markdown report.
 
 **Step 5 · The call decision** (`should_call`, `orchestrator/outbound_flow.py`) — a pure gate. Its
 thresholds are **per hospital** (`config/hospitals/<HOSPITAL_ID>.yaml`, sections `escalation:` and
-`outbound:`; README, "Per-hospital configuration"); the names below are their environment overrides:
+`outbound:`; CONFIGURATION.md, "Per-hospital configuration"); the names below are their environment overrides:
 1. `OUTBOUND_ENABLED` must be on.
 2. **Criticality** ≥ `OUTBOUND_MIN_CRITICALITY` (default `High`). Criticality is the more severe of
    the arrhythmia class and the MEWS risk, escalated to at least `High` for any real arrhythmia,
@@ -611,7 +611,7 @@ sequenceDiagram
   ElevenLabs STT/TTS. `make demo-phone-up` runs event-driven calls through the queue. Call-in is
   verified (2026-10-13). The SMS fallback sends through
   SignalWire, from the number that rang (a test SMS to +91 was delivered on 2026-10-13).
-- **Set-up:** [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md) (SignalWire) and README § Phone calls.
+- **Set-up:** [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md) (SignalWire) and its "Phone calls" section.
 
 ## The models, at a glance
 
@@ -648,3 +648,129 @@ sequenceDiagram
   cited blocks) are defined in `common/` and decouple the stages from each other.
 - **Resilience.** Graph traversals and RAG chains tolerate missing nodes / broken chains without
   throwing — a partial KB degrades the answer, it doesn't crash the call.
+
+---
+
+## Voice worker architecture (the VOICE LOOP, explained)
+
+The worker (`cli.voice_worker` → `voice/livekit_agent.py`) joins a LiveKit room and runs the call.
+A few design points that aren't obvious from the diagram:
+
+- **The `Handler` *is* the "LLM node", not a model.** LiveKit's `AgentSession` pipeline is
+  STT → *LLM* → TTS. We override that LLM node (`HandlerAgent.llm_node`) to call our conversation
+  `Handler` instead. The Handler runs the **PIN gate → de-identification → KB/graph retrieval →
+  grounded answer** path — i.e. all the safety and grounding logic lives here, *not* in a raw model
+  prompt. The real LLM (`LLM_PROVIDER`: **Ollama** locally, or a cloud model for synthetic data) is still used, but **inside** the Handler/orchestrator
+  (RAG over the clinical KB + per-patient graph), one layer below the pipeline.
+- **The "stub LLM" is a permanent shim, not a placeholder.** LiveKit *skips reply generation
+  entirely* when `session.llm is None`, so `llm_node` would never run. We install a no-op
+  `make_stub_llm()` purely to satisfy that gate; its `chat()` is never called. This is **not** a
+  temporary fix awaiting a "real LLM" — the configured provider is already the real LLM (via the Handler). Swapping
+  providers means changing `LLM_PROVIDER` (the orchestrator's provider), never this shim.
+- **Modality-matched I/O.** *Audio* turns go STT → wake-word gate → Handler → **TTS (audio)**.
+  *Text* turns (LiveKit chat box) go through a separate `text_input_cb` → Handler → **`send_text`
+  (text on the chat channel)**, bypassing TTS. Audio→audio, text→text; they never cross.
+- **Wake word gates *audio only*.** After the alert, follow-up **audio** Q&A must start with
+  `AUDIO_WAKE_WORD` ("hey vios"); the agent then stays awake for `AUDIO_WAKE_WINDOW_S` (30 s) so
+  back-and-forth speech needn't repeat it. This guards against room noise and Whisper
+  hallucinations-on-silence. **Text chat is never wake-word gated** — `AUDIO_WAKE_WINDOW_S` does not
+  apply to typing. The PIN, the spoken alert, and the verbal ack also run un-gated (pre-Q&A).
+
+## Frozen contracts (`common/schemas.py`, `common/interfaces.py`)
+
+- **`SignalWindow`** — reader output (multi-rate signals in mV, vitals + history, window geometry,
+  per-signal quality). **No predicted `event_type`**; sim files may carry a ground-truth `condition`
+  attr for eval only.
+- **`DeviceEvent`** — `SignalWindow` + model-predicted `event_type`/`confidence`,
+  `is_false_positive` (`NORMAL_SINUS` at ≥ `FP_SUPPRESS_MIN_CONFIDENCE`; below it the event is `uncertain`), `ClinicalAnalysis` (MEWS + per-vital trend + correlations),
+  `care_guidance`, and the markdown `report_md`.
+- **`RetrievalResult`** — two labelled blocks: *Retrieved passages* (vector) + *Known relationships*
+  (graph), separately cited; relationships empty under `vector` mode.
+- **Interfaces**: `LLMProvider`, `ECGModel`, `VitalsAnalysis`, `EventStore` (+ `BedAssignment` /
+  `PatientHistory` stubs). `event_type` ∈ the 16-name `ecgtranscnn` vocabulary (a given
+  checkpoint's head is a subset — the real-ECG `real_v2` model predicts 13 of them);
+  a confident `NORMAL_SINUS` ⇒ FP.
+
+## Tech stack
+
+| Layer | Technology |
+|-------|-----------|
+| Language / runtime | Python ≥3.10, managed with **`uv`**; `pytest` + `ruff`, type hints throughout |
+| Contracts | **pydantic v2** schemas (`common/schemas.py`) |
+| ECG classifier | **`ECG_TransConv`** (vendored `crtx-sg/ecgtranscnn`, PyTorch CPU), wrapped never reimplemented. Default artifact: the real-ECG `real_v2` 5-fold ensemble (13 classes) |
+| Vitals analysis | `ecgtranscnn` MEWS + Mann-Kendall trend + ECG-vital correlation (statistical), with a per-hospital clinical-significance policy on the trend (`config/hospitals/`) |
+| Event bus | **Redis Streams** (`rmsai.events`, capped at ~100k entries; consumer group `rmsai.relay`; a failed message is retried, then dead-lettered to `rmsai.events.dead`) |
+| Call queue | **Redis sorted set** `rmsai:calls:queue` + hash `rmsai:calls:jobs` + leased slot `rmsai:calls:active`: phone calls ordered by criticality, then arrival; one call at a time across all consumers (`orchestrator/call_queue.py`) |
+| Graph KB | **Neo4j** + Cypher (patient ↔ event ↔ condition ↔ treatment ↔ guideline ↔ bed/unit) |
+| Vector KB | **Qdrant** + embeddings (BGE via `sentence-transformers`, deterministic Hashing fallback) |
+| Memory tiers | working (Redis) · episodic (Qdrant) · semantic (= vector KB) |
+| LLM | behind `LLMProvider`: `EchoLLM` (offline, code default), **Ollama** (self-hosted, `LLM_PROVIDER=ollama`), or a cloud model for synthetic data: Anthropic Claude, Google Gemini, or any OpenAI-compatible API ([Choosing the LLM](CONFIGURATION.md#choosing-the-llm)) |
+| De-identification | Regex (default) or **Presidio** + spaCy (`deid` extra), fail-closed before any model call |
+| Speech | self-hosted **faster-whisper** STT + **Piper** TTS + **silero** VAD; optional cloud **ElevenLabs** STT/TTS for benchmarking on synthetic data only (`STT_BACKEND`/`TTS_BACKEND=elevenlabs`). Code default is `stub` |
+| Telephony / WebRTC | local **LiveKit** (agent worker, app inbox, browser WebRTC); optional second **LiveKit Cloud** project for phone calls (`LIVEKIT_SIP_URL`) with **SignalWire** as the carrier (native SIP trunk both ways, SWML) and its SMS API for the missed-call fallback, over stdlib HTTP |
+| EMR | **HAPI FHIR** (`emr/`, stub → real in Phase 8) |
+| Orchestration | LangGraph-style turn orchestrator (`orchestrator/`) |
+| Infra | Docker Compose (`infra/docker-compose.yml`) — **everything runs as a service**: the backing stores (neo4j, qdrant, redis, livekit; profiled: mosquitto, model-server/ollama, hapi-fhir) *and* the app itself (consumer, voice-worker, gateway; profiled: `tools` + `real-samples` one-shot runners, `telephony` phone worker) from one shared image (`infra/Dockerfile`) with the source bind-mounted |
+
+**No SQL DB in the POC.** Five stores: Neo4j (relationships + operational event log, behind an
+`EventStore` repository interface so it can migrate to Postgres/TimescaleDB later), Qdrant (text +
+embeddings), Redis (working memory, bus, call queue, staged call alerts), HDF5 (waveforms),
+object/file store (plots, reports).
+
+### Repository layout
+
+`common/` contracts + config + de-id + protocols · `ingest/` HDF5 + MQTT readers · `inference/`
+model + vitals + serialize · `kb/{vector,graph,hybrid}` retrieval · `memory/` working/episodic tiers
+· `orchestrator/` turn loop + outbound flow + bus consumer · `voice/` SIP/LiveKit + handlers +
+STT/TTS + SIP provisioning (`voice/sip_setup.py`) · `emr/` FHIR · `app/`+`live/` companion app
+(worklist, chat, ack, artifacts) + inbox publishing · `cli/` entrypoints · `infra/` compose + app
+`Dockerfile` · `deploy/` public edge (nginx, public LiveKit/coturn) · `external/ecgtranscnn/`
+vendored model+simulator (gitignored) · `data/{synthetic,fixtures,real,inference}` (gitignored
+except fixtures) · `docs/` clinical corpus (+ `docs/samples/` upload fixtures and `docs/project/`,
+both excluded from it) · [`DEMO.md`](DEMO.md) demo runbook · [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)
+LiveKit Cloud + SignalWire setup.
+
+## Knowledge-base data model
+
+The graph is the workhorse for operational queries; the vector store holds protocol documents and
+archived report narrative. Key nodes/edges:
+
+- **Nodes:** `Patient`, `Condition`, `Treatment`, `Symptom`, `Surgery`, `Guideline`, `Unit`, `Bed`,
+  `MonitoredEvent` (persisted `DeviceEvent` with inline vitals snapshot + criticality + lifecycle
+  status + `signal_ref` (HDF5 pointer), `ecg_plot_ref` (rendered PNG), `hr_history` (HR series for
+  the trend query)), `ActionItem`, `Report`, `CareProtocol`/`ProtocolStep`.
+- **Edges:**
+  - patient record: `HAS_DIAGNOSIS`, `PRESENTS`, `HAD_SURGERY`, `PRESCRIBED`, `ASSIGNED_TO`
+    (Patient→Bed), `IN_UNIT` (Bed→Unit);
+  - events: `HAD_EVENT` (Patient→MonitoredEvent), `AT_BED`, `OF_CONDITION` (the *predicted*
+    condition), `HAS_ACTION`, `HAS_REPORT`, and `FOLLOWED_BY`: each patient's events chained in
+    time order (event → next event by `timestamp`, ties broken by event id), with `gap_s` (seconds
+    between them) on the edge;
+  - clinical knowledge: `MANAGES` (Treatment→Condition), `INDICATES` (Condition→Treatment),
+    `APPLIES_TO` / `RECOMMENDS` (Guideline or ProtocolStep → Condition / Treatment), `HAS_STEP`
+    (CareProtocol→ProtocolStep);
+  - `CO_MORBID_WITH` (derived from cohort co-occurrence, carries confidence/count/window): only
+    after `cli.graph ingest` seeds a patient cohort.
+
+The `FOLLOWED_BY` chain is rebuilt for the patient on every persisted event, so it stays right when
+events arrive out of order or are replayed. For events persisted before it existed, backfill once
+with `cli.graph chain`. To walk a patient's history in the Neo4j Browser:
+
+```cypher
+MATCH path = (:Patient {id: 'PT998224'})-[:HAD_EVENT]->(first)-[:FOLLOWED_BY*0..]->(e)
+WHERE NOT ()-[:FOLLOWED_BY]->(first)
+RETURN path
+```
+
+**Care protocols** are curated external YAML (`common/protocols/care_protocols.yaml`), matched on
+`event_type` + vital conditions + min severity (most-specific-wins, with a default fallback), loaded
+into the graph **and** indexed as narrative into the vector store.
+
+**Waveforms & artifacts.** The raw multi-lead ECG lives only in the **HDF5** source (and, briefly, in
+`SignalWindow.signals` at the producer — the bus drops it to stay small). So the **producer renders
+the ECG strip** (`inference/plotting.py`, primary lead → PNG under `PLOT_DIR`) while the samples are
+in hand, and only the **path** (`ecg_plot_ref`) rides the bus and is persisted — the same
+materialize-then-reference pattern as the report markdown. Every vital's **history** (HR, BP, SpO2, RR, temp) is
+carried on the bus too and persisted as `hr_history`, `rr_history`, …, backing the trend and "last N readings" answers. The
+graph stays the structured source of truth; bulky signals stay in HDF5 / the rendered image. *(These
+fields populate on fresh `ingest → consume`; older events show "raw ECG is archived" until re-run.)*

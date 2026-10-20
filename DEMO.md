@@ -3,9 +3,9 @@
 End to end, in Docker: held-out **real** ECG recordings → `real_v2` classifier → event bus →
 graph + vector KB → clinician worklist, voice and chat → grounded follow-up Q&A.
 
-This is the demo path. The README has the background: [Setup](README.md#setup),
-[Operations runbook](README.md#operations-runbook), and
-[End-to-end testing](README.md#end-to-end-testing). For the synthetic (simulator) variant, see
+This is the demo path. Background: [Setup](INSTALL.md#setup),
+[Operations runbook](OPERATIONS.md#operations-runbook), and
+[End-to-end testing](TESTING.md#end-to-end-testing). For the synthetic (simulator) variant, see
 [§ Synthetic variant](#synthetic-variant) at the bottom.
 
 > Everything below runs from the repo root. Define this once per shell:
@@ -43,6 +43,15 @@ uv run python -m cli.call                                             # simulate
   phone worker then refuses to start, and any SIP path fails against the local LiveKit (which has no
   SIP service), so nothing can reach Cloud.
 - Not possible locally: ringing a real phone. That needs [§5C](#c-real-phone-calls-livekit-cloud--signalwire).
+
+Where each path connects:
+
+| Path | Goes to |
+|---|---|
+| App worklist, chat, speak-on-select, gateway, inbox push | local LiveKit |
+| `cli.consume --transport webrtc` (the consumer container's default) | local LiveKit, agent `rmsai-agent` |
+| `cli.call` / `cli.outbound` (default caller), `--notifier` default | simulated, no network |
+| `cli.consume --transport sip`, `cli.call --caller livekit`, phone worker | telephony LiveKit (Cloud), only when asked |
 
 ---
 
@@ -330,7 +339,7 @@ With a handful of events the intervals are wide, and the tab says so. Say it out
 
 ### B. Outbound voice call over WebRTC (no phone)
 
-With `outbound.dispatch_mode: app+call` (the default; README, "Per-hospital configuration"; after
+With `outbound.dispatch_mode: app+call` (the default; CONFIGURATION.md, "Per-hospital configuration"; after
 changing it run `make docker-restart`), publish an event. For each critical event, the consumer log prints an `rmsai-outbound-<event_id>` room and a
 `Token:`. Join it at <https://agents-playground.livekit.io> (Manual → URL + token → allow mic):
 
@@ -339,7 +348,7 @@ changing it run `make docker-restart`), publish an event. For each critical even
 3. Ask follow-ups with the wake word: *"hey vios, what were the vitals?"*
 4. Say *"acknowledge"* to flip the event's status.
 
-Full detail: [README §5](README.md#5-real-webrtc-audio-loop-browser-no-phone).
+Full detail: [TESTING.md §5](TESTING.md#5-real-webrtc-audio-loop-browser-no-phone).
 
 ### C. Real phone calls (LiveKit Cloud + SignalWire)
 
@@ -364,7 +373,7 @@ make demo-phone-up        # a later plain `make demo-up` puts the consumer back 
 # publish an event (§5): the phone rings → PIN → this event's alert → Q&A → "acknowledge"
 ```
 
-How the call flows on the wire: [README § Phone calls → Call flow](README.md#call-flow-technical).
+How the call flows on the wire: [TELEPHONY_SETUP.md § Call flow](TELEPHONY_SETUP.md#call-flow-technical).
 
 ### What the clinician can ask on a call
 
@@ -417,7 +426,7 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
     and vitals-driven criticality partly echo the label, not the patient.
   - On MIT-BIH, only leads II and V1 are recorded; the other limb leads are computed from them.
 - **"Deteriorating" means clinically significant, not just statistically consistent.** A vital must
-  move by at least the hospital's minimum change and end up outside its normal range (README,
+  move by at least the hospital's minimum change and end up outside its normal range (CONFIGURATION.md,
   "Vital trends"). Small drifts appear under *trends, not alerting* with the reason. MEWS scores
   the current *level* separately, so a steady RR of 25 can add MEWS points while its trend is flat.
   The simulated Diastolic BP (35–49 mmHg) sits below the normal range for nearly every patient, so
