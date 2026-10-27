@@ -142,6 +142,8 @@ phone-logs:
 # The conversation only: STT transcripts, what the handler heard, the KB-grounded reply (logged
 # before TTS speaks it), the greeting, PIN and spoken event alert. New lines only; Ctrl-C to stop.
 phone-transcript:
+	@$(COMPOSE) --profile telephony ps --status running -q voice-worker-phone | grep -q . \
+		|| { echo "voice-worker-phone is not running: start the stack with 'make demo-phone-up'"; exit 1; }
 	@$(COMPOSE) --profile telephony logs -f --tail=0 --no-log-prefix voice-worker-phone 2>&1 \
 		| grep --line-buffered -E 'stt: ->|\[worker\] (heard|reply|speaking)|\[voice\]|graph query|declined'
 

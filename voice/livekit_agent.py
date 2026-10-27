@@ -472,8 +472,10 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                     return
                 print(f"[worker] caller answered after {waited:.1f}s", flush=True)
             print(f"[worker] speaking greeting: {self._greeting!r}", flush=True)
-            # Not interruptible: a "hello" on pickup or line noise used to cut the PIN prompt off.
-            self.session.say(self._greeting, allow_interruptions=False)
+            # Interruptible on purpose: while uninterruptible speech is active LiveKit feeds STT
+            # silence; on the 2026-10-27 phone call STT then never ran after the greeting.
+            # Pickup noise that cuts the prompt off just gets the PIN prompt again (handler).
+            self.session.say(self._greeting)
 
         async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
             """Wake-word gate for follow-up audio (raise StopResponse to drop a turn silently)."""

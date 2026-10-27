@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-10-17 mews-unknown-1";
+const APP_BUILD = "2026-10-27 events-row-selected";
 
 const LK = window.LivekitClient;
 
@@ -547,6 +547,7 @@ function renderInfo(i) {
 
 // --- model performance tab (POST /metrics) ---------------------------------------------------------
 let perfTimer = null;
+let perfSelected = null; // event_id whose details are shown under the Events table
 
 function showTab(tab) {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
@@ -644,7 +645,7 @@ function renderEvents(data, labelled) {
   document.getElementById("perf-count").textContent =
     `${data.total} event(s), ${data.pending} pending · ${desc}${data.truncated ? " · showing the newest only" : ""}`;
   const tbody = document.querySelector("#perf-events tbody");
-  tbody.innerHTML = data.events.map((e) => `<tr data-event-id="${esc(e.event_id)}">
+  tbody.innerHTML = data.events.map((e) => `<tr data-event-id="${esc(e.event_id)}"${e.event_id === perfSelected ? ' class="selected"' : ""}>
     <td>${esc(fmtDateTime(e.ts))}</td><td>${esc(e.patient)}</td><td>${esc(e.bed || "")}</td>
     <td>${esc(e.event_type)} <span class="sub">${pct(e.confidence)}${e.alert_basis === "vitals" ? " · vitals alert" : ""}</span>
       <span class="sub">id ${esc(String(e.event_id).slice(0, 8))}</span></td>
@@ -884,7 +885,11 @@ document.querySelector("#perf-events tbody").addEventListener("click", async (e)
   const ackId = e.target.getAttribute && e.target.getAttribute("data-ack");
   if (ackId) { await ackEvent(ackId); loadPerf(); return; }
   const tr = e.target.closest("tr");
-  if (tr && tr.dataset.eventId) showEventInfo(tr.dataset.eventId, "perf-detail");
+  if (!tr || !tr.dataset.eventId) return;
+  perfSelected = tr.dataset.eventId;
+  tr.parentElement.querySelectorAll("tr.selected").forEach((r) => r.classList.remove("selected"));
+  tr.classList.add("selected");
+  showEventInfo(perfSelected, "perf-detail");
 });
 
 // Chat controls
