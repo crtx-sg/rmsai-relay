@@ -339,8 +339,10 @@ flowchart TD
    vouches the decline says which number fell short of which threshold. Archived event reports
    (`report:` passages) are kept out of free-text answers, and a question whose topic words appear in
    no retrieved passage is declined unless similarity is at least 0.70 ("how do you treat sepsis?"
-   with no sepsis document). "Protocol for this event" and a bed whose rhythm has no structured
-   protocol steps are asked of the documents for that rhythm.
+   with no sepsis document). A protocol question that names a rhythm (or "this event", or a bed)
+   skips steps 4–5: `orchestrator/protocol_answer.py` reads the rhythm's structured care-protocol
+   steps, else its sections from one protocol document, verbatim (the 3B model mixed SVT treatment
+   into VT answers).
 4. **De-identify** the retrieved context (Presidio or regex, `DEID_BACKEND`) so no name/PHI reaches
    the model.
 5. **LLM generate**: the prompt goes to the `LLMProvider`, always wrapped in `DeidentifyingLLM`:

@@ -33,7 +33,7 @@ def test_text_chat_pin_gate_then_grounded(monkeypatch, capsys):
     lines = iter([
         "what is the rate control for atrial fibrillation",  # pre-auth -> refused
         "1234",                                              # authenticate (default PIN)
-        "what is the first-line management for atrial fibrillation",  # grounded
+        "what is the rate control for atrial fibrillation",  # grounded (no protocol words: LLM path)
         "quit",
     ])
 

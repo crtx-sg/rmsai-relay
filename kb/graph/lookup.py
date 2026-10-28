@@ -213,6 +213,11 @@ def looks_like_event_listing(query: str) -> bool:
         _STRONG_LIST_VERB.search(q) or history_status(q.lower()))
 
 
+def names_protocol(query: str) -> bool:
+    """'protocol / guideline / how to manage, treat or handle': a care-protocol question."""
+    return bool(_EVENT_PROTOCOL.search(query or ""))
+
+
 def asks_event_protocol(query: str, event_ref: str | None) -> bool:
     """'What is the protocol for this event?' / 'how do I treat this patient?' / 'what should I do
     now?': a document question about the CALLED event's rhythm (no rhythm, bed or patient named)."""

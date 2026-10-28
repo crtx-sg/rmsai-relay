@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from common.config import DEFAULT
+from common.event_types import NORMAL_SINUS, event_type_from_text
 from common.providers import DeidentifyingLLM
 from common.redacting_logger import get_redacting_logger
 from common.schemas import ChatTurn
@@ -26,8 +27,10 @@ from common.vitals_format import fmt_vital
 from kb.graph.driver import GraphDriver
 from kb.graph.events import is_pending
 from kb.graph.llm_router import route as llm_route
+from kb.graph.spoken import normalize_spoken_query
 from kb.graph.lookup import (
     asks_event_protocol, is_patient_specific, looks_like_event_listing, match_intent,
+    names_protocol,
     names_bed_label, names_unresolved_bed,
 )
 from kb.graph.templates import EVENT_HISTORY, describe_event_history, run_template
@@ -37,6 +40,7 @@ from kb.vector.answer import _best_overlap
 from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
 
+from . import protocol_answer
 from .report import spoken_bed, spoken_event
 from .guardrails import UNGROUNDED_ANSWER, Guardrails, is_emergency, ungrounded_identifiers
 
@@ -1025,6 +1029,39 @@ class Orchestrator:
         _log.error("LLM unavailable after %d attempt(s); returning fallback answer", attempts)
         return _LLM_FALLBACK, True
 
+    def _protocol_answer(self, question: str, state, spoken: bool):
+        """Structured steps, else the document's sections, for a protocol question naming a rhythm
+        (or following one up: "what about its long-term management?", "the rest"). None = not one."""
+        q = normalize_spoken_query(question)
+        etype = event_type_from_text(q)
+        if etype is None:
+            prev = next((t.text for t in reversed(state.turns[:-1]) if t.role == "clinician"), "")
+            if names_protocol(prev) and (names_protocol(q) or _REFERS_BACK.search(q)
+                                         or protocol_answer.wants_more(q)):
+                etype = event_type_from_text(normalize_spoken_query(prev))
+        elif not names_protocol(q):
+            return None
+        if etype is None or etype == NORMAL_SINUS:
+            return None
+        try:
+            rows = run_template(self.driver, "care_protocol_steps", event_type=etype) \
+                if self.driver is not None else []
+        except Exception:  # noqa: BLE001 - graph down: the documents can still answer
+            rows = []
+        if rows and rows[0].get("steps"):
+            print(f"[orchestrator] protocol for {etype}: structured steps", flush=True)
+            return protocol_answer.answer_from_steps(rows[0], etype, spoken=spoken, question=q)
+        try:
+            hits = self.hybrid.vector.search(f"{spoken_event(etype)} protocol {q}", k=20,
+                                             rerank=False)
+        except Exception:  # noqa: BLE001 - no vector store: fall back to the normal path
+            return None
+        answer = protocol_answer.answer_from_sections(hits, etype, spoken=spoken, question=q)
+        if answer is not None:
+            print(f"[orchestrator] protocol for {etype}: document sections {answer.citations}",
+                  flush=True)
+        return answer
+
     def handle_turn(
         self, session_id: str, user_text: str, *, patient_ref: str | None = None,
         now: float | None = None, spoken: bool = False,
@@ -1134,6 +1171,14 @@ class Orchestrator:
                 if intent is not None:
                     print(f"[orchestrator] llm-routed to template {intent[0]!r}", flush=True)
                     sp.attributes["llm_routed"] = intent[0]
+            proto = None if intent is not None or listing_declined or emergency \
+                else self._protocol_answer(kb_question, state, spoken)
+            if proto is not None:
+                sp.attributes["mode"] = "protocol"
+                self.working.append_turn(session_id, ChatTurn(
+                    role="assistant", text=proto.text, timestamp=now + 0.001, mode="kb"))
+                return TurnResult(answer=proto.text, mode="kb", citations=proto.citations,
+                                  trace=tracer.as_dicts())
             if intent is None and not rewritten and not listing_declined and not emergency \
                     and is_patient_specific(user_text):
                 decline_hint, listing_declined = _PATIENT_HINT, True

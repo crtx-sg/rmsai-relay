@@ -404,6 +404,12 @@ TEMPLATES: dict[str, str] = {
                e.timestamp AS ts, e.is_false_positive AS false_positive
         ORDER BY e.timestamp DESC
     """,
+    # Structured care-protocol steps for a rhythm ("what is the protocol for AFib?"), in order.
+    "care_protocol_steps": """
+        MATCH (cp:CareProtocol {event_type: $event_type})-[:HAS_STEP]->(s:ProtocolStep)
+        WITH cp, s ORDER BY s.order
+        RETURN cp.title AS protocol, cp.source AS source, collect(s.text) AS steps
+    """,
     # Relationship lookup — co-morbidity neighborhood of a condition
     "comorbidity_neighborhood": """
         MATCH (c:Condition {id: $condition_id})-[r:CO_MORBID_WITH]-(other:Condition)
