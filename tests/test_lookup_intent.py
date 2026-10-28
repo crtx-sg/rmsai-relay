@@ -20,7 +20,7 @@ NOW = 1_000_000.0
     "query,expected",
     [
         ("List all patients, bed, unit who had critical events in the last 24 hours",
-         ("critical_events_since", {"since": NOW - 24 * 3600})),
+         ("critical_events_since", {"since": NOW - 24 * 3600, "hours": 24})),
         ("List positive patient events reported in the last 30 minutes",
          ("positive_events_since", {"since": NOW - 30 * 60})),
         ("What is the status of patient events reported on Bed Unit1-Bed01?",
@@ -61,7 +61,7 @@ def test_operational_matrix_routes(query, expected):
         ("what were the vitals for the patient in bed one",
          ("vitals_for_bed_last_event", {"bed": "Unit1-Bed01"})),
         ("critical events in the last twenty four hours",
-         ("critical_events_since", {"since": NOW - 24 * 3600})),
+         ("critical_events_since", {"since": NOW - 24 * 3600, "hours": 24})),
     ],
 )
 def test_spoken_queries_route_like_typed(spoken, expected):
@@ -116,14 +116,14 @@ def test_this_patient_scopes_to_session_patient():
 def test_this_patient_without_session_falls_through_to_global():
     # No patient in session (e.g. text chat) -> "this patient" can't resolve; global critical query.
     assert match_intent("critical events for this patient", now=NOW) == (
-        "critical_events_since", {"since": NOW - 24 * 3600})
+        "critical_events_since", {"since": NOW - 24 * 3600, "hours": 24})
 
 
 def test_global_critical_not_hijacked_by_this_patient_rule():
     # A plain global query (no "this patient") stays global even with a patient in session.
     assert match_intent("list all patients with critical events in the last 24 hours", now=NOW,
                         patient_ref="PT8620") == ("critical_events_since",
-                                                  {"since": NOW - 24 * 3600})
+                                                  {"since": NOW - 24 * 3600, "hours": 24})
 
 
 def test_comorbidity_traversal_still_works():
@@ -212,7 +212,7 @@ def test_non_vitals_query_not_hijacked_by_vitals_rule():
     # A patient is in scope, but the question is operational, not about vitals.
     assert match_intent("what are the critical events?", now=NOW, patient_ref="PT7878") == (
         "critical_events_since",
-        {"since": NOW - 24 * 3600},
+        {"since": NOW - 24 * 3600, "hours": 24},
     )
     assert match_intent("any outstanding action items?", now=NOW, patient_ref="PT7878") == (
         "outstanding_action_items",
@@ -222,3 +222,9 @@ def test_non_vitals_query_not_hijacked_by_vitals_rule():
 
 def test_unknown_query_returns_none():
     assert match_intent("tell me a joke", now=NOW, patient_ref="PT7878") is None
+
+
+def test_stt_hyphenated_hours_are_the_whole_number():
+    # STT writes "twenty-four"; it was read as 4 hours.
+    assert match_intent("List critical events in the last twenty-four hours", now=NOW) == (
+        "critical_events_since", {"since": NOW - 24 * 3600, "hours": 24})

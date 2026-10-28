@@ -12,6 +12,7 @@ matcher), but **all writes are constrained to the allowlist** — no arbitrary s
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from kb.vector.chunking import Chunk, chunk_dir
@@ -57,7 +58,9 @@ _TREATMENT_TERMS = [
 
 def _find_terms(text: str, terms: list[str]) -> list[str]:
     low = text.lower()
-    return [t for t in terms if t in low]
+    # Whole words (plural allowed): a substring match read "supraventricular tachycardia" as
+    # ventricular tachycardia and linked SVT treatments (calcium channel blockers) to VT.
+    return [t for t in terms if re.search(rf"(?<!\w){re.escape(t)}s?(?!\w)", low)]
 
 
 def extract_chunk(driver: GraphDriver, chunk: Chunk) -> dict:

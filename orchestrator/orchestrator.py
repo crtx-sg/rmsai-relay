@@ -145,6 +145,9 @@ _PLACEHOLDER_ANSWER = ("I can't repeat identifying details from that question. "
                        "Please refer to the patient by ID or bed.")
 _log = get_redacting_logger("rmsai.orchestrator")
 _MAX_HISTORY = 6
+# A question that leans on the conversation ("what about its dose?", "and for that one?").
+_REFERS_BACK = re.compile(r"\b(?:it|its|that|those|them|they|their|same|what about|how about|"
+                          r"instead|also|else|above|previous|earlier)\b", re.IGNORECASE)
 
 # Keep answers crisp: this is a clinical relay heard over the phone / read in a chat box, so the
 # response text IS the payload. Instruct the model to lead with the answer and drop the filler small
@@ -158,6 +161,11 @@ _ANSWER_INSTRUCTIONS = (
     "further help. Only if the context contains no matching records, say so in one short sentence. "
     "[P1], [P2], [R1]… label the passages and relationships for citation: they are never patient "
     "IDs, so never call anything 'patient P1'."
+)
+# Read aloud: "[P2] and [P3] indicate…" became "and indicate…" once the labels were stripped.
+_SPOKEN_INSTRUCTIONS = (
+    " This answer is read aloud: write plain sentences with no passage labels, document names, "
+    "markdown or lists."
 )
 
 
@@ -788,6 +796,56 @@ def _spoken_summary(rows: list[dict], name: str | None) -> str:
     return f"{n} records. " + " ".join(f"{s.rstrip('.')}." for s in shown) + more
 
 
+_SEVERITY = ("Critical", "High", "Medium", "Low")
+
+
+def _answer_most_severe(rows: list[dict]) -> str:
+    """'Which bed has the most severe alarm?': the beds in the top open tier, not the whole list."""
+    if not rows:
+        return "No unacknowledged alarms."
+    level = next((lv for lv in _SEVERITY if any(r.get("criticality") == lv for r in rows)),
+                 rows[0].get("criticality"))
+    top = [r for r in rows if r.get("criticality") == level]
+    counts: dict[tuple, int] = {}
+    for r in top:
+        key = (spoken_bed(r.get("bed")), spoken_event(r.get("event")))
+        counts[key] = counts.get(key, 0) + 1
+    items = [f"{bed}, {event}{_times(c)}" for (bed, event), c in counts.items()]
+    rest = len(rows) - len(top)
+    return (f"Most severe: {str(level).lower()}, on {_spoken_list(items)}."
+            + (f" {rest} less severe unacknowledged event{'s' if rest != 1 else ''}." if rest else ""))
+
+
+def _spoken_critical_by_bed(rows: list[dict], hours: int | None) -> str:
+    """High/critical events, bed by bed, worst bed first:
+    '5 high or critical events in the last 24 hours, on 2 beds. Bed 2: critical ventricular
+    tachycardia twice. Bed 8: high PAC 3 times.'"""
+    window = f" in the last {hours} hours" if hours else ""
+    if not rows:
+        return f"No high or critical events{window}."
+    by_bed: dict[str, dict[tuple, int]] = {}
+    for r in rows:  # newest first, as the template returns them
+        key = (str(r.get("criticality") or ""), spoken_event(r.get("event")))
+        bed = by_bed.setdefault(spoken_bed(r.get("bed")), {})
+        bed[key] = bed.get(key, 0) + 1
+
+    def rank(level: str) -> int:
+        return _SEVERITY.index(level) if level in _SEVERITY else len(_SEVERITY)
+
+    def bed_no(bed: str):
+        m = re.search(r"\d+", bed)
+        return int(m.group()) if m else 10**6
+
+    order = sorted(by_bed, key=lambda b: (min(rank(lv) for lv, _ in by_bed[b]), bed_no(b)))
+    parts = [f"{len(rows)} high or critical events{window}, on {len(by_bed)} "
+             f"bed{'s' if len(by_bed) != 1 else ''}."]
+    for bed in order:
+        kinds = sorted(by_bed[bed].items(), key=lambda kv: rank(kv[0][0]))
+        said = ", ".join(f"{lv.lower()} {ev}{_times(c)}" for (lv, ev), c in kinds)
+        parts.append(f"{bed.capitalize()}: {said}.")
+    return " ".join(parts)
+
+
 def _spoken_event_summary(rows: list[dict]) -> str:
     """Every event type, counted — never truncated (a bed's VF was dropped by "first three").
 
@@ -1161,6 +1219,10 @@ class Orchestrator:
                                if operational_rows else "I couldn't find that event.")
             elif name == "event_count_since":
                 answer_text = _answer_event_count(operational_rows, params.get("window"))
+            elif name == "worklist" and params.get("most_severe"):
+                answer_text = _answer_most_severe(operational_rows)
+            elif name == "critical_events_since" and spoken:
+                answer_text = _spoken_critical_by_bed(operational_rows, params.get("hours"))
             elif spoken and operational_rows and len(operational_rows) == 1 \
                     and name in _RECORD_TEMPLATES:
                 answer_text = _spoken_record(operational_rows[0], focus)
@@ -1175,12 +1237,17 @@ class Orchestrator:
             # here — only when the model is actually invoked. Recalled "past interactions" are added
             # only when `episodic_recall` is on (off by default: grounded in live KB + this chat only).
             with tracer.span("build_context"):
-                history = "\n".join(f"{t.role}: {t.text}" for t in state.turns[-_MAX_HISTORY:])
+                # Only a question that refers back ("what about its dose?") gets the history, and
+                # never the graph answers in it: the 3B model answered a VT protocol question with
+                # the worklist's beds, and a PVC question with the previous VT answer.
+                history = "\n".join(f"{t.role}: {t.text}" for t in state.turns[-_MAX_HISTORY:-1]
+                                     if t.mode != "operational") \
+                    if _REFERS_BACK.search(user_text) else ""
                 # (text, sensitive): only parts that can carry PHI are de-identified (see
                 # DeidentifyingLLM.deidentify_parts); the joined text is unchanged from before.
                 parts: list[tuple[str, bool]] = [
-                    (_ANSWER_INSTRUCTIONS, False), ("\n\n## Conversation so far\n", False),
-                    (history, True),
+                    (_ANSWER_INSTRUCTIONS + (_SPOKEN_INSTRUCTIONS if spoken else ""), False),
+                    ("\n\n## Conversation so far\n", False), (history or "(none)", True),
                 ]
                 if self.episodic_recall:
                     episodes = self.episodic.recall(user_text, k=3, patient_ref=state.patient_ref)
@@ -1192,7 +1259,7 @@ class Orchestrator:
             with tracer.span("generate") as sp:
                 answer_text, failed = self._generate(parts)  # de-id'd + retried inside
                 if spoken:  # "(P1)", "[R8]": citation labels are for the screen, not to be read out
-                    answer_text = re.sub(r"\s*[\[(][PR]\d+[\])]", "", answer_text).strip()
+                    answer_text = re.sub(r"\s*[\[(][PR]\d+\b[^\])]*[\])]", "", answer_text).strip()
                 sp.attributes["llm_failed"] = failed
                 # Output guardrail: a patient/bed/ward/event the model was never given is invented
                 # or misattributed — on a clinical relay worse than no answer. Seen live: "Patient
@@ -1214,7 +1281,8 @@ class Orchestrator:
 
         with tracer.span("persist"):
             self.working.append_turn(
-                session_id, ChatTurn(role="assistant", text=answer_text, timestamp=now + 0.001)
+                session_id, ChatTurn(role="assistant", text=answer_text, timestamp=now + 0.001,
+                                     mode=mode)
             )
             if self.episodic_recall:  # only archive Q&A when it will actually be recalled
                 self.episodic.add(

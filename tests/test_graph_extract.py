@@ -129,3 +129,14 @@ def test_load_protocols_links_to_shared_condition(driver):
     assert _count(
         driver, "MATCH (:CareProtocol {id:'afib_rvr'})-[:HAS_STEP]->(s) RETURN count(s) AS n"
     ) == 5
+
+
+def test_terms_match_whole_words_only():
+    # "supraventricular tachycardia" is not VT: the substring match linked SVT's calcium channel
+    # blockers to VT (contraindicated there).
+    from kb.graph.extract import _CONDITION_TERMS, _TREATMENT_TERMS, _find_terms
+
+    assert _find_terms("Supraventricular tachycardia (SVT) protocol", _CONDITION_TERMS) == []
+    assert _find_terms("Stable ventricular tachycardia", _CONDITION_TERMS) == ["ventricular tachycardia"]
+    assert _find_terms("Beta-blockers or calcium channel blockers", _TREATMENT_TERMS) == [
+        "beta-blocker", "calcium channel blocker"]

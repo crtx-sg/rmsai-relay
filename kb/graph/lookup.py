@@ -436,7 +436,7 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
             return _history(now=now, patient=scope_patient, bed=bed_label, hours=hours,
                             critical=True)
         hours = int(m.group(1)) if (m := _HOURS.search(q)) else 24
-        return "critical_events_since", {"since": now - hours * 3600}
+        return "critical_events_since", {"since": now - hours * 3600, "hours": hours}
 
     # T2 — positive (non-false-positive) events in the last x minutes.
     if ("positive" in q or "non-false" in q) and "event" in q:
@@ -463,7 +463,10 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # "unacknowledged alarms" is the event-history rule above. Hours narrow it.
     if _WORKLIST.search(q) or (_MOST_SEVERE.search(q) and not bed_label):
         hours = int(m.group(1)) if (m := _HOURS.search(q)) else None
-        return "worklist", {"since": now - hours * 3600 if hours else 0}
+        params = {"since": now - hours * 3600 if hours else 0}
+        if _MOST_SEVERE.search(q):  # "which bed has the most severe alarm?": the top tier only
+            params["most_severe"] = True
+        return "worklist", params
 
     # "How many events today?" / "...in the last 6 hours?": a count, not the per-bed leaderboard.
     if re.search(r"\bhow\s+many\b", q) and _ALARM_WORD.search(q) \

@@ -57,7 +57,7 @@ _PT_SPOKEN = re.compile(rf"\bPT\s+((?:{_NUM})(?:\s+{_NUM})+)\b", re.IGNORECASE)
 _PT_SPACED = re.compile(r"\bPT\s+(\d{3,})\b", re.IGNORECASE)
 # A spoken count before hours/minutes ("twenty four hours", "thirty minutes") -> additive digits.
 _TIME_SPOKEN = re.compile(
-    rf"\b((?:(?:{'|'.join(_TENS)})\s+)?(?:{_NUM})|(?:{'|'.join(_TENS)}))\s+(hours?|minutes?|mins?)\b",
+    rf"\b((?:(?:{'|'.join(_TENS)})[\s-]+)?(?:{_NUM})|(?:{'|'.join(_TENS)}))\s+(hours?|minutes?|mins?)\b",
     re.IGNORECASE,
 )
 
@@ -103,7 +103,7 @@ def _digits(phrase: str) -> str:
 def _additive(phrase: str) -> int | None:
     """Number words read additively: 'twenty four' -> 24, 'thirty' -> 30, 'ten' -> 10."""
     total = 0
-    for w in phrase.lower().split():
+    for w in re.split(r"[\s-]+", phrase.lower().strip()):
         if w in _TENS:
             total += _TENS[w]
         elif w in _TEENS:

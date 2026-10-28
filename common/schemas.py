@@ -228,6 +228,7 @@ class ChatTurn(BaseModel):
     role: Literal["clinician", "assistant", "system"]
     text: str
     timestamp: float
+    mode: Optional[str] = None  # assistant turns: "operational" (graph rows) / "hybrid" / ...
 
 
 class ConversationState(BaseModel):

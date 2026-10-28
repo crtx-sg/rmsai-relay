@@ -220,3 +220,53 @@ def test_document_questions_skip_the_router():
     llm = _RouterLLM('{"name": "protocol_for_bed_last_event", "params": {"bed": "Unit1-Bed01"}}')
     assert route("what is the protocol for treating VF?", llm, now=NOW) is None
     assert llm.calls == 0  # not even asked: no routing latency on document questions
+
+
+# --- 2026-10-28 phone call: protocol answers, critical events by bed, most severe ----------------
+
+def test_protocol_answer_prompt_leaves_out_graph_answers():
+    # The worklist's beds in the history made the model answer a VT protocol question with beds.
+    from common.schemas import ChatTurn
+
+    orch, inner = _orch("Immediate CPR and defibrillation.")
+    orch.working.state.turns += [
+        ChatTurn(role="clinician", text="Which bed has the most severe alarm?", timestamp=NOW - 9),
+        ChatTurn(role="assistant", text="bed 5 ventricular fibrillation", timestamp=NOW - 8,
+                 mode="operational"),
+    ]
+    orch.handle_turn("s1", "what is the escalation protocol?", now=NOW)
+    assert "Which bed has the most severe alarm?" not in inner.prompts[-1]  # self-contained
+    orch.handle_turn("s1", "what about its timing?", now=NOW)  # refers back: history, no graph rows
+    sent = inner.prompts[-1]
+    assert "what is the escalation protocol?" in sent and "bed 5 ventricular" not in sent
+
+
+def test_spoken_answer_drops_long_citation_labels():
+    orch, _ = _orch("Escalate within 15 minutes. \n\n(P1 #3, first line therapy)")
+    assert orch.handle_turn("s1", "when should I escalate?", now=NOW, spoken=True).answer == \
+        "Escalate within 15 minutes."
+
+
+def test_most_severe_names_only_the_top_tier():
+    from orchestrator.orchestrator import _answer_most_severe
+
+    rows = [{"bed": "Unit1-Bed02", "event": "VENTRICULAR_TACHYCARDIA", "criticality": "Critical"},
+            {"bed": "Unit1-Bed05", "event": "VENTRICULAR_FIBRILLATION", "criticality": "Critical"},
+            {"bed": "Unit1-Bed08", "event": "PAC", "criticality": "High"}]
+    assert _answer_most_severe(rows) == ("Most severe: critical, on bed 2, ventricular tachycardia "
+                                         "and bed 5, ventricular fibrillation. "
+                                         "1 less severe unacknowledged event.")
+    assert match_intent("Which bed has the most severe alarm?", now=NOW)[1]["most_severe"] is True
+
+
+def test_critical_events_are_spoken_bed_by_bed_worst_first():
+    from orchestrator.orchestrator import _spoken_critical_by_bed
+
+    rows = [{"bed": "Unit1-Bed08", "event": "PAC", "criticality": "High"},
+            {"bed": "Unit1-Bed08", "event": "PAC", "criticality": "High"},
+            {"bed": "Unit1-Bed06", "event": "SINUS_BRADYCARDIA", "criticality": "High"},
+            {"bed": "Unit1-Bed06", "event": "VENTRICULAR_TACHYCARDIA", "criticality": "Critical"}]
+    assert _spoken_critical_by_bed(rows, 24) == (
+        "4 high or critical events in the last 24 hours, on 2 beds. "
+        "Bed 6: critical ventricular tachycardia, high sinus bradycardia. Bed 8: high PAC twice.")
+    assert _spoken_critical_by_bed([], 24) == "No high or critical events in the last 24 hours."
