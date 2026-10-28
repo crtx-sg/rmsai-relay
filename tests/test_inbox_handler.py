@@ -35,6 +35,9 @@ class _FakeWorking:
         self.scoped: dict[str, str | None] = {}
         self.events: dict[str, str | None] = {}
 
+    def append_turn(self, *_a, **_k):
+        pass
+
     def set_authenticated(self, session_id: str, *, patient_ref: str | None = None,
                           event_ref: str | None = None) -> None:
         self.scoped[session_id] = patient_ref

@@ -48,6 +48,9 @@ class _Mem:
     def __init__(self):
         self.bound = []
 
+    def append_turn(self, *_a, **_k):
+        pass
+
     def set_authenticated(self, session_id, **kw):
         self.bound.append((session_id, kw))
 

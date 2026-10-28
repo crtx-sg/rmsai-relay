@@ -38,6 +38,9 @@ class _Working:
     def get_or_create(self, sid):
         return self.s
 
+    def append_turn(self, *_a, **_k):
+        pass
+
     def set_authenticated(self, sid, *, patient_ref=None, event_ref=None):
         self.s.authenticated, self.s.patient_ref, self.s.event_ref = True, patient_ref, event_ref
 

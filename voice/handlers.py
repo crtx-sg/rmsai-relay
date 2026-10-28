@@ -9,9 +9,11 @@ is unchanged.
 from __future__ import annotations
 
 import re
+import time
 from abc import ABC, abstractmethod
 
 from common.audit import AuditLog
+from common.schemas import ChatTurn
 from voice.auth import PinAuthGate, parse_pin
 from voice.outbound import is_plain_no, is_question, parse_ack
 from voice.outbound_alert import OutboundAlert
@@ -212,6 +214,9 @@ class OutboundHandler(OrchestratorHandler):
               f"(event {self.alert.event_id})", flush=True)
         # Built from structured fields only (pseudonym, bed, rhythm, vitals): safe to log (rule 6).
         print(f"[voice] alert text: {self.alert.spoken_alert!r}", flush=True)
+        # In the conversation so "can you repeat?" re-voices it (2026-10-28 call: "nothing to repeat").
+        self.working.append_turn(session_id, ChatTurn(role="assistant", text=self.alert.spoken_alert,
+                                                      timestamp=time.time(), mode="alert"))
         return self.alert.spoken_alert
 
     def _this_event(self) -> str:

@@ -66,9 +66,13 @@ class _State:
 class _FakeWorking:
     def __init__(self):
         self.states = {}
+        self.turns = {}
 
     def get_or_create(self, sid):
         return self.states.setdefault(sid, _State())
+
+    def append_turn(self, sid, turn):
+        self.turns.setdefault(sid, []).append(turn)
 
     def set_authenticated(self, sid, *, patient_ref=None, event_ref=None):
         s = self.get_or_create(sid)
@@ -135,6 +139,8 @@ def test_outbound_handler_pin_then_alert_then_followup(tmp_path):
     # ...and the called event: "this event" is the alerted one, not the patient's latest (a VF call
     # answered vitals from a newer VT for the same patient, 2026-10-13)
     assert working.get_or_create("room1").event_ref == "E1"
+    # the alert is a turn in the conversation, so "can you repeat?" re-voices it (2026-10-28 call)
+    assert [t.text for t in working.turns["room1"]] == [alert.spoken_alert]
     # a follow-up routes to the orchestrator, scoped to the session
     assert h.respond("what were the vitals", session_id="room1") == "answer:what were the vitals"
     assert orch.calls == [("room1", "what were the vitals")]

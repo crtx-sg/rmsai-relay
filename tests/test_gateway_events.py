@@ -121,6 +121,9 @@ class _Orch:
 
 
 class _Mem:
+    def append_turn(self, *_a, **_k):
+        pass
+
     def set_authenticated(self, *a, **k):
         pass
 
