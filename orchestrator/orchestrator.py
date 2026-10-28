@@ -1033,12 +1033,13 @@ class Orchestrator:
         """Structured steps, else the document's sections, for a protocol question naming a rhythm
         (or following one up: "what about its long-term management?", "the rest"). None = not one."""
         q = normalize_spoken_query(question)
-        etype = event_type_from_text(q)
+        etype, scope = event_type_from_text(q), q
         if etype is None:
             prev = next((t.text for t in reversed(state.turns[:-1]) if t.role == "clinician"), "")
             if names_protocol(prev) and (names_protocol(q) or _REFERS_BACK.search(q)
                                          or protocol_answer.wants_more(q)):
-                etype = event_type_from_text(normalize_spoken_query(prev))
+                scope = f"{normalize_spoken_query(prev)} {q}"  # "go on" keeps the RVR scope
+                etype = event_type_from_text(scope)
         elif not names_protocol(q):
             return None
         if etype is None or etype == NORMAL_SINUS:
@@ -1048,7 +1049,7 @@ class Orchestrator:
                 if self.driver is not None else []
         except Exception:  # noqa: BLE001 - graph down: the documents can still answer
             rows = []
-        if rows and rows[0].get("steps"):
+        if rows and rows[0].get("steps") and protocol_answer.steps_apply(rows[0], scope):
             print(f"[orchestrator] protocol for {etype}: structured steps", flush=True)
             return protocol_answer.answer_from_steps(rows[0], etype, spoken=spoken, question=q)
         try:

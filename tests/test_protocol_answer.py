@@ -46,7 +46,7 @@ def test_step_is_spoken_as_plain_words():
 def test_spoken_steps_stop_at_three_and_go_on_keeps_numbers():
     first = pa.answer_from_steps(_AFIB, "ATRIAL_FIBRILLATION", spoken=True, question="AFib protocol")
     assert "3. Medication" in first.text and "4." not in first.text
-    assert first.text.endswith("2 more steps; ask for the full atrial fibrillation protocol.")
+    assert first.text.endswith("2 more steps; ask for the full protocol.")
     rest = pa.answer_from_steps(_AFIB, "ATRIAL_FIBRILLATION", spoken=True, question="go on")
     assert "4. Escalation" in rest.text and "5. Monitoring" in rest.text and "1." not in rest.text
     full = pa.answer_from_steps(_AFIB, "ATRIAL_FIBRILLATION", spoken=True, question="the full one")
@@ -112,3 +112,31 @@ def test_protocol_question_and_its_follow_up_skip_the_model():
 
 def test_rhythm_without_protocol_words_is_not_hijacked():
     assert _orch()._protocol_answer("how many PVC events today?", _Working().state, True) is None
+
+
+def test_rvr_steps_only_for_rvr_questions():
+    assert pa.steps_apply(_AFIB, "how do you manage AFib with RVR?")
+    assert pa.steps_apply(_AFIB, "protocol for atrial fibrillation with rapid ventricular response")
+    assert not pa.steps_apply(_AFIB, "what is the protocol for atrial fibrillation?")
+    assert pa.steps_apply({"protocol": "Default monitoring protocol"}, "protocol for AFib")
+
+
+def test_afib_without_rvr_reads_the_documents_and_go_on_keeps_rvr():
+    afib = SearchHit(text="1. AFib › Acute\n*   **Unstable:** Synchronized cardioversion.",
+                     source="p.md#1. Atrial Fibrillation (AFib) Protocol › Acute", doc_id="p.md",
+                     score=0.9)
+    orch = _orch()
+    orch.hybrid.vector.search = lambda *_a, **_k: [afib]
+    orch.driver = object()
+    import orchestrator.orchestrator as om
+    real = om.run_template
+    om.run_template = lambda *_a, **_k: [_AFIB]
+    try:
+        r = orch.handle_turn("s", "what is the protocol for AFib?", now=1.0, spoken=True)
+        assert r.answer.startswith("Atrial fibrillation protocol. Acute: Unstable")
+        r = orch.handle_turn("s", "how do you manage AFib with RVR?", now=2.0, spoken=True)
+        assert "3. Medication" in r.answer and "4." not in r.answer
+        r = orch.handle_turn("s", "go on", now=3.0, spoken=True)
+        assert "4. Escalation" in r.answer
+    finally:
+        om.run_template = real

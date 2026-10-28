@@ -22,6 +22,7 @@ _REST = re.compile(r"\b(?:rest|remaining|more|continue|go on)\b", re.IGNORECASE)
 # A heading word the caller can ask for ("long-term management of PVC") to pick sections.
 _SECTION_WORDS = ("acute", "emergency", "long term", "chronic", "stable", "unstable", "pulseless",
                   "prevention", "post resuscitation")
+_RVR = re.compile(r"\brvr\b|rapid ventricular", re.IGNORECASE)
 _VALUE_ONLY = {"vital", "name", "drug", "modality", "periodicity", "when", "route", "duration"}
 _STEP = re.compile(r"^\s*\d+\.\s*\[(\w+)\]\s*(.*?)\s*(?:\((.*)\))?\s*$")
 
@@ -68,6 +69,13 @@ def section_points(text: str) -> list[str]:
     return points
 
 
+def steps_apply(row: dict, question: str) -> bool:
+    """A protocol for a variant of the rhythm (AFib *with RVR*) answers only questions naming that
+    variant; "protocol for AFib" gets the documents' AFib sections instead."""
+    variant = "rapid ventricular response" in str(row.get("protocol") or "").lower()
+    return not variant or bool(_RVR.search(question))
+
+
 def wants_more(q: str) -> bool:
     """'the rest' / 'the full protocol' / 'long-term management': a follow-up for more of it."""
     return bool(_ALL.search(q) or _REST.search(q)) or any(w in _plain(q) for w in _SECTION_WORDS)
@@ -104,8 +112,8 @@ def answer_from_steps(row: dict, etype: str, *, spoken: bool, question: str) -> 
     text = f"{row.get('protocol')} protocol: " + " ".join(
         f"{i}. {s}" for i, s in enumerate(shown, first))
     if rest:
-        text += f" {rest} more step{'s' if rest != 1 else ''}; ask for the full " \
-                f"{spoken_event(etype)} protocol."
+        # Not "the full AFib protocol": without "RVR" that question gets the documents' AFib.
+        text += f" {rest} more step{'s' if rest != 1 else ''}; ask for the full protocol."
     return ProtocolAnswer(text, [f"protocol:{row.get('protocol')}"])
 
 

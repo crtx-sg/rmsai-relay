@@ -103,7 +103,7 @@ a button opens the Events tab with the same rows. A listing with a target that c
 
 | Ask | Answer |
 |---|---|
-| "What is the protocol to handle ventricular tachycardia?" · "protocol for PVC" · "how do you manage AFib with RVR?" · "what about its long-term management?" · "go on" / "the full protocol" | No LLM. The rhythm's structured care-protocol steps (`common/protocols/care_protocols.yaml`; only AFib-RVR today), else that rhythm's sections from one protocol document, read verbatim. Spoken: 3 points, then what is left; "the rest" continues, a section word ("long-term") picks the section. A rhythm no document has a section for (LBBB) falls through to the row below. |
+| "What is the protocol to handle ventricular tachycardia?" · "protocol for PVC" · "how do you manage AFib with RVR?" · "what about its long-term management?" · "go on" / "the full protocol" | No LLM. The rhythm's structured care-protocol steps (`common/protocols/care_protocols.yaml`; only AFib-RVR today, used only when the question says "RVR" or "rapid ventricular response"), else that rhythm's sections from one protocol document, read verbatim. Spoken: 3 points, then what is left; "the rest" continues, a section word ("long-term") picks the section. A rhythm no document has a section for (LBBB) falls through to the row below. |
 | "what is the rate control for AFib?" · "what does the critical alarm SOP say?" · "how is hyperkalaemia escalated?" | Cited answer from the documents |
 | "When should I escalate a MEWS score?" | Escalation rules from the MEWS document |
 | "What does a MEWS of 5 mean?" | Band from the same scorer that rates alerts ("high risk") + the document's escalation rule. No LLM. |
