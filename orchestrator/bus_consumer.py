@@ -25,7 +25,7 @@ from kb.graph.events import get_event_status, set_event_delivery
 from kb.graph.templates import CLOSED_STATUSES
 from kb.vector.retriever import VectorRetriever
 from live.inbox import artifact_kinds_for, build_event_message, mint_artifact_links
-from orchestrator.call_queue import CallJob
+from orchestrator.call_queue import CallJob, CallQueue
 from orchestrator.event_flow import process_device_event
 from orchestrator.outbound_flow import (
     OutboundResult, app_only, run_outbound, run_text_notify, should_call,
@@ -346,6 +346,16 @@ def _place_live_call(
 # Statuses after which a queued call is pointless: the clinician has already seen to the event
 # (e.g. acknowledged it in the companion app while an earlier call was in progress).
 _SKIP_CALL_STATUSES = {"acknowledged", "resolved"}
+# A call the worker hung up because its audio died on a LiveKit reconnect is placed again, at most
+# this many times (voice.livekit_agent, live 2026-10-28).
+_DROPPED_REDIALS = 2
+
+
+def _was_dropped(alert_store, event_id: str) -> bool:
+    try:
+        return CallQueue(alert_store.redis).pop_dropped(event_id)
+    except Exception:  # noqa: BLE001 - no flag readable: treat the call as ended normally
+        return False
 
 
 def run_queued_call(
@@ -370,12 +380,23 @@ def run_queued_call(
     print(f"[calls] dialling for {job.patient_ref}/{job.event_type} @ {job.bed} "
           f"({job.criticality}, event {job.event_id})", flush=True)
     event = dict_to_event(job.payload)
-    result = _place_live_call(
-        event, bed_label=job.bed, driver=driver, orchestrator=orchestrator,
-        utterances=utterances, config=config, notifier=notifier,
-        caller_factory=caller_factory, dispatch_fn=dispatch_fn, alert_store=alert_store,
-        call_end_waiter=call_end_waiter,
-    )
+    for redial in range(_DROPPED_REDIALS + 1):
+        result = _place_live_call(
+            event, bed_label=job.bed, driver=driver, orchestrator=orchestrator,
+            utterances=utterances, config=config, notifier=notifier,
+            caller_factory=caller_factory, dispatch_fn=dispatch_fn, alert_store=alert_store,
+            call_end_waiter=call_end_waiter,
+        )
+        if redial == _DROPPED_REDIALS or not _was_dropped(alert_store, job.event_id):
+            break
+        try:
+            status = get_event_status(driver, job.event_id)
+        except Exception:  # noqa: BLE001 - ringing twice beats not ringing (rule #8)
+            status = None
+        if status in _SKIP_CALL_STATUSES:
+            break
+        print(f"[calls] call for {job.patient_ref}/{job.event_type} @ {job.bed} dropped on a "
+              f"network reconnect; ringing again (event {job.event_id})", flush=True)
     finish_call(driver, job.event_id, result)
     return ConsumeResult(
         event_uuid=job.event_id, patient_ref=job.patient_ref, event_type=job.event_type,

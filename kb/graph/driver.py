@@ -47,7 +47,10 @@ class GraphDriver:
     @classmethod
     def from_config(cls, config: Config = DEFAULT) -> "GraphDriver":
         return cls(
-            GraphDatabase.driver(config.neo4j_uri, auth=(config.neo4j_user, config.neo4j_password))
+            # UNRECOGNIZED = "property does not exist" on events stored before a field was added:
+            # expected, and each one logged the whole query (2026-10-28 phone log).
+            GraphDatabase.driver(config.neo4j_uri, auth=(config.neo4j_user, config.neo4j_password),
+                                 notifications_disabled_classifications=["UNRECOGNIZED"])
         )
 
     def close(self) -> None:

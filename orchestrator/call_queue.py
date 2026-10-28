@@ -39,6 +39,9 @@ _JOBS = "rmsai:calls:jobs"
 _ACTIVE = "rmsai:calls:active"  # the one call being placed system-wide (event id), with a lease
 _ANSWERED = "rmsai:calls:answered:{event_id}"  # set by the voice worker on the right PIN
 _ANSWERED_TTL_S = 24 * 3600
+# Set by the voice worker when it hung up a call whose audio died on a LiveKit reconnect.
+_DROPPED = "rmsai:calls:dropped:{event_id}"
+_DROPPED_TTL_S = 3600
 _LEASE_S = 60  # renewed every _LEASE_S/3 during a call; a crashed holder frees the slot after this
 # Renew / release the slot only while it still holds OUR event id (atomic compare-and-act). A plain
 # EXPIRE or GET-then-DEL could extend or free a slot another process had claimed after ours lapsed.
@@ -143,6 +146,14 @@ class CallQueue:
         A key of its own (one SET, not an edit of the job JSON) so it can't recreate a job `done()`
         already deleted."""
         self.redis.set(_ANSWERED.format(event_id=event_id), "1", ex=_ANSWERED_TTL_S)
+
+    def mark_dropped(self, event_id: str) -> None:
+        """The worker ended this event's call because the connection broke: ring it again."""
+        self.redis.set(_DROPPED.format(event_id=event_id), "1", ex=_DROPPED_TTL_S)
+
+    def pop_dropped(self, event_id: str) -> bool:
+        """True (once) if the worker marked this event's call as dropped."""
+        return bool(self.redis.delete(_DROPPED.format(event_id=event_id)))
 
     def done(self, event_id: str) -> None:
         self.redis.hdel(self.jobs_key, event_id)

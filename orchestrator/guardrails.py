@@ -26,7 +26,9 @@ _ACTION = re.compile(
     r"^\W*(?:please\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?|go ahead and\s+|"
     r"i (?:want|need) you to\s+)?"
     r"(?:(?:administer|inject|prescribe|defibrillate|shock|cardiovert)\b"
-    r"|(?:give|push)\b(?!\s+(?:me|us)\b)"
+    # "give the last updated blood pressure" asks for information (refused, live 2026-10-28)
+    r"|(?:give|push)\b(?!\s+(?:me|us|the\s+(?:last|latest|current|recent|most\s+recent|updated|"
+    r"vitals?|blood\s+pressure|heart\s+rate|bp|hr|status|summary|list))\b)"
     r"|(?:set|change|increase|decrease|raise|lower) the dose\b"
     r"|order\s+(?:an?\s+|the\s+|some\s+)?(?:labs?|tests?|ct|scan|x-?ray|ecg|ekg|troponin|blood|"
     r"med\w*|drugs?|doses?)\b)",

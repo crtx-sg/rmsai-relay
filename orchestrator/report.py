@@ -42,7 +42,8 @@ def build_event_report(event: DeviceEvent, patient_context: dict) -> str:
     return f"{base}\n\n{render_patient_context(patient_context)}\n"
 
 
-_SPOKEN_VITAL = {"Systolic": "systolic blood pressure", "Temp": "temperature",
+_SPOKEN_VITAL = {"Systolic": "systolic blood pressure", "Diastolic": "diastolic blood pressure",
+                 "Temp": "temperature",
                  "SpO2": "oxygen saturation", "HR": "heart rate", "RespRate": "respiratory rate"}
 
 

@@ -219,7 +219,7 @@ _ACK_FILLER = {"i", "we", "that", "thats", "it", "its", "ive", "weve", "this", "
                "event", "alarm", "is", "ok", "okay", "thanks", "thank", "you", "received",
                "understood", "got", "and", "please", "kindly", "sir", "maam", "bye", "goodbye",
                "very", "much", "receipt", "of", "have", "has", "been", "all", "good", "for", "now",
-               "a", "an", "so", "well", "even"}  # "even": STT for "event" (live 2026-10-15)
+               "a", "an", "so", "well", "even", "evening"}  # STT for "event" (2026-10-15, -28)
 # A polite request is a command, not a question: live 2026-10-15 "Can you acknowledge this even?"
 # was answered with the worklist and the alert stayed open.
 _POLITE_ACK = re.compile(

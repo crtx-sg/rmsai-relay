@@ -190,6 +190,12 @@ _NAMED_PATIENT = re.compile(r"\bPT\d{3,}\b", re.IGNORECASE)
 _WHERE = re.compile(r"\b(which|what) bed\b|\bwhere\b|\bbed (?:is|does)\b", re.IGNORECASE)
 # "this/current/same patient" — scopes a query to the session's patient (outbound call).
 _THIS_PATIENT = re.compile(r"\b(this|current|same) patient(?:'s|s)?\b", re.IGNORECASE)
+# Bare "previous events" with a patient in scope (a call): that patient's, not the current event's
+# vitals (live 2026-10-28).
+_PRIOR_EVENTS = re.compile(r"\b(?:past|prior|previous|earlier)\s+(?:events?|alerts?|alarms?|episodes?)\b",
+                           re.IGNORECASE)
+# "Which vitals are deteriorating", "the trends for this patient": every vital's verdict.
+_TRENDS = re.compile(r"\b(?:trends?|trending|deteriorat\w*|worsening|getting\s+worse)\b", re.IGNORECASE)
 
 
 def history_status(q: str) -> str | None:
@@ -322,6 +328,11 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         if event_ref:  # the called event's trend, not a newer event of the same patient
             return "hr_trend_for_event", {"event_uuid": event_ref}
         return "hr_trend_for_patient_last_event", {"patient_id": patient_ref}
+    # Every vital's trend at the called event, from its stored deterioration verdicts. The LLM
+    # router sent "trends that are deteriorating for this patient" to an ST-elevation query.
+    if event_ref and _TRENDS.search(q) and not bed and not named and not etype \
+            and not _focus(q, _VITAL_FOCUS) and not re.search(r"\bpatients\b", q):
+        return "event_summary", {"event_uuid": event_ref, "focus": "trends"}
 
     # The last N recorded readings of a vital (or every vital) before the called/selected event.
     if event_ref and _READINGS.search(q) and not bed and not named:
@@ -409,7 +420,8 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # Status ("unacknowledged", "acknowledged", "withheld") and scope (patient / bed / event type)
     # both come from the clinician's words.
     status = history_status(q)
-    this_patient = patient_ref if _THIS_PATIENT.search(q) else None
+    this_patient = patient_ref if _THIS_PATIENT.search(q) or (
+        _PRIOR_EVENTS.search(q) and not bed_label and not named) else None
     scope_patient = named or this_patient
     scoped = bool(scope_patient or bed_label or etype)
     listing = bool(_ALARM_WORD.search(q) or _HISTORY_WORD.search(q) or _WORKLIST.search(q))

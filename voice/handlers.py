@@ -51,8 +51,11 @@ def _voice(spoken: bool) -> dict:
 
 
 def is_filler(text: str) -> bool:
-    """True for a spoken backchannel that should get no reply (see `_FILLER`)."""
-    return bool(_FILLER.match(text or ""))
+    """True for a spoken backchannel that should get no reply (see `_FILLER`), or for speech with no
+    Latin letter or digit: background talk in Hindi/Tamil was answered and glued onto the next
+    question (live 2026-10-28)."""
+    text = (text or "").strip()
+    return bool(_FILLER.match(text)) or bool(text) and not re.search(r"[A-Za-z0-9]", text)
 _AUTH_OK = "Thank you, you are authenticated. How can I help?"
 _LOCKED = "I could not verify your PIN. Ending the call for safety."
 

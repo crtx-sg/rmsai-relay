@@ -165,7 +165,7 @@ _BARGE_IN_WORD = re.compile(r"^\W*(?:ok(?:ay)?|stop|wait|hold on)\W*$", re.IGNOR
 # what the MEWS score is?" and "Can you tell me what the potassium was?" are whole questions, and a
 # held piece is only answered if the clinician speaks again.
 _DANGLING = re.compile(
-    r"\b(?:the|a|an|of|to|with|about|from|by|and|or|what|which|whats|my|his|her|their)\W*$",
+    r"\b(?:the|a|an|of|to|with|about|from|by|and|or|what|which|whats|my|his|her|their|any)\W*$",
     re.IGNORECASE)
 _DANGLING_MAX_WORDS = 4
 _CARRY_S = 10.0  # a carried piece older than this is dropped, not joined
@@ -203,6 +203,30 @@ def join_carried(carry: tuple[str, float] | None, text: str, now: float) -> str:
 def is_barge_in(text: str) -> bool:
     """A transcript that means "stop talking and listen" (kept short: it is acted on mid-speech)."""
     return bool(_BARGE_IN_WORD.match(text or ""))
+
+
+def end_call_on_reconnect(room, event_id: str, *, mark_dropped, delete_room) -> None:
+    """Hang up an event call once LiveKit has reconnected, and have the consumer ring it again.
+
+    With livekit 1.1.8 / agents 1.6.0, after a signal reconnect ("ping timeout" -> resume) the
+    caller's audio still reached us but ours never reached the phone: 100 s of replies nobody
+    heard (live 2026-10-28). A fresh call is better than a silent one.
+    shortcut: hangs up on every reconnect, even one the audio might survive; drop it once an SDK
+    upgrade is shown to keep the outgoing track alive.
+    """
+    def _reconnected() -> None:
+        print(f"[worker] LiveKit reconnected mid-call; our audio no longer reaches the caller -> "
+              f"ending {room.name} so the event is rung again", flush=True)
+        try:
+            mark_dropped(event_id)
+        except Exception as exc:  # noqa: BLE001 - still hang up: silence is the worse outcome
+            print(f"[worker] could not mark {event_id} for a redial: {type(exc).__name__}",
+                  flush=True)
+        asyncio.ensure_future(delete_room())
+
+    room.on("reconnecting", lambda: print("[worker] LiveKit connection lost mid-call; reconnecting",
+                                          flush=True))
+    room.on("reconnected", _reconnected)
 
 
 # --- per-turn latency -----------------------------------------------------------------------------
@@ -769,6 +793,12 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
 
     await ctx.connect()
     print(f"[worker] joined room {ctx.room.name!r} over WebRTC — {kind}", flush=True)
+    if not is_inbox and alert_store is not None and getattr(handler, "alert", None) is not None:
+        from orchestrator.call_queue import CallQueue  # noqa: PLC0415
+
+        end_call_on_reconnect(ctx.room, handler.alert.event_id,
+                              mark_dropped=CallQueue(alert_store.redis).mark_dropped,
+                              delete_room=ctx.delete_room)
     from livekit import rtc as _rtc  # noqa: PLC0415
 
     def _yield_if_duplicate(_participant=None) -> bool:

@@ -41,7 +41,7 @@ from memory.episodic import EpisodicMemory
 from memory.working import WorkingMemory
 
 from . import protocol_answer
-from .report import spoken_bed, spoken_event
+from .report import _SPOKEN_VITAL as _TREND_VITAL_NAME, spoken_bed, spoken_event
 from .guardrails import UNGROUNDED_ANSWER, Guardrails, is_emergency, ungrounded_identifiers
 
 def explain_decline(result, overlap: float, top_score: float = 0.0, *,
@@ -379,6 +379,30 @@ def _mews_from_explanation(why_json) -> str | None:
     return text + (f"; contributing: {comps}" if comps else "")
 
 
+def _trends_from_explanation(why_json) -> str:
+    """The vitals the deterioration check put in that bucket (`why_json`, `orchestrator.explain`):
+    'deteriorating: heart rate rising 35 beats per minute over 65 minutes, now 194.'"""
+    try:
+        v = json.loads(why_json)["vitals"]
+        worse = [d for d in v["deteriorating"] if isinstance(d, dict)]
+    except (ValueError, KeyError, TypeError):
+        return "no vital trends are recorded for this event."
+    if not worse:
+        return "no vital is deteriorating."
+    said = []
+    for d in worse:
+        text = f"{_TREND_VITAL_NAME.get(d.get('vital'), d.get('vital'))} {d.get('direction', 'changing')}"
+        if d.get("change") is not None:
+            unit = str(d.get("unit") or "").replace("/min", "per minute").replace("mmHg", "")
+            text += f" {abs(d['change']):g} {unit}".rstrip()
+        if d.get("span_s"):
+            text += f" over {round(d['span_s'] / 60)} minutes"
+        if d.get("latest") is not None:
+            text += f", now {d['latest']:g}"
+        said.append(text)
+    return _speakable("deteriorating: " + "; ".join(said) + ".")
+
+
 # --- spoken (phone) answers for one event record --------------------------------------------------
 
 # Templates whose single row is one event record (rhythm, time, MEWS, vitals): on a call these are
@@ -563,6 +587,8 @@ def _answer_event_summary(row: dict, focus: str | None) -> str:
             return f"{who}: " + _speakable(str(r["why"])).replace("Shown because:", "you were "
                                                                   "alerted because", 1)
         return f"{who}: {rhythm}, rated {str(r.get('criticality') or 'unknown').lower()}."
+    if focus == "trends":
+        return f"{who}: " + _trends_from_explanation(r.get("why_json"))
     if focus == "criticality":
         mews = _mews_from_explanation(r.get("why_json"))
         mews = mews.split(";")[0] if mews else (f"MEWS risk {r['mews_risk']}" if r.get("mews_risk")
