@@ -1278,6 +1278,9 @@ class Orchestrator:
             focus = params.get("focus") or ("mews" if name.startswith("mews_") else None)
             if name == "patient_clinical_history":
                 answer_text = _answer_clinical_history(operational_rows, focus)
+            elif name == "bed_last_event" and focus == "trends":
+                answer_text = (_answer_event_summary(operational_rows[0], focus) if operational_rows
+                               else "No events are recorded on that bed.")
             elif name == "event_summary":
                 answer_text = (_answer_event_summary(operational_rows[0], focus) if operational_rows
                                else "I couldn't find that event.")

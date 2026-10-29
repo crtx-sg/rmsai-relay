@@ -42,14 +42,20 @@ _BED_WORD = (rf"(?:bed|bin|(?:(?<=\bon )|(?<=\bin )|(?<=\bat )|(?<=\bfor )){_MIS
 # "bed number two" / "bed no. two": the number word may be introduced (live call 2026-10-09:
 # "What is the event on bed number two?" missed the graph and the LLM answered from history).
 _BED_NO = r"(?:(?:number|no\.?|num|#)\s*)?"
+# "bed twenty-three" / "bed twenty three" / "bed twenty": a tens word, read additively (live
+# 2026-10-29 "bed twenty-three" reached the graph as the label "twenty-three").
+_TENS_NUM = rf"(?:{'|'.join(_TENS)})(?:[\s-]+(?:{'|'.join(k for k in _ONES if len(k) > 1)}))?"
+# "bed? 23": STT splits the number into its own fragment, the two are joined after a "?".
+_BED_GAP = r"[.,?!]?\s+"
 _BED_SPOKEN = re.compile(
-    rf"\b(?:bed\s+)?(?:unit\s+({_NUM})\s+)?{_BED_WORD}\s+{_BED_NO}((?:{_NUM})(?:\s+{_NUM})*)\b",
+    rf"\b(?:bed\s+)?(?:unit\s+({_NUM})\s+)?{_BED_WORD}{_BED_GAP}{_BED_NO}"
+    rf"({_TENS_NUM}|(?:{_NUM})(?:\s+{_NUM})*)\b",
     re.IGNORECASE)
 # Typed bed shorthand: "Bed01", "bed 1", "bed01" (digit label, no unit prefix) -> canonical
 # "bed Unit1-Bed01" (default single POC unit, 2-digit label), so it matches the graph Bed node the
 # same way the app's "Unit1 / Bed01" worklist label reads. The negative lookbehind keeps it from
 # firing on the "Bed" inside an already-canonical "Unit1-Bed01" label (that "Bed" follows a "-").
-_BED_TYPED = re.compile(rf"(?<![-\w]){_BED_WORD}\s*(?:(?:number|no\.?|num|#)\s*)?0*(\d{{1,2}})\b",
+_BED_TYPED = re.compile(rf"(?<![-\w]){_BED_WORD}[.,?!]?\s*(?:(?:number|no\.?|num|#)\s*)?0*(\d{{1,2}})\b",
                         re.IGNORECASE)
 # A spoken patient pseudonym: "P T nine nine eight two two four" (after acronym collapse, "PT nine
 # nine …") or "PT 998224" -> "PT998224", the form the graph and the de-identifier use.
@@ -117,7 +123,9 @@ def _additive(phrase: str) -> int | None:
 
 def _bed_sub(m: re.Match) -> str:
     unit = _digits(m.group(1)) if m.group(1) else "1"   # default to the single POC unit
-    bed = _digits(m.group(2)).zfill(2)                  # bed labels are 2-digit ("Bed01")
+    words = m.group(2).lower()
+    bed = (str(_additive(words)) if words.split("-")[0].split()[0] in _TENS
+           else _digits(words)).zfill(2)                # bed labels are 2-digit ("Bed01")
     return f"bed Unit{unit}-Bed{bed}"
 
 

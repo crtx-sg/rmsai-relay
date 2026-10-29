@@ -195,6 +195,8 @@ _THIS_PATIENT = re.compile(r"\b(this|current|same) patient(?:'s|s)?\b", re.IGNOR
 _PRIOR_EVENTS = re.compile(r"\b(?:past|prior|previous|earlier)\s+(?:events?|alerts?|alarms?|episodes?)\b",
                            re.IGNORECASE)
 # "Which vitals are deteriorating", "the trends for this patient": every vital's verdict.
+_OCCUPANT = re.compile(r"\b(?:assigned|occup\w*|admitted|lying)\b|\bwho(?:'s|\s+is)\s+(?:on|in|at)\b|"
+                       r"\b(?:any|a)\s+patients?\s+(?:on|in|at)\s+bed\b", re.IGNORECASE)
 _TRENDS = re.compile(r"\b(?:trends?|trending|deteriorat\w*|worsening|getting\s+worse)\b", re.IGNORECASE)
 
 
@@ -328,6 +330,10 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         if event_ref:  # the called event's trend, not a newer event of the same patient
             return "hr_trend_for_event", {"event_uuid": event_ref}
         return "hr_trend_for_patient_last_event", {"patient_id": patient_ref}
+    # The same for a named bed's last event ("deteriorating vitals for the patient on bed 23").
+    if bed and _BED_LABEL.fullmatch(bed) and _TRENDS.search(q) and not named and not etype \
+            and not _focus(q, _VITAL_FOCUS):
+        return "bed_last_event", {"bed": bed, "focus": "trends"}
     # Every vital's trend at the called event, from its stored deterioration verdicts. The LLM
     # router sent "trends that are deteriorating for this patient" to an ST-elevation query.
     if event_ref and _TRENDS.search(q) and not bed and not named and not etype \
@@ -351,6 +357,11 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # small model invented a patient (observed 2026-10-05).
     # A named bed wins: "MEWS score for the last event on bed seven" is about bed 7, not the call.
     bed_label = bed if bed and any(ch.isdigit() for ch in bed) else None
+
+    # "Is any patient on / assigned to bed 23?": who the bed's last event was for (live 2026-10-29,
+    # the LLM router answered with the whole ward).
+    if bed_label and _OCCUPANT.search(q) and not named:
+        return "bed_last_event", {"bed": bed_label}
 
     # The ward ranked sickest first (or walked in bed order when asked): rounds / triage lists.
     if _PATIENT_RANKING.search(q) and not named and not bed_label:
