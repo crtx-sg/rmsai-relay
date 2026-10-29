@@ -127,13 +127,19 @@ def place_predefined_call(
         caller.room = room
     audit = audit or AuditLog(config.audit_log_path)
 
-    if dispatcher is not None:
+    def _dispatch() -> None:
+        if dispatcher is None:
+            return
         try:
             dispatcher(room)
         except Exception as exc:  # noqa: BLE001 - the call can still connect; only the agent is late
             print(f"[call] agent dispatch to {room} failed: {type(exc).__name__}: {exc}", flush=True)
 
-    outcome, attempts = place_with_retries(caller, number, config, sleep_fn=sleep_fn)
+    _dispatch()
+    # Again before every redial: the agent left with the unanswered attempt, so an answered retry
+    # was a silent line (the event path does the same, orchestrator.bus_consumer).
+    outcome, attempts = place_with_retries(caller, number, config, sleep_fn=sleep_fn,
+                                           before_retry=_dispatch)
     # Audit the destination masked: the number is the clinician's, not the patient's, but there is
     # no reason for a full phone number to sit in an audit file (rule #6 in spirit).
     audit.write(actor="system", action="outbound_call", subject="on_demand",

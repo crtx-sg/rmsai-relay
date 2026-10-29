@@ -107,6 +107,16 @@ def test_call_is_dialled_into_the_dispatched_room(tmp_path):
     assert caller.dialled_room == room == dispatched[0]
 
 
+def test_agent_is_dispatched_again_before_each_redial(tmp_path):
+    dispatched: list[str] = []
+    room, outcome, attempts = place_predefined_call(
+        config=_CFG, caller=SimulatedCaller([CallOutcome.NO_ANSWER, CallOutcome.ANSWERED]),
+        dispatcher=dispatched.append, audit=AuditLog(str(tmp_path / "audit.jsonl")),
+        sleep_fn=lambda _s: None,
+    )
+    assert outcome == CallOutcome.ANSWERED and attempts == 2 and dispatched == [room, room]
+
+
 def test_dispatch_failure_does_not_swallow_the_call(tmp_path):
     def _boom(_room):
         raise RuntimeError("livekit unreachable")
