@@ -228,7 +228,7 @@ make demo-phone-up        # = CONSUME_ARGS="--channel voice --caller livekit --t
 | Events alert in the app but **no phone rings**; the consumer log shows `-> answered (attempts 1)` plus a `[webrtc] join room to take the call:` token | the consumer runs `--transport webrtc` (the `make demo-up` default; the "answer" is simulated) | `make demo-phone-up` |
 | The call connects but the caller hears **silence**; the phone worker logs `ElevenLabs API error 401 … quota` | the ElevenLabs credits ran out (TTS and STT both fail) | top up, or switch `TTS_BACKEND`/`STT_BACKEND` to piper/whisper |
 | `--notifier signalwire needs …` | SMS keys missing | set the keys it names in `.env`, and `outbound.from` in the hospital file |
-| A call went unanswered but no SMS arrived | the consumer log says which: `[sms] SIMULATED, not sent` (consumer runs without `--notifier`), `rejected (…)` (SignalWire's code), or `sent via signalwire` | `make demo-phone-up`; or check SignalWire's **Logs → Messages** (carrier filtering abroad) |
+| A call went unanswered but no SMS arrived | a pickup with no PIN is a missed attempt (`ended with no PIN entered: counted as missed`); after the last attempt the consumer log says which: `[sms] SIMULATED, not sent` (consumer runs without `--notifier`), `rejected (…)` (SignalWire's code), or `sent via signalwire` | `make demo-phone-up`; or check SignalWire's **Logs → Messages** (carrier filtering abroad) |
 
 **Note on retries:** a SIP error such as `603` counts as "no answer", so the relay retries
 (`OUTBOUND_MAX_RETRIES`, every `OUTBOUND_RETRY_DELAY_S`) and then, with `--notifier signalwire`, sends

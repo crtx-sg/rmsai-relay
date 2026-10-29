@@ -468,7 +468,8 @@ Prerequisites (details in [Phone calls](TELEPHONY_SETUP.md#phone-calls-livekit-c
 - A destination: `--number`, else the hospital's `outbound.call_number` (a real call refuses to start with neither).
 - In split mode, the phone worker is running (`make phone-up`), not the step-5A app worker.
 - `LIVEKIT_SIP_TRUNK_ID`: the SignalWire outbound trunk (`TELEPHONY_SETUP.md`).
-- `--notifier signalwire` texts the alert from the same number if the call goes unanswered.
+- `--notifier signalwire` texts the alert from the same number if the call goes unanswered: every attempt rang out, was
+  busy, or was picked up and hung up with no PIN entered (a PIN lockout is not texted).
 
 ### Recommended smoke test (clean, single pass)
 

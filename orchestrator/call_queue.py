@@ -39,6 +39,9 @@ _JOBS = "rmsai:calls:jobs"
 _ACTIVE = "rmsai:calls:active"  # the one call being placed system-wide (event id), with a lease
 _ANSWERED = "rmsai:calls:answered:{event_id}"  # set by the voice worker on the right PIN
 _ANSWERED_TTL_S = 24 * 3600
+# Set by the voice worker when the caller is locked out after wrong PINs: someone picked up, so the
+# call is not rung again, and no SMS (it carries the alert, and the phone may not be the clinician's).
+_LOCKED = "rmsai:calls:locked:{event_id}"
 # Set by the voice worker when it hung up a call whose audio died on a LiveKit reconnect.
 _DROPPED = "rmsai:calls:dropped:{event_id}"
 _DROPPED_TTL_S = 3600
@@ -146,6 +149,15 @@ class CallQueue:
         A key of its own (one SET, not an edit of the job JSON) so it can't recreate a job `done()`
         already deleted."""
         self.redis.set(_ANSWERED.format(event_id=event_id), "1", ex=_ANSWERED_TTL_S)
+
+    def mark_locked(self, event_id: str) -> None:
+        self.redis.set(_LOCKED.format(event_id=event_id), "1", ex=_ANSWERED_TTL_S)
+
+    def reached(self, event_id: str) -> bool:
+        """Someone on the call entered the right PIN, or was locked out trying: a call that
+        connected without either (declined after pickup, or a carrier's voicemail) was missed."""
+        return any(self.redis.get(k.format(event_id=event_id)) is not None
+                   for k in (_ANSWERED, _LOCKED))
 
     def mark_dropped(self, event_id: str) -> None:
         """The worker ended this event's call because the connection broke: ring it again."""

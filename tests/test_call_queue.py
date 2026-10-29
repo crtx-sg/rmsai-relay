@@ -7,6 +7,7 @@ import time
 from dataclasses import replace
 
 from inference.serialize import event_to_dict
+from voice.outbound import SimulatedCaller
 from orchestrator import bus_consumer
 from orchestrator.call_queue import CallDispatcher, CallJob, CallQueue
 from tests.test_bus_consumer import _Afib, _event, _FakeAlertStore, _run, patched  # noqa: F401
@@ -221,7 +222,7 @@ def test_app_gets_every_event_while_a_call_is_in_progress(patched, monkeypatch):
             pushed.append(message)
 
     kw = dict(driver=object(), orchestrator=object(), utterances=["yes"],
-              config=bus_consumer.DEFAULT, caller_factory=lambda room: object(),
+              config=bus_consumer.DEFAULT, caller_factory=lambda room: SimulatedCaller(),
               dispatch_fn=lambda room: None, alert_store=_FakeAlertStore(),
               call_end_waiter=lambda room: hang_up.wait(5) and 1.0)
     d = CallDispatcher(q, lambda job: bus_consumer.run_queued_call(job, **kw), poll_s=0.02)

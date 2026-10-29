@@ -32,6 +32,7 @@ from orchestrator.outbound_flow import (
 )
 from orchestrator.patient_bootstrap import ensure_patient
 from orchestrator.report import spoken_report
+from voice.outbound import CallOutcome
 from voice.outbound_alert import OutboundAlert
 
 
@@ -319,7 +320,8 @@ def _place_live_call(
     print(f"[consume] alert staged in Redis; placing call (agent dispatching in parallel) -> "
           f"room {room}", flush=True)
     result = run_outbound(
-        event, driver=driver, orchestrator=orchestrator, caller=caller_factory(room),
+        event, driver=driver, orchestrator=orchestrator,
+        caller=_PinGatedCaller(caller_factory(room), room, w.event_id, call_end_waiter, alert_store),
         utterances=utterances, config=config, bed=bed_label, live_audio=True,
         fallback_notifier=notifier,
         # A retry needs the agent AND the alert again: after an unanswered attempt the room closed
@@ -329,18 +331,44 @@ def _place_live_call(
         before_retry=lambda: (_restage(alert), _dispatch("retry")),
     )
     dispatcher.join(timeout=10)
-    # One call at a time: wait for the clinician to hang up before the next call can dial.
-    # Moving on at "answered" rang the next alert into the call still in progress.
-    if call_end_waiter is not None and result.outcome == "answered":
-        print(f"[consume] call answered; waiting for it to end before the next call "
-              f"(room {room})", flush=True)
-        try:
-            waited = call_end_waiter(room)
-            print(f"[consume] call in {room} ended after {waited:.0f}s", flush=True)
-        except Exception as exc:  # noqa: BLE001 - never wedge the consumer on a status probe
-            print(f"[consume] could not confirm call end in {room}: "
-                  f"{type(exc).__name__}: {exc}", flush=True)
     return result
+
+
+class _PinGatedCaller:
+    """A connected call is answered only once someone reached the PIN step.
+
+    Waits for the call to end (one call at a time: moving on at "answered" rang the next alert into
+    the call still in progress), then asks the worker's flags. A pickup that hung up with no PIN —
+    declined after connecting, or the carrier's voicemail — is a missed attempt, so the retry
+    policy and the SMS fallback apply (live 2026-10-29: 4 s, no PIN, logged "answered", no SMS).
+    """
+
+    def __init__(self, caller, room, event_id, call_end_waiter, alert_store) -> None:
+        self.caller, self.room, self.event_id = caller, room, event_id
+        self.call_end_waiter, self.alert_store = call_end_waiter, alert_store
+
+    def place_call(self, number: str) -> CallOutcome:
+        outcome = self.caller.place_call(number)
+        if outcome != CallOutcome.ANSWERED or self.call_end_waiter is None:
+            return outcome
+        print(f"[consume] call answered; waiting for it to end before the next call "
+              f"(room {self.room})", flush=True)
+        try:
+            waited = self.call_end_waiter(self.room)
+            print(f"[consume] call in {self.room} ended after {waited:.0f}s", flush=True)
+        except Exception as exc:  # noqa: BLE001 - never wedge the consumer on a status probe
+            print(f"[consume] could not confirm call end in {self.room}: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            return outcome
+        try:
+            reached = CallQueue(self.alert_store.redis).reached(self.event_id)
+        except Exception:  # noqa: BLE001 - flags unreadable: trust the pickup, as before
+            return outcome
+        if reached:
+            return outcome
+        print(f"[consume] call in {self.room} ended with no PIN entered: counted as missed",
+              flush=True)
+        return CallOutcome.NO_ANSWER
 
 
 # Statuses after which a queued call is pointless: the clinician has already seen to the event

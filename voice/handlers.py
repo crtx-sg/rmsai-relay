@@ -143,11 +143,15 @@ class OrchestratorHandler(Handler):
                              subject=session_id, outcome="failure",
                              attempt=self._attempts[session_id])
             if self._attempts[session_id] >= self.max_attempts:
+                self._on_locked(session_id)
                 return _LOCKED
             return f"That PIN was not recognised. {_PROMPT_PIN}"
 
         # not a PIN at all -> just the prompt (no attempt charged, no PHI)
         return _PROMPT_PIN
+
+    def _on_locked(self, session_id: str) -> None:
+        """The caller just ran out of PIN attempts. Overridable (see OutboundHandler)."""
 
     def _on_authenticated(self, session_id: str) -> str:
         """First message spoken right after the PIN is accepted. Overridable (see OutboundHandler)."""
@@ -193,13 +197,23 @@ class OutboundHandler(OrchestratorHandler):
     """
 
     def __init__(self, orchestrator, working_memory, alert: OutboundAlert, *, driver=None,
-                 on_answered=None, **kwargs) -> None:
+                 on_answered=None, on_locked=None, **kwargs) -> None:
         super().__init__(orchestrator, working_memory, **kwargs)
         self.alert = alert
         self.driver = driver
         # Called with the event id once the PIN passes, so a consumer crash doesn't re-ring
         # (`CallQueue.mark_answered`).
         self._on_answered = on_answered
+        # Called with the event id on a PIN lockout: the call is not rung again and not texted.
+        self._on_locked_cb = on_locked
+
+    def _on_locked(self, session_id: str) -> None:
+        if self._on_locked_cb is not None:
+            try:
+                self._on_locked_cb(self.alert.event_id)
+            except Exception as exc:  # noqa: BLE001 - best effort, like on_answered
+                print(f"[voice] could not mark {self.alert.event_id} locked out: "
+                      f"{type(exc).__name__}", flush=True)
 
     def _on_authenticated(self, session_id: str) -> str:
         # Scope every subsequent turn to this patient, then speak the alert that prompted the call.
@@ -414,6 +428,7 @@ def build_handler(
 
 def build_outbound_handler(
     alert: OutboundAlert, *, embedder: str = "hashing", llm: str = "echo", on_answered=None,
+    on_locked=None,
 ) -> tuple[Handler, str | None, "callable | None"]:
     """Build the outbound (event-seeded) handler for the worker. Returns (handler, greeting, cleanup).
 
@@ -423,7 +438,8 @@ def build_outbound_handler(
     from orchestrator.chat import build_orchestrator  # noqa: PLC0415
 
     orch, driver = build_orchestrator(embedder=embedder, llm=llm)
-    handler = OutboundHandler(orch, orch.working, alert, driver=driver, on_answered=on_answered)
+    handler = OutboundHandler(orch, orch.working, alert, driver=driver, on_answered=on_answered,
+                              on_locked=on_locked)
     return handler, handler.greeting(), driver.close
 
 

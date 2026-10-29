@@ -17,6 +17,7 @@ from inference.pipeline import process_window
 from inference.serialize import event_to_dict
 from inference.vitals_analysis import MewsVitalsAnalysis
 from ingest.hdf5_reader import read_hdf5_file
+from voice.outbound import SimulatedCaller
 from orchestrator import bus_consumer
 from orchestrator.outbound_flow import OutboundResult
 
@@ -50,6 +51,8 @@ def patched(monkeypatch):
 
     def _voice(ev, **kw):
         calls["voice"].append(kw["bed"])
+        if hasattr(getattr(kw.get("caller"), "caller", None), "place_call"):  # dial: waits for the end
+            kw["caller"].place_call("+10000000000")
         return OutboundResult(called=True, decision_reason="ok", outcome="answered",
                               attempts=1, status="acknowledged")
 
@@ -210,7 +213,7 @@ def test_retry_restages_the_alert(patched, monkeypatch):
 def test_next_event_waits_for_the_answered_call_to_end(patched):
     waited = []
     res = _run(event_to_dict(_event(_Afib())), patched, channel="voice",
-               caller_factory=lambda room: object(), dispatch_fn=lambda room: None,
+               caller_factory=lambda room: SimulatedCaller(), dispatch_fn=lambda room: None,
                alert_store=_FakeAlertStore(), call_end_waiter=lambda room: waited.append(room) or 42.0)
     assert waited == [f"rmsai-outbound-{res.event_uuid}"]
 

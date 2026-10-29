@@ -350,9 +350,10 @@ def resolve_handler(room_name: str, alert_store, *, mode: str = "orchestrator"):
     if alert is not None:
         from orchestrator.call_queue import CallQueue  # noqa: PLC0415
 
+        queue = CallQueue(alert_store.redis)
         handler, greeting, cleanup = build_outbound_handler(
-            alert, embedder=embedder, llm=llm,
-            on_answered=CallQueue(alert_store.redis).mark_answered)
+            alert, embedder=embedder, llm=llm, on_answered=queue.mark_answered,
+            on_locked=queue.mark_locked)
         try:
             alert_store.delete(room_name)
         except Exception:  # noqa: BLE001
