@@ -359,7 +359,8 @@ dashboard at `http://localhost:6333/dashboard` shows the same collection interac
 Rings the hospital's `outbound.call_number` because you asked it to, not because something happened. Each call gets
 its own room (`rmsai-call-<id>`); the agent is dispatched there **before** the dial, and with no
 alert staged in that room the worker runs the PIN-gated Q&A handler — so the callee authenticates,
-then asks grounded questions.
+then asks grounded questions. The agent is dispatched again before each redial. `cli.call` is not
+tied to an event, so it never sends the SMS fallback; test that with an event (§6).
 
 ```bash
 uv run python -m cli.call                    # simulated: whole path, no telephony
@@ -424,7 +425,8 @@ uv run python -m cli.consume --channel voice --caller livekit --transport webrtc
 # → PIN → hear THIS event's alert → Q&A (see below) → say "acknowledge" (flips event status)
 ```
 
-> Each event gets its **own** room (`rmsai-outbound-<event_id>`) and a **fresh** join token, both
+> Each event gets its **own** room (`rmsai-outbound-<event_id>`; each redial a fresh one,
+> `rmsai-outbound-<event_id>-r<n>`) and a **fresh** join token, both
 > printed by `cli.consume` — this holds for **both** transports (SIP and WebRTC), so the room carries
 > that event's staged alert. The static `rmsai-outbound` name (`LIVEKIT_SIP_ROOM`) is only the
 > *default* for the standalone `cli.outbound` path (one call at a time), not the bus consumer. The
@@ -470,6 +472,12 @@ Prerequisites (details in [Phone calls](TELEPHONY_SETUP.md#phone-calls-livekit-c
 - `LIVEKIT_SIP_TRUNK_ID`: the SignalWire outbound trunk (`TELEPHONY_SETUP.md`).
 - `--notifier signalwire` texts the alert from the same number if the call goes unanswered: every attempt rang out, was
   busy, or was picked up and hung up with no PIN entered (a PIN lockout is not texted).
+- The PIN can be spoken or keyed (4 digits or `#`).
+- A call whose LiveKit connection reconnects after the PIN is hung up and rung again (at most 2
+  redials, unless the event was acknowledged meanwhile).
+- To test the SMS: publish one event (`cli.ingest --file … --emit bus`), then decline every attempt
+  or hang up before the PIN. Expect `counted as missed` per pickup, then `SMS fallback: sms_delivered`.
+- Restart the consumer or phone worker only when no call is up; mid-call the call stays open.
 
 ### Recommended smoke test (clean, single pass)
 

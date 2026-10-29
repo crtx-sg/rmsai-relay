@@ -171,7 +171,7 @@ docker compose -f infra/docker-compose.yml run --rm real-samples pick \
 ```
 {"label": "VENTRICULAR_TACHYCARDIA", "patient": "PT992591", "dataset": "incart", "subject": "incart:p2", "event_key": "event_1082", "file": "data/incart/I05_2025-01.h5"}
 …
-{"events": 5, "files": ["data/real/06995_2025-01.h5", "data/real/106_2025-01.h5", …], "package": "v2", "split": "test", "seed": 42}
+{"events": 5, "files": ["data/real/06995_2025-01.h5", "data/real/106_2025-01.h5", …], "package": "v2", "split": "test", "seed": 1873054588}
 ```
 
 ### How the `pick` command works
@@ -209,8 +209,8 @@ docker compose -f infra/docker-compose.yml run --rm real-samples  pick --pick VE
    no checkpoint configured it warns that the check could not run.
 3. **Selects** events:
    - from the **test split** only, i.e. subjects the model never saw in training;
-   - deterministically: candidates are sorted, then sampled with `--seed` (default 42), so the
-     same command always yields the same events;
+   - at random: candidates are sorted, then sampled with a new random seed each run, printed in
+     the summary line; `--seed N` repeats that draw exactly;
    - a class with too few events returns what exists and prints a shortfall warning.
 4. **Copies** each chosen `event_*` group out of its source recording, one output file per
    recording (`data/real/<record>.h5`). A file carries a single `patient_id`, so subjects are never
@@ -235,7 +235,7 @@ docker compose -f infra/docker-compose.yml run --rm real-samples  pick --pick VE
 | Flag | Default | Purpose |
 |---|---|---|
 | `--dataset mitbih vfdb …` | all | restrict to source databases |
-| `--seed N` | 42 | a different, still reproducible, selection |
+| `--seed N` | random (printed) | repeat an earlier draw |
 | `--out DIR` | `data/real` | output directory (must be outside the package; it is checksummed) |
 | `--split train\|val\|test` (before `pick`) | `test` | non-test splits work but warn: the model has seen those events |
 | `--checkpoint …` | `ECG_CHECKPOINTS` | checkpoint(s) to check the package against |
@@ -361,7 +361,7 @@ the missed-call SMS. It needs an account out of trial mode.
 |---|---|
 | Event **out** (relay → your phone → PIN → alert → Q&A → acknowledge) | works (verified 2026-10-12; needs the account out of trial mode and `SIGNALWIRE_SIP_USER`) |
 | Call **in** (your phone → SignalWire number → PIN → Q&A) | works (verified 2026-10-13) |
-| SMS fallback when an alert call is unanswered | SignalWire SMS from the same number (`--notifier signalwire`, the `make demo-phone-up` default); delivered (test SMS to a +91 number, 2026-10-13) |
+| SMS fallback when an alert call is unanswered | SignalWire SMS from the same number (`--notifier signalwire`, the `make demo-phone-up` default); delivered (test SMS to a +91 number, 2026-10-13). A pickup with no PIN entered counts as unanswered; a PIN lockout is not texted. `cli.call` never texts: to test the SMS, publish an event (`cli.ingest --file … --emit bus`) and don't enter the PIN |
 
 Full step-by-step setup: **[`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)**. Once set up:
 
@@ -386,12 +386,12 @@ query covers gets a short list of what can be asked; it is never answered by the
 
 | About | Examples |
 |---|---|
-| This event | vitals · heart rate / blood pressure / oxygen / resp rate / temperature · MEWS score · criticality · what rhythm · how confident · when · false positive? · why was I alerted · ECG strip · heart-rate trend · what should I do now · protocol for this event |
+| This event | vitals · heart rate / blood pressure / oxygen / resp rate / temperature · MEWS score · criticality · what rhythm · how confident · when · false positive? · why was I alerted · ECG strip · heart-rate trend · which vitals are deteriorating · what should I do now · protocol for this event |
 | This patient | past medical history · medications · diagnoses · surgeries · symptoms · allergies (not recorded) · age · which bed · prior / unacknowledged / critical events |
-| Another bed or patient | last event / vitals / MEWS / events / pending on bed N · protocol for bed N · report for bed N · which bed is PT… on · events / history / medications of PT… |
+| Another bed or patient | last event / vitals / MEWS / events / pending on bed N · protocol for bed N · report for bed N · who is on bed N · deteriorating vitals on bed N · which bed is PT… on · events / history / medications of PT… |
 | The ward | patients sickest first ("list patients by criticality", "bed rounds", "who should I see first"; "…in bed order") · unacknowledged events / worklist · most severe alarm · critical events in the last 24 h · alarms per bed · patients with a rhythm · withheld / acknowledged events · outstanding action items · patterns · how many events today |
-| The documents | protocols (VT/VF, AFib RVR, …) · MEWS escalation · what a MEWS of N means · hyperkalaemia · critical alarm SOP; topics with no document are declined |
-| The call | acknowledge (names the event it closes; acknowledging another bed's event is refused, and a question or a "don't acknowledge" never closes the alert) · no / not correct · repeat that · thank you / goodbye |
+| The documents | protocols (VT/VF, AFib RVR, …; read verbatim from the care-protocol steps or document sections, no LLM; a rhythm with no protocol is said to be not known) · MEWS escalation · what a MEWS of N means · hyperkalaemia · critical alarm SOP; topics with no document are declined |
+| The call | acknowledge (names the event it closes; acknowledging another bed's event is refused, and a question or a "don't acknowledge" never closes the alert) · no / not correct · repeat that (right after the alert: the alert) · thank you / goodbye · PIN spoken or keyed |
 
 `tests/test_query_coverage.py`, `tests/test_call_2026_10_14.py`, `tests/test_review_2026_10_14.py` and
 `tests/test_patient_ranking.py` pin these phrasings.
@@ -444,6 +444,7 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 |---|---|---|
 | `[real_samples] ../ecg_sigma/packages/ecg_pkg_v2 is not an ecgpkg` | run via `tools`, which can't see `../ecg_sigma` | use the `real-samples` service |
 | `real-samples` fails to start: bind source path does not exist | package not at `../ecg_sigma/packages` | set `ECGPKG_HOST_DIR=/abs/path/to/packages` (and `ECGPKG_NAME` if not `ecg_pkg_v2`) |
+| `cli.ingest` prints `file not found: data/real/<f>.h5` and the folder's files, exit 2 | `pick` replaced `data/real/` with a new random draw | use a listed file, or re-pick with the printed `--seed` |
 | `pick` exits 2: `… not held out for this model` | package ≠ checkpoint's training package | use the matching package, or `--allow-mismatch` knowingly |
 | `cli.ingest: error: ECG checkpoint(s) not found` (or `failed to load`) | `ECG_CHECKPOINTS`/`--checkpoint` points at missing or wrong weights; ingest no longer falls back to the stub | fix the path ([§1](#1-bring-up-and-confirm-the-real-model-is-loaded)); `--checkpoint` with no value runs the stub on purpose |
 | Accuracy ≈ 0, `ST_ELEVATION` predictions, `"model": "stub"` | stub fallback | [§1 table](#1-bring-up-and-confirm-the-real-model-is-loaded) |

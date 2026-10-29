@@ -45,7 +45,8 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
    voice call: WebRTC, or a real phone call via LiveKit Cloud + SignalWire
    ([Phone calls](TELEPHONY_SETUP.md#phone-calls-livekit-cloud--signalwire)). Phone calls queue in Redis and
    go out one at a time, most severe first. A text message is the alternative channel, and the SMS
-   fallback covers a call that goes unanswered.
+   fallback covers a call that goes unanswered (including a pickup where no PIN is entered; a PIN
+   lockout is not texted).
 5. **Converse** — after a shared-PIN gate, the clinician asks follow-up questions answered from the
    KB + that patient's graph, and can verbally **acknowledge** the event (flips its status).
 
@@ -178,9 +179,10 @@ over SignalWire work end to end; phone call-in is still being tested (see
 | — | Real-ECG model `real_v2` (13-class 5-fold ensemble) + ecg_sigma HDF5 reader | ✅ |
 | — | Held-out real-ECG curation (`cli.real_samples`, `PT9#####` pseudonyms) + `cli.ingest --dir` scoring | ✅ |
 | T1–T4 | Telephony split: `Config.telephony()`, `cli.sip_setup`, call paths → telephony LiveKit, phone worker (`make phone-up`) | ✅ |
-| T5 | SMS fallback on unanswered calls: SignalWire (`--notifier signalwire`, same number as the calls; `make demo-phone-up` default); a simulated SMS is recorded as `sms_simulated`, never as delivered | ✅ test SMS delivered to +91 (2026-10-13) |
+| T5 | SMS fallback on unanswered calls (a pickup with no PIN counts as unanswered; a PIN lockout is not texted): SignalWire (`--notifier signalwire`, same number as the calls; `make demo-phone-up` default); a simulated SMS is recorded as `sms_simulated`, never as delivered | ✅ test SMS delivered to +91 (2026-10-13) |
 | C1–C2 | SignalWire carrier: `TELEPHONY_CARRIER`, native SIP trunk via `cli.sip_setup` (`--swml`) | ✅ outbound (2026-10-12) and call-in (2026-10-13) verified live |
 | — | Call queue: app gets every event at once, calls one at a time in severity order, skip-if-acked, restart-safe (`orchestrator/call_queue.py`, `make demo-phone-up`) | ✅ |
+| — | Live-call hardening (2026-10-28/29): each redial in a fresh room, hang up and ring again after a LiveKit reconnect, keypad PIN, protocol answers verbatim (undocumented rhythm: "not known"), deteriorating-vitals and who-is-on-bed answers | ✅ unit-tested; fresh-room retry and keypad PIN not yet verified live |
 | — | Phone worker registered on the wrong LiveKit (agents CLI env override) | ✅ fixed (`fe89028`) |
 | E1–E5 | Model performance & traceability: outcome + metrics, "why shown", provenance + model id, `[event]`/`[perf]` logs, `cli.model_perf`, app tab + detail panel | ✅ |
 | — | Voice on select: header toggle, muted by default in `app+call` so a clinician on the phone alert doesn't hear the event twice (`/select-silent`) | ✅ |

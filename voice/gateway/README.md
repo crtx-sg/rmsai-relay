@@ -49,7 +49,7 @@ in a room with nobody in it.
 
 `cli.consume --transport sip`:
 0. queues the call in Redis (most severe first) and places queued calls one at a time;
-1. stages the event's alert in the shared Redis for `rmsai-outbound-<event_id>`;
+1. stages the event's alert in the shared Redis for `rmsai-outbound-<event_id>` (each redial: `…-r<n>`);
 2. dispatches `rmsai-agent-phone` into that room;
 3. dials `CreateSIPParticipant` through `LIVEKIT_SIP_TRUNK_ID` to `--number`, else
    the hospital's `outbound.call_number` (`config/hospitals/<HOSPITAL_ID>.yaml`), with `wait_until_answered` (`cli/consume.py: livekit_voice_wiring`).

@@ -85,12 +85,14 @@ rule: the reader never guesses `event_type`). The reader accepts both the simula
 ecg_sigma real-ECG HDF5 (metadata as datasets or attributes). `cli.ingest --dir` ingests every
 `*.h5` in a folder and, when events carry a ground-truth label, prints a scored accuracy summary
 (`"model": "stub"` appears only when no checkpoint is configured; a configured checkpoint that fails
-to load stops `cli.ingest` with an error).
+to load stops `cli.ingest` with an error). A `--file` that doesn't exist prints `file not found` and
+the folder's `*.h5` files, and exits 2.
 
 For real ECG, `cli.real_samples pick` (`ingest/real_samples.py`) curates small labelled sets from an
 ecg_sigma `ecgpkg` **test split** (subjects the model never trained on) into `data/real/`, re-keying
 each patient to a `PT9#####` pseudonym. It refuses a package that isn't the checkpoint's training
-package. Runbook: [`DEMO.md`](DEMO.md).
+package. Each `pick` replaces `data/real/` with a new random draw and prints its seed; `--seed N`
+repeats a draw. Runbook: [`DEMO.md`](DEMO.md).
 
 **Step 2 · The ECG model runs** (`inference/ecg_model.py`). This is the one real neural network:
 - **Model:** `ECGTransCovNet` (the "ECG_TransConv" model, vendored from `ecgtranscnn`) — a PyTorch
@@ -181,10 +183,11 @@ version of this flow, with the measured per-vital numbers behind the override, i
 
 If the gate passes, the consumer dispatches per `DISPATCH_MODE`: it pushes the event to the
 **companion app** worklist (`app`), and/or places a **LiveKit** outbound call (SIP phone or WebRTC
-room) or sends an SMS (`call`). If a voice call goes unanswered after its retries and a notifier is
+room) or sends an SMS (`call`). If a voice call goes unanswered after its retries (a pickup where no
+PIN is entered counts as unanswered) and a notifier is
 configured (`--notifier signalwire`; `simulated` sends nothing and records `sms_simulated`), the alert is texted instead
 (`run_outbound(fallback_notifier=)`): delivered keeps the event `reported`, otherwise it is
-`notify_failed`. SIP dials go to the telephony LiveKit (`Config.telephony()`; see *Telephony split*
+`notify_failed`. A PIN lockout is not retried and not texted. SIP dials go to the telephony LiveKit (`Config.telephony()`; see *Telephony split*
 below). The event is **always persisted**; the gate governs the *dispatch* (worklist push and call).
 A `vitals_alert` (uncertain rhythm, vitals carry it) goes to the worklist only, unless the hospital
 sets `outbound.call_vitals_alerts: true` (default `false`). An event's status is set only when it is
@@ -228,7 +231,7 @@ sequenceDiagram
     alt acknowledged or resolved while it waited
         D->>D: skip ([calls] skip …)
     else still open
-        D->>D: stage OutboundAlert, dispatch agent, SIP dial, wait for hang-up
+        D->>D: stage OutboundAlert, dispatch agent, SIP dial, wait for hang-up, read PIN flags
     end
     D->>Q: HDEL jobs[event_id] + release the slot (only now)
 ```
@@ -236,7 +239,9 @@ sequenceDiagram
 A job leaves the hash only after its call is over, so a call whose consumer died mid-call has its job
 re-queued, on any consumer's start or once its lease lapses and another dispatcher claims the slot
 (`CallQueue.recover`). A failing call is logged and dropped, never retried forever; the
-retries and SMS fallback inside one call still apply. The demo Redis keeps no snapshot
+retries and SMS fallback inside one call still apply. A call the worker hung up after a LiveKit
+reconnect, once the PIN had been accepted, is placed again up to 2 times (`_DROPPED_REDIALS`) unless
+the event was acknowledged meanwhile; never after an unanswered round, which already ended in the SMS. The demo Redis keeps no snapshot
 (`--save ""`), so the queue survives a **consumer** restart but not a Redis restart or
 `make docker-down`. The events themselves are safe in Neo4j; only their pending calls are lost.
 
@@ -275,7 +280,10 @@ LiveKit (LiveKit Cloud), reached through the carrier, a native SignalWire SIP tr
    (default 30 s) of the last one, unless `AUDIO_WAKE_REQUIRED=false`. The companion app's
    push-to-talk bypasses this. A short piece that ends mid-phrase ("What was the…") is held and
    joined to the next one, as is a piece whose answer was cut off before any of it was heard.
-5. **PIN gate**: no patient data is spoken until the caller authenticates (fail-closed).
+5. **PIN gate**: no patient data is spoken until the caller authenticates (fail-closed). On phone
+   rooms the PIN can also be keyed: 4 digits or `#` submits, `*` starts over (`collect_dtmf`; the
+   digits are never logged). Transcripts with no Latin letter or digit (background speech in another
+   script) are treated as noise.
 6. **The Handler is "the LLM node" — but it is not an LLM.** LiveKit's `AgentSession` pipeline
    expects an LLM step; a **stub LLM** satisfies that gate, but `llm_node` is overridden to call our
    `Handler` → the **orchestrator** instead. The reasoning is our RAG orchestrator, not a raw model.
@@ -283,7 +291,8 @@ LiveKit (LiveKit Cloud), reached through the carrier, a native SignalWire SIP tr
 **Inside the orchestrator turn** (`orchestrator/orchestrator.py`, `handle_turn`):
 1. **Input guardrail** — refuse unsafe / out-of-scope requests *before* any retrieval or model call.
 2. **Route the question** — after the direct replies ("repeat that", thank-you/goodbye, "what does a
-   MEWS of N mean"), three paths, cheapest first, because they answer very differently:
+   MEWS of N mean"), three paths, cheapest first, because they answer very differently. (On an alert
+   call the spoken alert is stored as an assistant turn, so "can you repeat?" voices it again.)
 
 ```mermaid
 flowchart TD
@@ -313,6 +322,14 @@ flowchart TD
    someone anticipated; it picks a *name* from a fixed catalogue and never supplies a patient or
    event id (those come from session scope), so a hallucinated identity cannot reach a query.
    It is off by default (`KB_LLM_ROUTER`) — it costs one model call (~6s on `llama3.2:3b`, warm).
+   Some template answers worth knowing:
+   - "Which vitals are deteriorating / the trends" reads the event's stored deterioration verdicts
+     (`why_json`): `event_summary` with `focus=trends`, or `bed_last_event` with `focus=trends` for a
+     named bed.
+   - "Who is on / assigned to bed N" → `bed_last_event` (the patient of that bed's last event).
+   - Critical events on a call are read bed by bed, worst bed first.
+   - Spoken bed numbers are rebuilt first (`kb/graph/spoken.py`): "bed twenty-three", "bed two
+     three" and the STT split "bed? 23" all become `Unit1-Bed23`.
 
    **Event listings are verifiable.** Questions that list events by patient ("this patient", a PT
    number), bed, event type or status ("unacknowledged", "acknowledged", "withheld"), optionally
@@ -324,6 +341,7 @@ flowchart TD
      shows a button that opens the Events tab with the same rows.
    - A listing whose target can't be resolved ("events for Mr Smith") is **declined with a hint**,
      never passed to the LLM router or the KB model.
+   - On a call, a bare "previous events" means this patient's events.
    - `cli.events --ask "<question>"` shows which query and parameters a question resolves to, the
      rows, and the exact answer.
 3. **Retrieve (RAG)** via `HybridRetriever`: a **vector** search over Qdrant (*Retrieved passages*)
@@ -342,14 +360,20 @@ flowchart TD
    with no sepsis document). A protocol question that names a rhythm (or "this event", or a bed)
    skips steps 4–5: `orchestrator/protocol_answer.py` reads the rhythm's structured care-protocol
    steps, else its sections from one protocol document, verbatim (the 3B model mixed SVT treatment
-   into VT answers).
+   into VT answers). Steps for a rhythm variant (AFib with RVR) answer only questions that name it
+   ("RVR", "rapid ventricular"); "protocol for AFib" gets the documents' AFib sections. A rhythm with
+   neither gets a fixed reply, "No protocol for X is documented in the knowledge base, so its
+   management is not known here.", with no LLM (it once invented a "Pacemaker-Associated Complication"
+   for PAC). Spoken answers stop after 3 points; "go on" or "the full protocol" continues.
 4. **De-identify** the retrieved context (Presidio or regex, `DEID_BACKEND`) so no name/PHI reaches
    the model.
 5. **LLM generate**: the prompt goes to the `LLMProvider`, always wrapped in `DeidentifyingLLM`:
    `EchoLLM` (the code default, `LLM_PROVIDER=echo`, deterministic and offline), self-hosted
    **Ollama** `llama3.2` (`LLM_PROVIDER=ollama`, the only option for real PHI), or a cloud model for
    synthetic data: `anthropic`, `gemini`, or any OpenAI-compatible API (`openai`). An unrecognised
-   `LLM_PROVIDER` is an error at startup.
+   `LLM_PROVIDER` is an error at startup. The model gets the conversation only when the question
+   refers back ("what about its dose?"), and never earlier graph answers (`ChatTurn.mode`); spoken
+   answers have their citations stripped.
 6. **Output guardrail** → the final answer text.
 
 **Back to voice:**
@@ -405,7 +429,7 @@ A job's lifespan therefore equals its **room's** lifespan:
 
 | Room | Job (the per-room "instance") |
 |---|---|
-| **per-event outbound** (`rmsai-outbound-<event_id>`) — ephemeral, closes when the call ends | **created on dispatch, torn down when the call ends** |
+| **per-event outbound** (`rmsai-outbound-<event_id>`; each redial `…-r<n>`) — ephemeral, closes when the call ends | **created on dispatch, torn down when the call ends** |
 | **companion-app inbox** (`rmsai-inbox-<hospital>`) — persistent while the app is connected | **long-lived** — stays as long as the inbox room/app session exists |
 | **phone call** (`rmsai-call-<id>`: on-demand `cli.call`, or an inbound call-in `rmsai-call-…` named by the dispatch rule) — ephemeral | **created on dispatch, ends with the call** |
 
@@ -449,7 +473,7 @@ gets into the room* differs.
 
 | | Companion-app **inbox** | **Outbound event call** |
 |---|---|---|
-| Room name | `rmsai-inbox-<hospital_id>` — **one persistent room per hospital** | `rmsai-outbound-<event_id>` — **one room per event** |
+| Room name | `rmsai-inbox-<hospital_id>` — **one persistent room per hospital** | `rmsai-outbound-<event_id>` — **one room per event** (each redial gets `…-r<n>`) |
 | Lifespan | long-lived; many events flow through it | ephemeral; created for the alert, closes when the call ends |
 | Which event | selection scopes it (`/select`) | the room *is* the event; its alert is staged in Redis |
 | Transport | WebRTC (browser) | **SIP (phone)** or **WebRTC (browser)** |
@@ -576,19 +600,28 @@ sequenceDiagram
     SW->>P: PSTN call rings
     P-->>SW: answers
     SW-->>LK: 200 OK (only now: answer_on_bridge)
-    LK-->>C: participant created → ANSWERED
+    LK-->>C: participant created → connected
     W->>P: PIN prompt → spoken alert → grounded Q&A (wake word) → "acknowledge" → status acknowledged
     P-->>LK: hangs up, room closes
-    LK-->>C: call ended → dispatcher pops the next queued call
+    LK-->>C: call ended
+    C->>C: PIN accepted or locked out? (Redis flags) yes → ANSWERED, no → NO_ANSWER (retry)
+    C->>C: dispatcher pops the next queued call
 ```
 
 On failure, `CreateSIPParticipant` raises: a ring timeout, busy, or any SIP error such as
-`603 Decline` all map to **NO_ANSWER**. `place_with_retries` re-dials `OUTBOUND_MAX_RETRIES` times (each retry re-stages the alert and
-re-dispatches the agent, since the first agent consumed it),
+`603 Decline` all map to **NO_ANSWER**, and so does a call that connects but ends with no PIN entered
+(a decline after pickup, or the carrier's voicemail): `_PinGatedCaller` waits for the hang-up, then
+reads the worker's flags (`rmsai:calls:answered|locked:<event_id>`). A PIN lockout counts as answered:
+no retry, no SMS. `place_with_retries` re-dials `OUTBOUND_MAX_RETRIES` times, each into a fresh room
+`rmsai-outbound-<event_id>-r<n>` with the alert staged again and the agent dispatched there (a reused
+room kept the failed attempt's leftovers, and a retry answered in it never heard the PIN),
 `OUTBOUND_RETRY_DELAY_S` apart; then `run_outbound`'s `fallback_notifier` texts the alert (`reported`
 if delivered, else `notify_failed`). A missing trunk or an invalid number is **INVALID**: fail fast,
 no retry, no SMS. `cli.call` is the same dial into `rmsai-call-<id>` with nothing staged, so the
-worker runs the PIN-gated Q&A.
+worker runs the PIN-gated Q&A; it dispatches the agent again before each redial and never sends an
+SMS (there is no event to text). The SIP consumer loads the LiveKit protobufs at startup
+(`livekit_voice_wiring`): left to the first call, the dial and the dispatch thread loaded them at once
+and the dial failed with "Couldn't build proto file into descriptor pool".
 
 #### Inbound call-in
 
@@ -677,6 +710,14 @@ A few design points that aren't obvious from the diagram:
   back-and-forth speech needn't repeat it. This guards against room noise and Whisper
   hallucinations-on-silence. **Text chat is never wake-word gated** — `AUDIO_WAKE_WINDOW_S` does not
   apply to typing. The PIN, the spoken alert, and the verbal ack also run un-gated (pre-Q&A).
+- **Hang up on reconnect.** With livekit rtc 1.1.8 / agents 1.6.0, after a LiveKit signal reconnect
+  the worker's outgoing audio no longer reaches the phone. On an alert call `end_call_on_reconnect`
+  deletes the room; if the PIN had been accepted it first marks the event dropped
+  (`CallQueue.mark_dropped`) so the consumer rings it again, otherwise the attempt just counts as
+  missed. The worker logs `[worker] receiving audio from …` when the caller's track arrives, which
+  tells a deaf call (no line) from a silent caller.
+- **Don't restart the consumer or phone worker during a call.** The worker dies before it hangs up, the
+  call stays open, and a re-dispatched agent joins the room as an inbound KB agent.
 
 ## Frozen contracts (`common/schemas.py`, `common/interfaces.py`)
 
@@ -702,7 +743,7 @@ A few design points that aren't obvious from the diagram:
 | ECG classifier | **`ECG_TransConv`** (vendored `crtx-sg/ecgtranscnn`, PyTorch CPU), wrapped never reimplemented. Default artifact: the real-ECG `real_v2` 5-fold ensemble (13 classes) |
 | Vitals analysis | `ecgtranscnn` MEWS + Mann-Kendall trend + ECG-vital correlation (statistical), with a per-hospital clinical-significance policy on the trend (`config/hospitals/`) |
 | Event bus | **Redis Streams** (`rmsai.events`, capped at ~100k entries; consumer group `rmsai.relay`; a failed message is retried, then dead-lettered to `rmsai.events.dead`) |
-| Call queue | **Redis sorted set** `rmsai:calls:queue` + hash `rmsai:calls:jobs` + leased slot `rmsai:calls:active`: phone calls ordered by criticality, then arrival; one call at a time across all consumers (`orchestrator/call_queue.py`) |
+| Call queue | **Redis sorted set** `rmsai:calls:queue` + hash `rmsai:calls:jobs` + leased slot `rmsai:calls:active`: phone calls ordered by criticality, then arrival; one call at a time across all consumers (`orchestrator/call_queue.py`). Per-event flags set by the worker: `rmsai:calls:answered\|locked\|dropped:<event_id>` |
 | Graph KB | **Neo4j** + Cypher (patient ↔ event ↔ condition ↔ treatment ↔ guideline ↔ bed/unit) |
 | Vector KB | **Qdrant** + embeddings (BGE via `sentence-transformers`, deterministic Hashing fallback) |
 | Memory tiers | working (Redis) · episodic (Qdrant) · semantic (= vector KB) |
@@ -716,7 +757,7 @@ A few design points that aren't obvious from the diagram:
 
 **No SQL DB in the POC.** Five stores: Neo4j (relationships + operational event log, behind an
 `EventStore` repository interface so it can migrate to Postgres/TimescaleDB later), Qdrant (text +
-embeddings), Redis (working memory, bus, call queue, staged call alerts), HDF5 (waveforms),
+embeddings), Redis (working memory, bus, call queue, staged call alerts and call flags), HDF5 (waveforms),
 object/file store (plots, reports).
 
 ### Repository layout

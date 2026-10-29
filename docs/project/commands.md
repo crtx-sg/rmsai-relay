@@ -143,13 +143,14 @@ above the counts asked for (the smallest is LBBB with 81), so expect no shortfal
 | Target | Consumer transport | Phone worker (`rmsai-agent-phone`) | Reportable events… |
 |---|---|---|---|
 | `make demo-up` | `--transport webrtc` (compose default) | not started | stage a WebRTC room and print a join token. **No phone rings.** The log still says `call answered`, because a simulated caller "answers". |
-| `make demo-phone-up` | `--transport sip --notifier signalwire` | started (`telephony` profile) | dial `OUTBOUND_CALL_NUMBER` through LiveKit Cloud + SignalWire, one call at a time; an unanswered call is texted from the same number. |
+| `make demo-phone-up` | `--transport sip --notifier signalwire` | started (`telephony` profile) | dial `OUTBOUND_CALL_NUMBER` through LiveKit Cloud + SignalWire, one call at a time; an unanswered call is texted from the same number (a pickup with no PIN is unanswered: retried, then texted; a PIN lockout is neither). |
 
 Both targets finish with `infra/demo-check.sh`. Running `make demo-up` after `demo-phone-up`
 recreates the consumer back on WebRTC. Vitals-driven alerts (rhythm below the confidence bar)
 only ring if `OUTBOUND_CALL_VITALS_ALERTS=true`.
 
-Phone smoke test, independent of any event (rings your mobile and plays the PIN prompt):
+Phone smoke test, independent of any event (rings your mobile and plays the PIN prompt; it redials on
+no answer but never texts, so test the SMS path by publishing an event instead):
 
 ```bash
 docker compose -f infra/docker-compose.yml run --rm tools python -m cli.call --caller livekit
@@ -163,7 +164,8 @@ twice), highest
 criticality first and first-come within a level. A queued call is skipped if the event was
 acknowledged (in the app) or resolved while it waited. Calls still waiting survive a consumer
 restart. Console lines: `[queued] … call N in queue`, `[calls] dialling …`/`skip …`,
-`[call] … -> answered`.
+`[call] … -> answered`, `[consume] call in … ended with no PIN entered: counted as missed`,
+`[calls] call for … dropped on a network reconnect; ringing again`.
 
 ### `make phone-transcript`
 

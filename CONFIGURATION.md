@@ -29,8 +29,8 @@ but only as a logged override.
 | `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` *(hospital)* | `0.60` | a non-normal (arrhythmia) event is only asserted *as a rhythm* if confidence is at/above this. Below it: withheld when the vitals are calm, or re-based as a **vitals-driven alert** (rhythm marked unconfirmed) when they aren't. Vitals never raise the bar |
 | `OUTBOUND_CALL_VITALS_ALERTS` *(hospital)* | `false` | phone a vitals-driven alert (rhythm below the confidence gate, vitals warrant it). `false` = worklist only; the consumer logs `no call: vitals-driven alert … reported to the app only` |
 | `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` *(hospital)* | — | destination (the default for `--number` on `cli.consume`/`cli.outbound`, and for `cli.call`) + caller ID (the SignalWire number; also the SMS sender). A real call/SMS with neither `--number` nor `OUTBOUND_CALL_NUMBER` refuses to start; a placeholder is used only for simulated runs |
-| `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` *(hospital)* | `2` / `30` | no-answer retry policy |
-| `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced |
+| `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` *(hospital)* | `2` / `30` | no-answer retry policy: 1 + `max_retries` attempts, each redial in its own room, then the SMS fallback. A pickup with no PIN counts as no answer; a PIN lockout ends it with no retry and no SMS |
+| `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced; spoken or keyed on a phone (4 digits or `#`, `*` starts over). 3 wrong tries lock that call out (the count resets every call) |
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
 | `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word so audio follow-ups needn't repeat it (audio only — does not affect text chat) |
 | `AUDIO_WAKE_REQUIRED` | `true` | require the wake word to open a follow-up audio turn (SIP/playground Q&A). Set `false` to answer **every** authenticated audio turn — the escape hatch when STT mishears the out-of-vocab brand word. The companion app already bypasses the gate (it controls the mic) |

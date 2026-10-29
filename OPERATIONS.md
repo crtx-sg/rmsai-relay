@@ -124,7 +124,8 @@ the ecg_sigma training package instead and writes it as reader-ready HDF5:
 # ../ecg_sigma/packages/ecg_pkg_v2)
 uv run python -m cli.real_samples list
 
-# pick events by class; test split only, deterministic for --seed; writes data/real/<record>.h5
+# pick events by class; test split only; a new random seed each run, printed in the summary
+# (--seed N repeats a draw); writes data/real/<record>.h5, replacing earlier pick files there
 uv run python -m cli.real_samples pick \
     --pick VENTRICULAR_TACHYCARDIA:3,VENTRICULAR_FIBRILLATION:2,ATRIAL_FIBRILLATION:3,PVC:2,NORMAL_SINUS:2
 
@@ -218,6 +219,11 @@ $RMSAI cli.graph extract --dir docs          # doc entities onto shared nodes
 $RMSAI cli.kb_vector --embedder bge index --dir docs    # clinical corpus -> Qdrant
 ```
 
+Extraction matches terms as whole words (since `61f8b47`; it used to link "supraventricular
+tachycardia" as VT). A graph extracted before that keeps the wrong links: delete the Guideline
+`APPLIES_TO` / `RECOMMENDS` and Condition `INDICATES` edges, then re-run `extract` for `docs/` and
+`data/kb_uploads/`.
+
 Optionally seed a synthetic patient cohort (demographics, co-morbidities, symptoms) so the
 pattern/co-morbidity queries have something to traverse. Patients are auto-created on first event
 otherwise (G8):
@@ -267,6 +273,9 @@ docker compose -f infra/docker-compose.yml logs -f consumer
 # [queued] PT6580/VENTRICULAR_TACHYCARDIA @ Unit1/Unit1-Bed01: call 1 in queue [app worklist pushed]
 # [calls] dialling for PT6580/VENTRICULAR_TACHYCARDIA @ Unit1/Unit1-Bed01 (Critical, event daf16c2d…)
 # [calls] skip PT6581/ATRIAL_FIBRILLATION @ Unit1/Unit1-Bed02: already acknowledged (event …)
+# a pickup with no PIN is a missed attempt; after the last attempt the alert is texted:
+# [consume] call in rmsai-outbound-…-r1 ended with no PIN entered: counted as missed
+# [consume] call no_answer after 3 attempt(s); SMS fallback: sms_delivered -> status reported
 ```
 
 Inspect the queue itself (event ids only; the job payloads carry pseudonyms, never names):
@@ -444,6 +453,7 @@ companion app `http://localhost:8080/`.
 | selecting a row is silent | the header shows 🔇 **Voice muted** (the default in `app+call` mode); click it. The worker logs `selected event … (app voice muted: not spoken)` |
 | the worklist shows events whose call hasn't come yet | expected with `--transport sip`: calls queue and go out one at a time, most severe first. `[queued] … call N in queue` in the consumer log gives the position |
 | answer declines on an in-corpus question | relevance gate — the log names both signals and both thresholds |
+| `cli.ingest` prints `file not found: …` and the folder's files, exit 2 | wrong `--file`: each `cli.real_samples pick` replaces `data/real/` with a new draw; use a listed file, or re-pick with the printed `--seed` |
 
 ### 8. Performance
 
@@ -492,7 +502,9 @@ Data survives a `down`: Neo4j (`neo4j_data`), Qdrant (`qdrant_data`), the model 
 and everything under `./data` (reports, plots, uploads, audit log) are volumes or bind mounts.
 Redis is in-memory by design (`--save ""`), so the **bus backlog, working memory and the call queue
 do not survive**: a call still queued at `down` is never placed (the event itself stays in Neo4j and
-on the worklist as pending). The call queue does survive a consumer-only restart.
+on the worklist as pending). The call queue does survive a consumer-only restart. Restart the
+consumer or phone worker only when no call is up: mid-call the worker dies before it hangs up, the
+phone stays connected, and a re-dispatched agent joins the room as an inbound KB agent.
 
 ```bash
 docker compose -f infra/docker-compose.yml down -v      # ⚠️ ALSO deletes graph + vectors + model cache
@@ -580,7 +592,8 @@ bed labels rebuild ("bed unit one bed oh one" → "Unit1-Bed01"), and spoken cou
 
 **Answer style.** Operational (template-matched) questions are answered **deterministically** from the
 graph rows — crisp, exact, no LLM in the loop (so a small local model can't pad or garble them), and
-with no conversation history or recalled context in the path. Only free-text/hybrid questions go
+with no conversation history or recalled context in the path. Protocol questions are read verbatim
+from care-protocol steps or document sections, also without the LLM. Only free-text/hybrid questions go
 through the LLM, under a tight instruction to lead with the answer and drop preamble/disclaimers; that
 path includes the live conversation history (for follow-ups) but recalled cross-session "past
 interactions" only when `EPISODIC_RECALL=true` (off by default). Patient pseudonyms (`PT####`),
@@ -632,11 +645,13 @@ for the upload + verification commands.
 
 | path | when | answer |
 |---|---|---|
+| protocol | a protocol question naming a rhythm, "this event" or a bed | the rhythm's care-protocol steps (`care_protocols.yaml`) or its document sections, verbatim, no LLM; none documented → "No protocol for X is documented in the knowledge base, so its management is not known here." |
 | graph template | `match_intent` regex hits | exact patient data from Cypher, no LLM |
 | LLM-routed template | regex misses, question looks operational, `KB_LLM_ROUTER=true` | same, template chosen by the model from a fixed menu |
 | hybrid retrieval | everything else | cited passages (vector) + relationships (graph), answered by the LLM |
 
-`uv run python -m cli.kb_route --llm "<question>"` shows which path a question takes and why.
+`uv run python -m cli.kb_route --llm "<question>"` shows which path a question takes and why. To
+cover a rhythm's protocol, add a document under `docs/` and re-index (`cli.kb_vector index --dir docs`).
 
 **Relevance gate.** A hybrid answer is only given when retrieval vouches for itself: a graph
 relationship, semantic similarity ≥ `KB_MIN_RELEVANCE` (0.60), **or** word overlap ≥ 0.18. The two
