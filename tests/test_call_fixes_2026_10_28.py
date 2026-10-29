@@ -103,7 +103,15 @@ def test_a_dropped_call_is_rung_again(patched, monkeypatch):  # noqa: F811
     store = _Store()
     job = CallJob(event_id="e", patient_ref="PT1", event_type="ATRIAL_FIBRILLATION", bed="ICU/3",
                   criticality="High", reason="ok", payload=event_to_dict(_event(_Afib())))
-    CallQueue(store.redis).mark_dropped("e")  # as the worker does on a reconnect
+    real, calls = bus_consumer._place_live_call, []
+
+    def _place(*a, **k):  # the worker flags the first call as dropped on a reconnect, mid-call
+        calls.append(1)
+        if len(calls) == 1:
+            CallQueue(store.redis).mark_dropped("e")
+        return real(*a, **k)
+
+    monkeypatch.setattr(bus_consumer, "_place_live_call", _place)
     bus_consumer.run_queued_call(job, driver=object(), orchestrator=object(), utterances=[],
                                  caller_factory=lambda r: object(), alert_store=store)
     assert patched["voice"] == ["ICU/3", "ICU/3"]  # rung again once, then the flag is gone

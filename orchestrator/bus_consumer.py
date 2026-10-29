@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import threading
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from common.bed_assignment import BedAssignmentStub
 from common.config import DEFAULT, Config
@@ -299,36 +299,46 @@ def _place_live_call(
     # dial; the agent joins in 1-4s while the phone rings for 10s+, and the worker's greeting
     # gate waits for the answer anyway. Best-effort: a dispatch hiccup must not abort a
     # persisted, gated event.
-    def _dispatch(why: str) -> None:
+    def _dispatch(why: str, target: str) -> None:
         if dispatch_fn is None:
             return
         try:
-            dispatch_fn(room)
+            dispatch_fn(target)
         except Exception as exc:  # noqa: BLE001 - the call can still connect; only Q&A needs the agent
-            print(f"[consume] agent dispatch ({why}) to {room} failed: "
+            print(f"[consume] agent dispatch ({why}) to {target} failed: "
                   f"{type(exc).__name__}: {exc}", flush=True)
 
-    def _restage(a: OutboundAlert) -> None:
+    def _restage() -> None:
+        # Each redial gets a room of its own. Reusing the room kept the failed attempts' leftovers
+        # (a SIP participant still "ringing", the previous agent); a retry answered in it played
+        # the PIN prompt but never heard the spoken PIN (live 2026-10-29).
+        nonlocal alert
+        retries[0] += 1
+        alert = replace(alert, session_id=f"{room}-r{retries[0]}")
+        gated.room = alert.session_id
+        if hasattr(gated.caller, "room"):
+            gated.caller.room = alert.session_id
         try:
-            alert_store.put(a)
+            alert_store.put(alert)
         except Exception as exc:  # noqa: BLE001 - the redial still connects; only the alert is lost
-            print(f"[consume] re-staging the alert for {room} failed: "
+            print(f"[consume] re-staging the alert for {alert.session_id} failed: "
                   f"{type(exc).__name__}: {exc}", flush=True)
 
-    dispatcher = threading.Thread(target=_dispatch, args=("first",), daemon=True)
+    dispatcher = threading.Thread(target=_dispatch, args=("first", room), daemon=True)
     dispatcher.start()
     print(f"[consume] alert staged in Redis; placing call (agent dispatching in parallel) -> "
           f"room {room}", flush=True)
+    retries = [0]
+    gated = _PinGatedCaller(caller_factory(room), room, w.event_id, call_end_waiter, alert_store)
     result = run_outbound(
-        event, driver=driver, orchestrator=orchestrator,
-        caller=_PinGatedCaller(caller_factory(room), room, w.event_id, call_end_waiter, alert_store),
+        event, driver=driver, orchestrator=orchestrator, caller=gated,
         utterances=utterances, config=config, bed=bed_label, live_audio=True,
         fallback_notifier=notifier,
         # A retry needs the agent AND the alert again: after an unanswered attempt the room closed
         # and the agent left, and the agent consumed the staged alert when it joined. Without the
         # re-stage the redial's agent found no alert and greeted the clinician as an inbound KB
         # call, with no word about the event (observed 2026-10-13, after a 408 SIP timeout).
-        before_retry=lambda: (_restage(alert), _dispatch("retry")),
+        before_retry=lambda: (_restage(), _dispatch("retry", alert.session_id)),
     )
     dispatcher.join(timeout=10)
     return result
@@ -408,6 +418,7 @@ def run_queued_call(
     print(f"[calls] dialling for {job.patient_ref}/{job.event_type} @ {job.bed} "
           f"({job.criticality}, event {job.event_id})", flush=True)
     event = dict_to_event(job.payload)
+    _was_dropped(alert_store, job.event_id)  # a stale flag from an earlier call of this event
     for redial in range(_DROPPED_REDIALS + 1):
         result = _place_live_call(
             event, bed_label=job.bed, driver=driver, orchestrator=orchestrator,
@@ -415,8 +426,9 @@ def run_queued_call(
             caller_factory=caller_factory, dispatch_fn=dispatch_fn, alert_store=alert_store,
             call_end_waiter=call_end_waiter,
         )
-        if redial == _DROPPED_REDIALS or not _was_dropped(alert_store, job.event_id):
-            break
+        dropped = _was_dropped(alert_store, job.event_id)
+        if redial == _DROPPED_REDIALS or not dropped or result.outcome != "answered":
+            break  # an unanswered round already ended in the SMS fallback: no new round
         try:
             status = get_event_status(driver, job.event_id)
         except Exception:  # noqa: BLE001 - ringing twice beats not ringing (rule #8)

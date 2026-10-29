@@ -186,7 +186,7 @@ def test_retry_redispatches_the_agent(patched, monkeypatch):
                caller_factory=lambda room: object(), dispatch_fn=dispatched.append,
                alert_store=_FakeAlertStore())
     room = f"rmsai-outbound-{res.event_uuid}"
-    assert dispatched == [room, room]  # first attempt + the retry
+    assert dispatched == [room, f"{room}-r1"]  # first attempt + the retry, in a fresh room
 
 
 def test_retry_restages_the_alert(patched, monkeypatch):
@@ -206,7 +206,7 @@ def test_retry_restages_the_alert(patched, monkeypatch):
                caller_factory=lambda room: object(),
                dispatch_fn=lambda room: order.append("dispatch"), alert_store=store)
     room = f"rmsai-outbound-{res.event_uuid}"
-    assert store.staged == [room, room]  # staged for the first attempt and again for the retry
+    assert store.staged == [room, f"{room}-r1"]  # staged for the first attempt and the retry
     assert order[-2:] == ["stage", "dispatch"]  # the retry's agent finds the alert waiting
 
 

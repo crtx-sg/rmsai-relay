@@ -205,7 +205,8 @@ def is_barge_in(text: str) -> bool:
     return bool(_BARGE_IN_WORD.match(text or ""))
 
 
-def end_call_on_reconnect(room, event_id: str, *, mark_dropped, delete_room) -> None:
+def end_call_on_reconnect(room, event_id: str, *, mark_dropped, delete_room,
+                          answered=lambda: True) -> None:
     """Hang up an event call once LiveKit has reconnected, and have the consumer ring it again.
 
     With livekit 1.1.8 / agents 1.6.0, after a signal reconnect ("ping timeout" -> resume) the
@@ -217,6 +218,11 @@ def end_call_on_reconnect(room, event_id: str, *, mark_dropped, delete_room) -> 
     def _reconnected() -> None:
         print(f"[worker] LiveKit reconnected mid-call; our audio no longer reaches the caller -> "
               f"ending {room.name} so the event is rung again", flush=True)
+        if not answered():
+            # Still ringing, or no PIN yet: the consumer's retry policy already counts this attempt
+            # as missed. A redial flag on top rang a whole new round after the SMS (live 2026-10-29).
+            asyncio.ensure_future(delete_room())
+            return
         try:
             mark_dropped(event_id)
         except Exception as exc:  # noqa: BLE001 - still hang up: silence is the worse outcome
@@ -227,6 +233,28 @@ def end_call_on_reconnect(room, event_id: str, *, mark_dropped, delete_room) -> 
     room.on("reconnecting", lambda: print("[worker] LiveKit connection lost mid-call; reconnecting",
                                           flush=True))
     room.on("reconnected", _reconnected)
+
+
+def collect_dtmf(room, submit, *, length: int = 4) -> None:
+    """Keypad digits as one typed turn: `submit("1234")` after `length` digits or "#"; "*" starts
+    over. The prompt says "say or enter your PIN", but keyed digits were ignored: the caller entered
+    the PIN and heard nothing back (live 2026-10-29). Digits are never logged.
+    """
+    digits: list[str] = []
+
+    def _on_dtmf(ev) -> None:
+        d = str(getattr(ev, "digit", "") or "")
+        if d == "*":
+            digits.clear()
+        elif d.isdigit():
+            digits.append(d)
+        if digits and (d == "#" or len(digits) >= length):
+            entered = "".join(digits)
+            digits.clear()
+            print(f"[worker] keypad entry: {len(entered)} digit(s)", flush=True)
+            submit(entered)
+
+    room.on("sip_dtmf_received", _on_dtmf)
 
 
 # --- per-turn latency -----------------------------------------------------------------------------
@@ -799,7 +827,8 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
 
         end_call_on_reconnect(ctx.room, handler.alert.event_id,
                               mark_dropped=CallQueue(alert_store.redis).mark_dropped,
-                              delete_room=ctx.delete_room)
+                              delete_room=ctx.delete_room,
+                              answered=lambda: handler.is_authenticated(ctx.room.name))
     from livekit import rtc as _rtc  # noqa: PLC0415
 
     def _yield_if_duplicate(_participant=None) -> bool:
@@ -1023,6 +1052,14 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         room=ctx.room,
         room_input_options=build_room_input_options(_text_only_reply, is_inbox=is_inbox),
     )
+    if not is_inbox:
+        collect_dtmf(ctx.room, lambda digits: session.generate_reply(user_input=digits))
+        # The 2026-10-29 retry heard nothing after the PIN prompt: this line shows whether the
+        # caller's audio reached us at all, and from which participant.
+        ctx.room.on("track_subscribed", lambda track, _pub, p: print(
+            f"[worker] receiving {_rtc.TrackKind.Name(track.kind).removeprefix('KIND_').lower()} "
+            f"from {p.identity} ({_rtc.ParticipantKind.Name(p.kind).removeprefix('PARTICIPANT_KIND_')})",
+            flush=True))
     if is_inbox:
         # Start with the audio input detached: the inbox mic is push-to-talk, so nothing should be
         # recognized until the button is held. This also guarantees the input is *detached* at
