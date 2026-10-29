@@ -115,3 +115,23 @@ def test_a_dropped_call_is_rung_again(patched, monkeypatch):  # noqa: F811
     bus_consumer.run_queued_call(job, driver=object(), orchestrator=object(), utterances=[],
                                  caller_factory=lambda r: object(), alert_store=store)
     assert patched["voice"] == ["ICU/3", "ICU/3"]  # rung again once, then the flag is gone
+
+
+def test_a_redial_after_a_drop_does_not_reuse_the_first_answer(patched, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(bus_consumer, "_record_delivery", lambda *a, **k: None)
+    store = _Store()
+    job = CallJob(event_id="e", patient_ref="PT1", event_type="ATRIAL_FIBRILLATION", bed="ICU/3",
+                  criticality="High", reason="ok", payload=event_to_dict(_event(_Afib())))
+    real, seen = bus_consumer._place_live_call, []
+
+    def _place(*a, **k):  # first call: PIN accepted, then dropped; the redial must start clean
+        seen.append(CallQueue(store.redis).reached("e"))
+        if len(seen) == 1:
+            CallQueue(store.redis).mark_answered("e")
+            CallQueue(store.redis).mark_dropped("e")
+        return real(*a, **k)
+
+    monkeypatch.setattr(bus_consumer, "_place_live_call", _place)
+    bus_consumer.run_queued_call(job, driver=object(), orchestrator=object(), utterances=[],
+                                 caller_factory=lambda r: object(), alert_store=store)
+    assert seen == [False, False]

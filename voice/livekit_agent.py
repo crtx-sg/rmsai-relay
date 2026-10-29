@@ -560,7 +560,9 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                                  push_to_talk=self._push_to_talk)
             text = join_carried(self._carry, raw, time.monotonic()) if carry_ok else raw
             self._carry = None
-            print(f"[worker] heard: {text!r}", flush=True)
+            # Before the PIN the turn may BE the PIN (spoken or keyed): never log it (rule 5).
+            print(f"[worker] heard: {text!r}" if is_auth and is_auth(self._session_id)
+                  else f"[worker] heard: ({len(text)} chars, before the PIN)", flush=True)
             if carry_ok and is_dangling(text):
                 # Wait for the rest of the question rather than answer half of it.
                 self._carry = (text, time.monotonic())

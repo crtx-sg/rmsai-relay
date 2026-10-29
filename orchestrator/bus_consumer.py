@@ -435,6 +435,10 @@ def run_queued_call(
             status = None
         if status in _SKIP_CALL_STATUSES:
             break
+        try:  # else the dropped call's "answered" flag made a missed redial count as answered
+            CallQueue(alert_store.redis).forget_answer(job.event_id)
+        except Exception:  # noqa: BLE001 - the redial still rings; only the missed-call check is off
+            pass
         print(f"[calls] call for {job.patient_ref}/{job.event_type} @ {job.bed} dropped on a "
               f"network reconnect; ringing again (event {job.event_id})", flush=True)
     finish_call(driver, job.event_id, result)

@@ -159,6 +159,11 @@ class CallQueue:
         return any(self.redis.get(k.format(event_id=event_id)) is not None
                    for k in (_ANSWERED, _LOCKED))
 
+    def forget_answer(self, event_id: str) -> None:
+        """Before ringing a dropped call again: its answer must come from the new call."""
+        for k in (_ANSWERED, _LOCKED):
+            self.redis.delete(k.format(event_id=event_id))
+
     def mark_dropped(self, event_id: str) -> None:
         """The worker ended this event's call because the connection broke: ring it again."""
         self.redis.set(_DROPPED.format(event_id=event_id), "1", ex=_DROPPED_TTL_S)

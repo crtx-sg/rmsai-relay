@@ -43,4 +43,6 @@ def test_acknowledged_plus_one_misheard_word_is_an_ack():
     assert parse_ack("Acknowledge the Emmett") == "yes"
     assert parse_ack("Acknowledged, but not yet") == "no"
     assert parse_ack("Acknowledge what potassium level") == "unclear"
-    assert parse_ack("Emmett acknowledged") == "unclear"  # must lead with the word
+    # Another word after "acknowledge" is a different request, not a mishearing.
+    for said in ("acknowledge later", "acknowledge what", "acknowledge pending"):
+        assert parse_ack(said) == "unclear", said
