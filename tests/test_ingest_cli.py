@@ -69,3 +69,9 @@ def test_explain_adds_a_why_headline(capsys):
     main(["--file", str(_FIXTURE), "--emit", "stdout", "--checkpoint", "--explain"])
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
     assert lines and all(ln["why"].startswith(("Shown because", "Not alerted")) for ln in lines)
+
+
+def test_missing_file_names_it_and_lists_the_folder(capsys):
+    rc = main(["--file", str(_FIXTURE.parent / "gone.h5"), "--emit", "stdout"])
+    err = capsys.readouterr().err
+    assert rc == 2 and "file not found:" in err and "gone.h5" in err and _FIXTURE.name in err

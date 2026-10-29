@@ -96,6 +96,13 @@ def main(argv: list[str] | None = None) -> int:
     audit = AuditLog(DEFAULT.audit_log_path)
 
     files = sorted(Path(args.dir).glob("*.h5")) if args.dir else [Path(args.file)]
+    if args.file and not files[0].is_file():
+        # The HDF5 error names the file as "name=[REDACTED]" (the log redactor), so say it here.
+        # `cli.real_samples pick` replaces data/real with a new random draw on every run.
+        there = sorted(p.name for p in files[0].parent.glob("*.h5"))
+        print(f"file not found: {files[0]}" + (f"\n{files[0].parent} has: {', '.join(there)}"
+                                               if there else ""), file=sys.stderr)
+        return 2
     # The head the outcome is scored against: a real checkpoint's classes; the stub's are all of them.
     model_classes = getattr(model, "labels", None)
     # The alert gate exactly as cli.consume applies it (it forces outbound on), so the alert-level

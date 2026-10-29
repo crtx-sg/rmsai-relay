@@ -369,6 +369,12 @@ def livekit_voice_wiring(config, transport: str):
         # No phone: "answer" immediately so the alert is staged; the clinician joins over WebRTC.
         return (lambda room: SimulatedCaller([CallOutcome.ANSWERED]),
                 lambda room: create_agent_dispatch(room, config=config))
+    # Load the LiveKit protobufs once, here, on the main thread. Left to the first call, the dial and
+    # the agent dispatch (a background thread) imported them at once and the dial failed with
+    # "Couldn't build proto file into descriptor pool": a lost attempt after every restart.
+    import livekit.api  # noqa: F401, PLC0415
+    from livekit.protocol import agent_dispatch, sip  # noqa: F401, PLC0415
+
     tel = config.telephony()
     return (lambda room: LiveKitCaller(tel, room=room),
             lambda room: create_agent_dispatch(room, config=tel))
