@@ -287,4 +287,9 @@ def parse_ack(text: str) -> str:
         return "unclear"
     if set(tokens) & _ACK_YES and set(tokens) <= _ACK_YES | _ACK_FILLER and len(tokens) <= 10:
         return "yes"
+    # "Acknowledged, Emmett" (STT for "acknowledge the event", live 2026-10-29): led by the word
+    # itself, one unknown word is a mishearing, not a different request.
+    unknown = [t for t in tokens if t not in _ACK_YES | _ACK_FILLER]
+    if tokens[0].startswith("acknowledg") and len(unknown) <= 1 and len(tokens) <= 4:
+        return "yes"
     return "unclear"

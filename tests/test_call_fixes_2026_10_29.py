@@ -6,6 +6,7 @@ import pytest
 
 from kb.graph.lookup import match_intent
 from kb.graph.spoken import normalize_spoken_query
+from voice.outbound import parse_ack
 
 
 @pytest.mark.parametrize("said", ["on bed? 23", "on bed twenty-three", "on bed twenty three",
@@ -35,3 +36,11 @@ def test_deteriorating_vitals_for_a_bed_are_that_beds():
                                "Is any patient occupied bed twenty-three?", "who is on bed 23"])
 def test_who_is_on_a_bed(q):
     assert _route(q) == ("bed_last_event", {"bed": "Unit1-Bed23"})
+
+
+def test_acknowledged_plus_one_misheard_word_is_an_ack():
+    assert parse_ack("Acknowledged, Emmett") == "yes"
+    assert parse_ack("Acknowledge the Emmett") == "yes"
+    assert parse_ack("Acknowledged, but not yet") == "no"
+    assert parse_ack("Acknowledge what potassium level") == "unclear"
+    assert parse_ack("Emmett acknowledged") == "unclear"  # must lead with the word
