@@ -110,6 +110,12 @@ def test_protocol_question_and_its_follow_up_skip_the_model():
     assert r.answer.startswith("PVC protocol. Long-Term Management")
 
 
+def test_undocumented_protocol_is_not_known_and_skips_the_model():
+    r = _orch().handle_turn("s", "What is the protocol for PAC?", now=1.0, spoken=True)
+    assert r.answer == ("No protocol for PAC is documented in the knowledge base, so its management "
+                        "is not known here.")
+
+
 def test_rhythm_without_protocol_words_is_not_hijacked():
     assert _orch()._protocol_answer("how many PVC events today?", _Working().state, True) is None
 

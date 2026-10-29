@@ -1084,9 +1084,16 @@ class Orchestrator:
         except Exception:  # noqa: BLE001 - no vector store: fall back to the normal path
             return None
         answer = protocol_answer.answer_from_sections(hits, etype, spoken=spoken, question=q)
-        if answer is not None:
-            print(f"[orchestrator] protocol for {etype}: document sections {answer.citations}",
-                  flush=True)
+        if answer is None:
+            # Nothing documented: say so. Left to the LLM, "protocol for PAC" came back as a
+            # "Pacemaker-Associated Complication" under a made-up "American Clinical Protocol"
+            # (live 2026-10-29).
+            print(f"[orchestrator] protocol for {etype}: none documented", flush=True)
+            return protocol_answer.ProtocolAnswer(
+                f"No protocol for {spoken_event(etype)} is documented in the knowledge base, "
+                f"so its management is not known here.")
+        print(f"[orchestrator] protocol for {etype}: document sections {answer.citations}",
+              flush=True)
         return answer
 
     def handle_turn(
