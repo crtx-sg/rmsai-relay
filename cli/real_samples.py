@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 
 from common.config import DEFAULT
@@ -77,6 +78,8 @@ def _cmd_pick(pkg, args) -> int:
               "results are not a performance estimate", file=sys.stderr)
 
     datasets = set(args.dataset) if args.dataset else None
+    if args.seed is None:  # a new draw each run; the printed seed repeats it
+        args.seed = random.SystemRandom().randrange(2**31)
     sel = select_events(pkg, pick, split=args.split, datasets=datasets, seed=args.seed)
     for label, (want, got) in sel.shortfall.items():
         print(f"[real_samples] {label}: wanted {want}, only {got} in split={args.split}",
@@ -107,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("pick", help="write the selected events as reader-ready HDF5")
     p.add_argument("--pick", required=True, help="LABEL:N[,LABEL:N...] using class names.")
     p.add_argument("--dataset", nargs="*", help="restrict to these datasets (e.g. mitbih vfdb).")
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seed", type=int, default=None,
+                   help="repeat an earlier draw (default: a random seed, printed in the summary)")
     p.add_argument("--out", default="data/real",
                    help="output directory (default data/real); earlier pick files in it are "
                         "removed first.")

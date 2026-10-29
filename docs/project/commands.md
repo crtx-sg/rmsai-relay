@@ -89,7 +89,7 @@ docker compose -f infra/docker-compose.yml run --rm tools \
   a performance estimate.
 - With no `ECG_CHECKPOINTS` / `--checkpoint`, `pick` cannot check the manifest, and `cli.ingest`
   then runs the ECG **stub**.
-- Other options: `--dataset mitbih vfdb`, `--seed 42`, `--out data/real`, `--checkpoint <pt…>` (checkpoint(s) to check the package manifest against; default `ECG_CHECKPOINTS`).
+- Other options: `--dataset mitbih vfdb`, `--seed N` (repeat an earlier draw), `--out data/real`, `--checkpoint <pt…>` (checkpoint(s) to check the package manifest against; default `ECG_CHECKPOINTS`).
 
 ### `uv run python -m cli.real_samples pick --pick VENTRICULAR_TACHYCARDIA:3,VENTRICULAR_FIBRILLATION:2,ATRIAL_FIBRILLATION:3,PVC:2,LBBB:1,PAC:2,NORMAL_SINUS:2`
 
@@ -109,8 +109,8 @@ This runs on the host, so the package is `$ECGPKG_DIR` if set, otherwise
    `manifest_sha256`, the command stops with exit 2 unless `--allow-mismatch` is passed.
    Without this check, "held out" would mean nothing.
 3. **Select:** for each label, gets the `test`-split candidates, sorts them by (file, event key)
-   and samples N with `random.Random(--seed)` (default 42). The same package, arguments and seed always give the
-   same events. If a label has too few candidates, the command takes what exists and prints a
+   and samples N with `random.Random(--seed)`. Without `--seed` each run draws a new random seed and prints it
+   in the summary line; the same package, arguments and seed always give the same events. If a label has too few candidates, the command takes what exists and prints a
    shortfall instead of failing.
 4. **Pseudonymise:** each source `subject_id` maps to a stable `PT9#####` pseudonym (sha256-based).
    Two recordings of one subject become one patient. A collision between distinct subjects aborts
