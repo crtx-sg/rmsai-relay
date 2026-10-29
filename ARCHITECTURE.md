@@ -226,7 +226,7 @@ sequenceDiagram
     C->>B: XACK (the queue now holds the pending call)
     Note over C,A: the next event is read straight away: every row appears without waiting for a call
     D->>Q: claim the call slot (SET rmsai:calls:active NX, 60 s lease) + ZPOPMIN
-    Note over D,Q: no other consumer dials while the slot is held; the lease is renewed during the call
+    Note over D,Q: no other consumer dials while the slot is held, and the lease is renewed during the call
     D->>G: status of the event?
     alt acknowledged or resolved while it waited
         D->>D: skip ([calls] skip …)
