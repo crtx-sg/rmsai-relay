@@ -763,6 +763,14 @@ def _times(n: int) -> str:
     return "" if n == 1 else " twice" if n == 2 else f" {n} times"
 
 
+def _spoken_beds(beds) -> str:
+    """'bed 2, bed 4'; across units 'unit 1 bed 2, unit 2 bed 2' (live 2026-10-29: "bed 2" twice)."""
+    units = [m.group(1) if (m := re.search(r"Unit0*(\d+)", str(b))) else "" for b in beds]
+    if len(set(units)) < 2:
+        return ", ".join(spoken_bed(b) for b in beds)
+    return ", ".join(f"unit {u} {spoken_bed(b)}" if u else spoken_bed(b) for u, b in zip(units, beds))
+
+
 def _spoken_summary(rows: list[dict], name: str | None) -> str:
     """A short spoken answer for a multi-row graph result (phone/voice turns only).
 
@@ -905,7 +913,7 @@ def _spoken_event_summary(rows: list[dict]) -> str:
         pending = sum(1 for r in rows if is_pending(r))
         text += f" {pending} unacknowledged." if pending else " Nothing awaiting acknowledgment."
     if len(beds) > 1 and len(patients) == 1:
-        text += f" Beds: {', '.join(spoken_bed(b) for b in sorted(beds))}."
+        text += f" Beds: {_spoken_beds(sorted(beds))}."
     return text
 
 
@@ -933,7 +941,7 @@ def _answer_event_history(rows: list[dict], params: dict, *, spoken: bool = Fals
         text = f"{n} {one}: " + ", ".join(f"{k}{_times(c)}" for k, c in kinds.items()) + "."
         beds = sorted({r["bed"] for r in rows if r.get("bed")})
         if len(beds) > 1 and not params.get("bed"):
-            text += f" Beds: {', '.join(spoken_bed(b) for b in beds)}."
+            text += f" Beds: {_spoken_beds(beds)}."
         if (params.get("status") or "any") == "any":
             pending = sum(1 for r in rows if r.get("status") == "pending")
             text += f" {pending} pending." if pending else " None pending."

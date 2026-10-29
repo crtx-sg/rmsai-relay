@@ -425,7 +425,8 @@ def make_speech_bridges():
             print(f"[worker] stt: transcribing {frame.duration:.2f}s of audio "
                   f"({self._adapter.__class__.__name__})", flush=True)
             text = await loop.run_in_executor(None, self._adapter.transcribe, wav)
-            print(f"[worker] stt: -> {text!r}", flush=True)
+            # Length only: the turn may be the PIN; `[worker] heard:` shows the text after it.
+            print(f"[worker] stt: -> {len(text or '')} chars", flush=True)
             lang = language if isinstance(language, str) else "en"
             return lkstt.SpeechEvent(
                 type=lkstt.SpeechEventType.FINAL_TRANSCRIPT,
@@ -901,10 +902,10 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
     session.on("user_input_transcribed", _barge_in)
     # Log every finalized transcript: the one place that proves STT actually ran (and what it heard)
     # when a voice turn produces no answer. Text-chat turns don't pass through STT, so this is
-    # audio-only. Pseudonymous by construction; synthetic speech only (hard rules #5/#6).
+    # audio-only. Length only: the first transcripts are the PIN (`[worker] heard:` has the text).
     session.on("user_input_transcribed",
-               lambda ev: print(f"[worker] stt transcript: {getattr(ev, 'transcript', '')!r}"
-                                f" (final={getattr(ev, 'is_final', None)})", flush=True))
+               lambda ev: print(f"[worker] stt transcript: {len(getattr(ev, 'transcript', '') or '')}"
+                                f" chars (final={getattr(ev, 'is_final', None)})", flush=True))
 
     def _link_audio(participant) -> None:
         """Point RoomIO's audio input at `participant` if it isn't already (see `relink_target`)."""

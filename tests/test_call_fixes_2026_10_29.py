@@ -46,3 +46,17 @@ def test_acknowledged_plus_one_misheard_word_is_an_ack():
     # Another word after "acknowledge" is a different request, not a mishearing.
     for said in ("acknowledge later", "acknowledge what", "acknowledge pending"):
         assert parse_ack(said) == "unclear", said
+
+
+def test_plural_pvcs_and_pacs_name_the_rhythm():
+    from common.event_types import event_type_from_text
+
+    assert event_type_from_text("What is the protocol for managing PACs?") == "PAC"
+    assert event_type_from_text("any PVCs on bed 5") == "PVC"
+
+
+def test_spoken_beds_name_the_unit_only_across_units():
+    from orchestrator.orchestrator import _spoken_beds
+
+    assert _spoken_beds(["Unit1-Bed02", "Unit1-Bed04"]) == "bed 2, bed 4"
+    assert _spoken_beds(["Unit1-Bed02", "Unit2-Bed02"]) == "unit 1 bed 2, unit 2 bed 2"
