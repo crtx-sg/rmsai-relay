@@ -156,7 +156,7 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
 
 Built leaf-up, one phase at a time; a phase is "done" only when its CLI test passes. Phases **0–8
 are complete** and the companion app (9a) ships; live media (9b) is deferred. Outbound phone calls
-over SignalWire work end to end; phone call-in is still being tested (see
+over SignalWire work end to end, and phone call-in was verified live on 2026-10-13 (see
 [Phone calls](TELEPHONY_SETUP.md#phone-calls-livekit-cloud--signalwire)).
 
 | Phase | Scope | Status |
