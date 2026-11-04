@@ -112,6 +112,9 @@ class Config:
     outbound_call_vitals_alerts: bool = False
     outbound_max_retries: int = 2
     outbound_retry_delay_s: int = 30
+    # Outbound calls: the clinician enters the PIN before the alert (True), or just says "yes" (False).
+    # Either way the alert is spoken only after a live answer, so voicemail never hears it.
+    outbound_require_pin: bool = False
 
     # Dispatch surface for a critical event (Phase 9). The criticality gate is unchanged; this
     # only chooses where a critical event is delivered:
@@ -350,6 +353,7 @@ class Config:
                                            H["outbound_call_vitals_alerts"]),
             outbound_max_retries=_i("OUTBOUND_MAX_RETRIES", H["outbound_max_retries"]),
             outbound_retry_delay_s=_i("OUTBOUND_RETRY_DELAY_S", H["outbound_retry_delay_s"]),
+            outbound_require_pin=_b("OUTBOUND_REQUIRE_PIN", H["outbound_require_pin"]),
             dispatch_mode=os.environ.get("DISPATCH_MODE", H["dispatch_mode"]),
             hospital_id=hospital_id,
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),

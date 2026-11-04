@@ -20,6 +20,7 @@ outbound:
   min_arrhythmia_confidence: 0.60
   max_retries: 2
   retry_delay_s: 30
+  require_pin: false                  # true = PIN before the alert; false = say "yes"
   inbound_allowed_numbers: []         # e.g. ["+15551234567"]; empty = call_number only
 
 vitals_trends:

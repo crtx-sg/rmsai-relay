@@ -42,6 +42,7 @@ SETTINGS: dict[str, tuple[str, str, str]] = {
         ("outbound", "call_vitals_alerts", "OUTBOUND_CALL_VITALS_ALERTS"),
     "outbound_max_retries": ("outbound", "max_retries", "OUTBOUND_MAX_RETRIES"),
     "outbound_retry_delay_s": ("outbound", "retry_delay_s", "OUTBOUND_RETRY_DELAY_S"),
+    "outbound_require_pin": ("outbound", "require_pin", "OUTBOUND_REQUIRE_PIN"),
     "sip_inbound_allowed_numbers":
         ("outbound", "inbound_allowed_numbers", "SIP_INBOUND_ALLOWED_NUMBERS"),
 }

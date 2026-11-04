@@ -57,6 +57,10 @@ def is_filler(text: str) -> bool:
     text = (text or "").strip()
     return bool(_FILLER.match(text)) or bool(text) and not re.search(r"[A-Za-z0-9]", text)
 _AUTH_OK = "Thank you, you are authenticated. How can I help?"
+_PROMPT_CONFIRM = "Please say yes to hear the alert."
+# A short spoken "yes" (≤ 4 words, not a question) confirms a live listener. Short on purpose: a
+# voicemail greeting ("…leave a message right after the tone") must never trigger the alert.
+_CONFIRM_YES = re.compile(r"\b(?:yes|yeah|yep|yup|ya)\b", re.IGNORECASE)
 _LOCKED = "I could not verify your PIN. Ending the call for safety."
 
 
@@ -197,15 +201,33 @@ class OutboundHandler(OrchestratorHandler):
     """
 
     def __init__(self, orchestrator, working_memory, alert: OutboundAlert, *, driver=None,
-                 on_answered=None, on_locked=None, **kwargs) -> None:
+                 on_answered=None, on_locked=None, require_pin: bool = True, **kwargs) -> None:
         super().__init__(orchestrator, working_memory, **kwargs)
         self.alert = alert
+        # False: a spoken "yes" replaces the PIN (outbound.require_pin). Still fail-closed: nothing
+        # about the patient is voiced before it, and "answered" (no redial) means confirmed.
+        self.require_pin = require_pin
         self.driver = driver
         # Called with the event id once the PIN passes, so a consumer crash doesn't re-ring
         # (`CallQueue.mark_answered`).
         self._on_answered = on_answered
         # Called with the event id on a PIN lockout: the call is not rung again and not texted.
         self._on_locked_cb = on_locked
+
+    def greeting(self) -> str:
+        return super().greeting() if self.require_pin else \
+            f"Remote clinical line with a patient alert. {_PROMPT_CONFIRM}"
+
+    def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
+        if self.require_pin or self.working.get_or_create(session_id).authenticated:
+            return super().respond(text, session_id=session_id, spoken=spoken)
+        # Checked before the filler rule, which would swallow "yeah".
+        if _CONFIRM_YES.search(text or "") and len(text.split()) <= 4 and not is_question(text):
+            self.audit.write(actor=f"caller:{session_id}", action="outbound_confirm",
+                             subject=session_id, outcome="success")
+            print(f"[voice] spoken confirmation accepted for session {session_id}", flush=True)
+            return self._on_authenticated(session_id)
+        return "" if spoken and is_filler(text) else _PROMPT_CONFIRM
 
     def _on_locked(self, session_id: str) -> None:
         if self._on_locked_cb is not None:
@@ -433,13 +455,15 @@ def build_outbound_handler(
     """Build the outbound (event-seeded) handler for the worker. Returns (handler, greeting, cleanup).
 
     Same backends as `build_handler`, but wrapped in an `OutboundHandler` carrying the alert + a
-    graph driver (so a spoken acknowledgment updates the event status). Greeting is the PIN prompt.
+    graph driver (so a spoken acknowledgment updates the event status). Greeting is the PIN prompt,
+    or the "say yes" prompt when `outbound.require_pin` is false.
     """
+    from common.config import DEFAULT  # noqa: PLC0415
     from orchestrator.chat import build_orchestrator  # noqa: PLC0415
 
     orch, driver = build_orchestrator(embedder=embedder, llm=llm)
     handler = OutboundHandler(orch, orch.working, alert, driver=driver, on_answered=on_answered,
-                              on_locked=on_locked)
+                              on_locked=on_locked, require_pin=DEFAULT.outbound_require_pin)
     return handler, handler.greeting(), driver.close
 
 

@@ -817,7 +817,7 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         # Every call authenticates from scratch (see OrchestratorHandler.begin_session).
         if hasattr(handler, "begin_session"):
             handler.begin_session(ctx.room.name)
-            print(f"[worker] new call session for {ctx.room.name!r}: PIN required", flush=True)
+            print(f"[worker] new call session for {ctx.room.name!r}: auth gate on", flush=True)
     if cleanup is not None:
         async def _shutdown() -> None:
             cleanup()

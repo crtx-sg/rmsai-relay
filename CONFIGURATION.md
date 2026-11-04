@@ -30,6 +30,7 @@ but only as a logged override.
 | `OUTBOUND_CALL_VITALS_ALERTS` *(hospital)* | `false` | phone a vitals-driven alert (rhythm below the confidence gate, vitals warrant it). `false` = worklist only; the consumer logs `no call: vitals-driven alert … reported to the app only` |
 | `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` *(hospital)* | — | destination (the default for `--number` on `cli.consume`/`cli.outbound`, and for `cli.call`) + caller ID (the SignalWire number; also the SMS sender). A real call/SMS with neither `--number` nor `OUTBOUND_CALL_NUMBER` refuses to start; a placeholder is used only for simulated runs |
 | `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` *(hospital)* | `2` / `30` | no-answer retry policy: 1 + `max_retries` attempts, each redial in its own room, then the SMS fallback. A pickup with no PIN counts as no answer; a PIN lockout ends it with no retry and no SMS |
+| `OUTBOUND_REQUIRE_PIN` *(hospital)* | `false` | outbound calls: `false` = the clinician says "yes" to hear the alert (a short yes, so voicemail never triggers it); `true` = the PIN gate. A pickup without the yes/PIN counts as no answer. Inbound call-in and the app always need the PIN |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced; spoken or keyed on a phone (4 digits or `#`, `*` starts over). 3 wrong tries lock that call out (the count resets every call) |
 | `AUDIO_WAKE_WORD` | `hey vios` | wake word that gates follow-up *audio* Q&A on a call (text chat is never gated) |
 | `AUDIO_WAKE_WINDOW_S` | `30` | seconds the agent stays "awake" after a wake word so audio follow-ups needn't repeat it (audio only — does not affect text chat) |
@@ -190,7 +191,7 @@ Settings combine in this order, each overriding the one before:
 | `escalation` | `fp_suppress_min_confidence`, `low_confidence_caveat` | `FP_SUPPRESS_MIN_CONFIDENCE`, `LOW_CONFIDENCE_CAVEAT` |
 | `outbound` | `dispatch_mode`, `enabled`, `min_criticality`, `min_arrhythmia_confidence`, `call_vitals_alerts` | `DISPATCH_MODE`, `OUTBOUND_ENABLED`, `OUTBOUND_MIN_CRITICALITY`, `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE`, `OUTBOUND_CALL_VITALS_ALERTS` |
 | `outbound` | `call_number`, `from`, `inbound_allowed_numbers` | `OUTBOUND_CALL_NUMBER`, `OUTBOUND_FROM`, `SIP_INBOUND_ALLOWED_NUMBERS` |
-| `outbound` | `max_retries`, `retry_delay_s` | `OUTBOUND_MAX_RETRIES`, `OUTBOUND_RETRY_DELAY_S` |
+| `outbound` | `max_retries`, `retry_delay_s`, `require_pin` | `OUTBOUND_MAX_RETRIES`, `OUTBOUND_RETRY_DELAY_S`, `OUTBOUND_REQUIRE_PIN` |
 | `vitals_trends` | `alpha`, `vitals.<name>.{min_change, normal, unit}` | — (see [Vital trends](#vital-trends-when-is-a-vital-deteriorating)) |
 
 **A new site:** `cp config/hospitals/h1.example.yaml config/hospitals/<id>.yaml`, edit it, set

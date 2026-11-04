@@ -118,12 +118,31 @@ def test_alert_store_roundtrip():
 # --- outbound handler ----------------------------------------------------------------------
 
 
-def _handler(tmp_path, working, orch, *, driver=None):
+def _handler(tmp_path, working, orch, *, driver=None, **kwargs):
     from voice.handlers import OutboundHandler
 
     alert = OutboundAlert("room1", "PT1155", "E1", "Alert: AFib, High criticality.", "ICU/1")
-    h = OutboundHandler(orch, working, alert, driver=driver, audit=AuditLog(tmp_path / "a.jsonl"))
+    h = OutboundHandler(orch, working, alert, driver=driver, audit=AuditLog(tmp_path / "a.jsonl"),
+                        **kwargs)
     return h, alert
+
+
+def test_without_pin_a_spoken_yes_plays_the_alert_and_marks_answered(tmp_path):
+    answered = []
+    working, orch = _FakeWorking(), _FakeOrch()
+    h, alert = _handler(tmp_path, working, orch, require_pin=False, on_answered=answered.append)
+
+    assert "say yes" in h.greeting().lower() and "PIN" not in h.greeting()
+    # Nothing about the patient before the "yes"; voicemail-style speech and questions don't count.
+    assert h.respond("tell me about the patient", session_id="room1") == h.respond(
+        "Please leave a message right after the tone yes", session_id="room1")
+    assert h.respond("yes what is this?", session_id="room1").startswith("Please say yes")
+    assert h.respond("um", session_id="room1", spoken=True) == ""
+    assert answered == [] and not h.is_authenticated("room1")
+    # "Yeah." is a confirmation here, not filler.
+    assert h.respond("Yeah.", session_id="room1", spoken=True) == alert.spoken_alert
+    assert answered == ["E1"] and working.get_or_create("room1").patient_ref == "PT1155"
+    assert h.respond("what were the vitals", session_id="room1") == "answer:what were the vitals"
 
 
 def test_outbound_handler_pin_then_alert_then_followup(tmp_path):
