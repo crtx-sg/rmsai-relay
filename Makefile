@@ -105,10 +105,35 @@ demo-up:
 # (DEMO_PHONE_NOTIFIER=simulated to send nothing).
 DEMO_PHONE_NOTIFIER ?= signalwire
 DEMO_PHONE_CONSUME_ARGS := --channel voice --caller livekit --transport sip --notifier $(DEMO_PHONE_NOTIFIER)
+# Second hospital: with config/hospitals/h2.yaml present, demo-phone-up also brings up stack h2
+# (compose project infra-h2, settings in infra/h2.env: own stores/consumer/workers/gateway on :8090,
+# sharing h1's LiveKit), and the Simulate tab splits each run across both. HOSPITALS=h1 = h1 only.
+, := ,
+HOSPITALS ?= h1 $(if $(wildcard config/hospitals/h2.yaml),h2)
+H2_ENV := set -a; . infra/h2.env; set +a;
+H2_COMPOSE := $(COMPOSE) -p infra-h2
+SIM_TARGETS := $(if $(filter h2,$(HOSPITALS)),h1=redis://localhost:6379/0$(,)h2=redis://localhost:6380/0)
+
 demo-phone-up:
-	CONSUME_ARGS="$(DEMO_PHONE_CONSUME_ARGS)" $(DOCKER_USER) $(COMPOSE) --profile telephony \
-		up -d --wait --wait-timeout 180
+	SIMULATE_TARGETS="$(SIM_TARGETS)" CONSUME_ARGS="$(DEMO_PHONE_CONSUME_ARGS)" $(DOCKER_USER) \
+		$(COMPOSE) --profile telephony up -d --wait --wait-timeout 180
 	@./infra/demo-check.sh
+	@if [ -n "$(filter h2,$(HOSPITALS))" ]; then $(MAKE) --no-print-directory h2-up H2_PHONE=1; fi
+
+# Stack h2 only (h1's LiveKit must be up). Stores first, then the app services with --no-deps so
+# compose doesn't start a second LiveKit in this project. H2_PHONE=1 adds the phone worker.
+h2-up:
+	$(H2_ENV) $(DOCKER_USER) $(H2_COMPOSE) up -d --wait --wait-timeout 180 redis neo4j qdrant
+	$(H2_ENV) SIMULATE_TARGETS="$(SIM_TARGETS)" CONSUME_ARGS="$(if $(H2_PHONE),$(DEMO_PHONE_CONSUME_ARGS))" \
+		$(DOCKER_USER) $(H2_COMPOSE) $(if $(H2_PHONE),--profile telephony) up -d --wait \
+		--wait-timeout 180 --no-deps consumer voice-worker gateway $(if $(H2_PHONE),voice-worker-phone)
+	@$(H2_ENV) COMPOSE_PROJECT_NAME=infra-h2 ./infra/demo-check.sh
+
+# One-time KB for a fresh h2 stack, BEFORE any h2 events (DEMO.md section 2; `index` never wipes).
+h2-kb:
+	$(H2_ENV) for c in "cli.graph migrate" "cli.graph protocols" "cli.graph extract --dir docs" \
+		"cli.kb_vector --embedder bge index --dir docs"; do \
+		$(DOCKER_USER) $(H2_COMPOSE) --profile tools run --rm --no-deps tools python -m $$c || exit 1; done
 
 # Read-only: is the running demo healthy and started in the right order? Exit 0 = ready.
 demo-check:
@@ -128,6 +153,7 @@ demo-down: docker-down
 # phone worker running.
 docker-down:
 	$(COMPOSE) --profile telephony down
+	@if docker compose ls -aq | grep -qx infra-h2; then $(H2_ENV) $(H2_COMPOSE) --profile telephony down; fi
 
 # Phone-call worker on the telephony LiveKit (LIVEKIT_SIP_URL). See infra/docker-compose.yml.
 phone-up:

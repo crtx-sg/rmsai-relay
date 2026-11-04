@@ -41,6 +41,18 @@
 # for a POC; a multi-host deployment would move to a bridge network, service-name URLs, and a
 # LiveKit `node_ip` reachable from every participant.
 
+# Per-hospital settings for a second stack (h2: `make demo-phone-up`, infra/h2.env). Each key passes
+# through from the shell only when set there; unset (the h1 stack) it is absent and /app/.env applies.
+x-stack-env: &stack-env
+  HOSPITAL_ID:
+  REDIS_URL:
+  NEO4J_URI:
+  QDRANT_URL:
+  LIVEKIT_AGENT_NAME:
+  LIVEKIT_SIP_AGENT_NAME:
+  AUDIT_LOG_PATH:
+  SIMULATE_TARGETS:
+
 # Shared definition for the application services: same image, same mounts, same user.
 x-app: &app
   build:
@@ -49,6 +61,7 @@ x-app: &app
   image: rmsai-relay/app:local
   network_mode: host
   working_dir: /app
+  environment: *stack-env
   # Run as the invoking user so files written into ./data (plots, reports, audit log) are owned by
   # you on the host, not root. Override with APP_UID/APP_GID if your uid is not 1000.
   user: "${APP_UID:-1000}:${APP_GID:-1000}"
@@ -184,6 +197,7 @@ services:
       python -m cli.consume
       ${CONSUME_ARGS:---channel voice --caller livekit --transport webrtc}
     environment:
+      <<: *stack-env
       # Load BGE from the shared hf_cache only. Online, sentence-transformers HEADs huggingface.co
       # on every start; a network blip there either crashes startup or hangs it forever (no
       # consumer group is ever created, so nothing is read off the stream). Set to 0 for the first
@@ -207,6 +221,7 @@ services:
     <<: *app
     command: ["python", "-m", "cli.voice_worker", "start"]
     environment:
+      <<: *stack-env
       # livekit-agents binds a health-check HTTP server (its default: 8081). Under host networking
       # that collides with a worker run by hand on the host — `[errno 98] address already in use`,
       # and the container exits. Default the container to 8091 so both can run; the host worker
@@ -249,6 +264,7 @@ services:
     profiles: ["telephony"]
     command: ["python", "-m", "cli.voice_worker", "start"]
     environment:
+      <<: *stack-env
       VOICE_WORKER_ROLE: phone
       # Health port: must differ from the app worker's (8091 in Docker, 8081 on the host) under
       # host networking.
@@ -270,6 +286,7 @@ services:
     # The Simulate tab draws held-out ECG from the ecg_sigma package (as `real-samples` does).
     # Short syntax on purpose: a missing package dir only fails /simulate, not the gateway.
     environment:
+      <<: *stack-env
       ECGPKG_DIR: /ecgpkg/${ECGPKG_NAME:-ecg_pkg_v2}
     volumes:
       - ..:/app
@@ -336,3 +353,4 @@ volumes:
   qdrant_data:
   ollama_data:
   hf_cache:
+    name: infra_hf_cache  # one model cache for every stack (h1 = project `infra`, h2 = `infra-h2`)

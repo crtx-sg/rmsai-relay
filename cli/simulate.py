@@ -10,6 +10,10 @@ uniformly from the five classes that ring the clinician (criticality >= High). T
 with `ingest.real_samples` (stamped with a run id), then `cli.ingest --emit bus` classifies and
 publishes them, so the running consumer pushes the worklist and places the calls as usual.
 
+Two hospitals: `SIMULATE_TARGETS=h1=redis://localhost:6379/0,h2=redis://localhost:6380/0` splits
+each run between the stacks by patient (a stable hash, so a patient always belongs to one hospital)
+and ingests both at once, so both hospitals' phones ring together. Unset: this hospital only.
+
 The summary scores what the gate *will* do with each one (`cli.ingest`'s per-event `call`), so it
 is ready before the calls finish. The model must be the one trained on this package, otherwise
 its test split is not held out (refused, as in `cli.real_samples pick`).
@@ -18,13 +22,17 @@ its test split is not held out (refused, as in `cli.real_samples pick`).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from common.config import DEFAULT
 
@@ -33,7 +41,7 @@ CALL_CLASSES = ("ATRIAL_FIBRILLATION", "ATRIAL_FLUTTER", "SVT",
                 "VENTRICULAR_TACHYCARDIA", "VENTRICULAR_FIBRILLATION")
 FP_CLASS = "NORMAL_SINUS"
 MAX_SAMPLES = 10  # one click rings the phone up to this many times; SVT has only 25 test windows
-OUT_DIR = "data/simulate"
+OUT_DIR = "data/simulate"  # + /<this hospital>/<target hospital>/
 _RUN_COUNTER = "rmsai:simulate:runs"
 _DEFAULT_PACKAGE = "../ecg_sigma/packages/ecg_pkg_v2"
 
@@ -63,12 +71,33 @@ def tally(lines: list[dict]) -> dict:
                 "missed_worklist" if e.get("gate") == "vitals_alert" else "missed"] += 1
         elif not e.get("call"):
             out["fp_suppressed"] += 1
-        else:  # a normal rhythm rang: the vitals override (decision 1), or the model got it wrong
-            out["fp_called_vitals" if e.get("gate") == "fp_override" else "fp_called_model"] += 1
+        else:  # a normal rhythm rang: the vitals carried it (a confident NORMAL_SINUS overridden, or
+            # an unsure rhythm re-based on the vitals), or the model called an arrhythmia ("ok")
+            vitals = e.get("gate") in ("fp_override", "vitals_alert")
+            out["fp_called_vitals" if vitals else "fp_called_model"] += 1
     keys = ("expected_calls", "tp_calls", "missed_worklist", "missed", "fp_suppressed",
             "fp_called_model",
             "fp_called_vitals")
     return {k: out[k] for k in keys}
+
+
+def targets(config=DEFAULT) -> dict[str, str]:
+    """`{hospital: redis_url}` from SIMULATE_TARGETS ("h1=redis://…,h2=redis://…"), else just us."""
+    raw = os.environ.get("SIMULATE_TARGETS", "").strip()
+    if not raw:
+        return {config.hospital_id or "default": config.redis_url}
+    out = {}
+    for part in raw.split(","):
+        name, sep, url = part.strip().partition("=")
+        if not (sep and name and url.startswith("redis://")):
+            raise ValueError(f"SIMULATE_TARGETS entry must be hospital=redis://…, got {part!r}")
+        out[name] = url
+    return out
+
+
+def hospital_for(patient: str, hospitals: list[str]) -> str:
+    """A patient's hospital: stable across runs, so one patient never appears in two stacks."""
+    return sorted(hospitals)[int(hashlib.sha256(patient.encode()).hexdigest(), 16) % len(hospitals)]
 
 
 def _next_run_number(redis_url: str) -> int:
@@ -77,9 +106,10 @@ def _next_run_number(redis_url: str) -> int:
     return int(redis.Redis.from_url(redis_url).incr(_RUN_COUNTER))
 
 
-def _ingest(out_dir: str, emit: str = "bus") -> list[dict]:
-    """Run `cli.ingest --emit <emit>` on the run's files; return its per-event JSON lines."""
-    proc = subprocess.run([sys.executable, "-m", "cli.ingest", "--dir", out_dir, "--emit", emit],
+def _ingest(out_dir: str, redis_url: str, emit: str = "bus") -> list[dict]:
+    """Run `cli.ingest --emit <emit>` on one hospital's files; return its per-event JSON lines."""
+    proc = subprocess.run([sys.executable, "-m", "cli.ingest", "--dir", out_dir, "--emit", emit,
+                           "--redis-url", redis_url],
                           capture_output=True, text=True, timeout=600, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"cli.ingest failed ({proc.returncode}): {proc.stderr.strip()[-400:]}")
@@ -95,11 +125,22 @@ def _ingest(out_dir: str, emit: str = "bus") -> list[dict]:
 
 
 def run(samples: int, fp_percent: int, *, seed: int | None = None, package: str | None = None,
-        out_dir: str = OUT_DIR, checkpoints=None, run_number=None, ingest=_ingest) -> dict:
-    """One Simulate click: pick, write (run-stamped), ingest to the bus, score. Raises ValueError on
-    bad input or a package/model mismatch, RuntimeError if the ingest fails."""
+        out_dir: str | None = None, checkpoints=None, run_number=None, ingest=_ingest) -> dict:
+    """One Simulate click: pick, write (run-stamped), split by hospital, ingest each hospital's share
+    to its bus in parallel, score. Raises ValueError on bad input or a package/model mismatch,
+    RuntimeError if an ingest fails."""
     from cli.real_samples import checkpoint_manifest  # noqa: PLC0415
-    from ingest.real_samples import SampleError, load_package, select_events, write_samples  # noqa: PLC0415
+    from ingest.real_samples import (  # noqa: PLC0415
+        SampleError,
+        load_package,
+        pseudonym_for,
+        select_events,
+        write_samples,
+    )
+
+    buses = targets()
+    # Per calling hospital: two gateways simulating at once must not clear each other's files.
+    out = Path(out_dir or f"{OUT_DIR}/{DEFAULT.hospital_id or 'default'}")
 
     seed = random.SystemRandom().randrange(2**31) if seed is None else seed
     pick = plan(samples, fp_percent, random.Random(seed))
@@ -118,14 +159,26 @@ def run(samples: int, fp_percent: int, *, seed: int | None = None, package: str 
     n = (run_number or (lambda: _next_run_number(DEFAULT.redis_url)))()
     run_id = f"r{n}-{time.strftime('%H%M')}-n{samples}-fp{fp_percent}"
     try:
-        write_samples(pkg, sel, out_dir, run_id=run_id)
+        files = write_samples(pkg, sel, out, run_id=run_id)
     except SampleError as exc:
         raise ValueError(str(exc)) from None
-    events = ingest(out_dir)
+    # write_samples names each file after its source record; move it to its patient's hospital.
+    patient_of = {Path(r["h5_relpath"]).name: pseudonym_for(r.get("subject_id") or r["h5_relpath"])
+                  for r in sel.rows}
+    for h in buses:
+        shutil.rmtree(out / h, ignore_errors=True)
+        (out / h).mkdir(parents=True)
+    for f in files:
+        f.rename(out / hospital_for(patient_of[f.name], list(buses)) / f.name)
+    shares = [h for h in buses if any((out / h).glob("*.h5"))]
+    with ThreadPoolExecutor(max_workers=len(shares) or 1) as pool:
+        results = list(pool.map(lambda h: ingest(str(out / h), buses[h]), shares))
+    events = [{**e, "hospital": h} for h, lines in zip(shares, results) for e in lines]
     return {"run": run_id, "seed": seed, "pick": pick, "package": pkg.version,
             "shortfall": {k: list(v) for k, v in sel.shortfall.items()},
-            "events": [{k: e.get(k) for k in ("patient", "event_type", "ground_truth", "confidence",
-                                              "outcome", "gate", "call")} for e in events],
+            "events": [{k: e.get(k) for k in ("hospital", "patient", "event_type", "ground_truth",
+                                              "confidence", "outcome", "gate", "call")}
+                       for e in events],
             "summary": tally(events)}
 
 
@@ -139,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="classify and score only: publish nothing (no worklist, no calls)")
     args = parser.parse_args(argv)
-    ingest = (lambda d: _ingest(d, "stdout")) if args.dry_run else _ingest
+    ingest = (lambda d, url: _ingest(d, url, "stdout")) if args.dry_run else _ingest
     try:
         result = run(args.samples, args.fp_percent, seed=args.seed, package=args.package,
                      ingest=ingest)

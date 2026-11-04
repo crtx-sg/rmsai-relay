@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import random
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
-from cli.simulate import CALL_CLASSES, FP_CLASS, MAX_SAMPLES, plan, run, tally
+from cli.simulate import (
+    CALL_CLASSES,
+    FP_CLASS,
+    MAX_SAMPLES,
+    hospital_for,
+    plan,
+    run,
+    tally,
+    targets,
+)
 from ingest.hdf5_reader import read_hdf5_file
 from tests.test_real_samples import _make_package
 
@@ -32,10 +42,11 @@ def test_tally_separates_model_errors_from_the_vitals_override():
         {"ground_truth": FP_CLASS, "call": False, "gate": "suppressed_false_positive"},
         {"ground_truth": FP_CLASS, "call": True, "gate": "ok"},           # model called it VT
         {"ground_truth": FP_CLASS, "call": True, "gate": "fp_override"},  # vitals rang it
+        {"ground_truth": FP_CLASS, "call": True, "gate": "vitals_alert"},  # unsure NSR, vitals rang
     ]
     assert tally(lines) == {"expected_calls": 3, "tp_calls": 1, "missed_worklist": 1, "missed": 1,
                             "fp_suppressed": 1,
-                            "fp_called_model": 1, "fp_called_vitals": 1}
+                            "fp_called_model": 1, "fp_called_vitals": 2}
 
 
 def test_run_stamps_the_run_id_and_scores_the_ingest(tmp_path, monkeypatch):
@@ -46,8 +57,8 @@ def test_run_stamps_the_run_id_and_scores_the_ingest(tmp_path, monkeypatch):
     out = tmp_path / "out"
     seen = {}
 
-    def fake_ingest(out_dir):
-        windows = [w for f in sorted(out.glob("*.h5")) for w in read_hdf5_file(f)]
+    def fake_ingest(out_dir, redis_url):
+        windows = [w for f in sorted(Path(out_dir).glob("*.h5")) for w in read_hdf5_file(f)]
         seen["runs"] = {w.provenance.run for w in windows}
         return [{"published": "1-0", "patient": w.patient_ref, "event_type": "X",
                  "ground_truth": w.ground_truth.condition, "call": True, "gate": "ok"}
@@ -60,6 +71,37 @@ def test_run_stamps_the_run_id_and_scores_the_ingest(tmp_path, monkeypatch):
     s = result["summary"]
     assert s["expected_calls"] == len(result["events"]) == s["tp_calls"]
     assert sum(result["pick"].values()) == 2
+
+
+def test_two_hospitals_split_by_patient_and_ingest_to_their_own_bus(tmp_path, monkeypatch):
+    import cli.simulate
+
+    urls = {"h1": "redis://localhost:6379/0", "h2": "redis://localhost:6380/0"}
+    monkeypatch.setenv("SIMULATE_TARGETS", ",".join(f"{h}={u}" for h, u in urls.items()))
+    monkeypatch.setattr(cli.simulate, "CALL_CLASSES", ("VENTRICULAR_TACHYCARDIA",))
+    calls = []
+
+    def fake_ingest(out_dir, redis_url):
+        calls.append((Path(out_dir).name, redis_url))
+        return [{"event_id": w.event_id, "patient": w.patient_ref,
+                 "ground_truth": w.ground_truth.condition, "call": True, "gate": "ok"}
+                for f in Path(out_dir).glob("*.h5") for w in read_hdf5_file(f)]
+
+    result = run(2, 0, seed=3, package=str(_make_package(tmp_path / "pkg")),
+                 out_dir=str(tmp_path / "out"), checkpoints=("x.pt",), run_number=lambda: 1,
+                 ingest=fake_ingest)
+    assert result["events"] and all(urls[h] == u for h, u in calls)  # each share -> its own bus
+    for e in result["events"]:  # a patient always lands in the same hospital
+        assert e["hospital"] == hospital_for(e["patient"], ["h1", "h2"])
+    assert hospital_for("PT1", ["h2", "h1"]) == hospital_for("PT1", ["h1", "h2"])
+
+
+def test_targets_default_to_this_hospital_and_reject_bad_entries(monkeypatch):
+    monkeypatch.delenv("SIMULATE_TARGETS", raising=False)
+    assert len(targets()) == 1
+    monkeypatch.setenv("SIMULATE_TARGETS", "h1=http://x")
+    with pytest.raises(ValueError):
+        targets()
 
 
 def test_run_refuses_the_stub_model(tmp_path):

@@ -295,6 +295,18 @@ Worklist and Events rows are grouped per click under a `Run 3 · 14:02 · 10 sam
 bar. Same thing from a terminal, without publishing: `$RMSAI cli.simulate --samples 10
 --fp-percent 20 --dry-run`.
 
+### Two hospitals (h1 + h2)
+
+With `config/hospitals/h2.yaml` present (copy `h1.yaml`; its `call_number` is h2's clinician),
+`make demo-phone-up` also starts stack **h2**: compose project `infra-h2`, settings in
+`infra/h2.env`, its own Redis/Neo4j/Qdrant/consumer/workers and app on **http://localhost:8090**,
+sharing h1's LiveKit. h2's phone worker registers as `rmsai-agent-phone-h2`; `demo-check` fails if
+either agent name equals h1's (an h1 call could otherwise reach h2's worker). Inbound call-in stays
+h1's: never run `cli.sip_setup apply` from the h2 stack. On a fresh h2, load its KB once before any
+events: `make h2-kb`. The Simulate tab (either app) then splits each run by patient across both
+hospitals and publishes both shares at once, so both phones ring together. `HOSPITALS=h1 make
+demo-phone-up` runs h1 alone; `make docker-down` stops both.
+
 ### Publish to the bus
 
 ```bash

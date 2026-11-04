@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-11-04 simulate-tab";
+const APP_BUILD = "2026-11-04 two-hospitals";
 
 const LK = window.LivekitClient;
 
@@ -913,7 +913,7 @@ function renderSimulation(data) {
     `<div class="t"><b>${esc(s[k] ?? 0)}</b>${esc(label)}</div>`).join("");
   document.getElementById("sim-events").classList.remove("hidden");
   document.querySelector("#sim-events tbody").innerHTML = (data.events || []).map((e) => `<tr>
-    <td>${esc(e.patient)}</td><td>${esc(e.ground_truth)}</td><td>${esc(e.event_type)}</td>
+    <td>${esc(e.hospital || "")}</td><td>${esc(e.patient)}</td><td>${esc(e.ground_truth)}</td><td>${esc(e.event_type)}</td>
     <td>${pct(e.confidence)}</td><td>${esc(e.gate)}</td><td>${e.call ? "📞 yes" : "no"}</td></tr>`).join("");
 }
 
