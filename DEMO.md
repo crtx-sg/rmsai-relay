@@ -61,9 +61,10 @@ Where each path connects:
 |---|---|---|
 | Vendored model + simulator | `git clone https://github.com/crtx-sg/ecgtranscnn external/ecgtranscnn && git -C external/ecgtranscnn checkout a843ccf` | `ls external/ecgtranscnn/ecg_transcovnet/checkpoint.py` |
 | `real_v2` weights (gitignored upstream) | `make weights ECGTRANSCNN_DIR=/path/to/ecgtranscnn` | `ls external/ecgtranscnn/models/real_v2/fold{0..4}.pt` |
-| ecg_sigma training package | a sibling checkout at `../ecg_sigma/packages/ecg_pkg_v2`, or `export ECGPKG_HOST_DIR=/abs/path/to/packages` in your shell (Compose does not read the repo `.env`) | `ls ../ecg_sigma/packages/ecg_pkg_v2/{package.json,manifest.csv}` |
+| ecg_sigma training package (for `pick` **and** the app's Simulate tab) | a sibling checkout at `../ecg_sigma/packages/ecg_pkg_v2`, or `export ECGPKG_HOST_DIR=/abs/path/to/packages` in your shell (Compose does not read the repo `.env`) | `ls ../ecg_sigma/packages/ecg_pkg_v2/{package.json,manifest.csv}` |
 | `.env` | `cp .env.example .env`, then set `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `HOSPITAL_ID` **and** `ECG_CHECKPOINTS` (below) | `grep ^ECG_CHECKPOINTS .env` |
 | App image | `make docker-build` (~5–10 min) | see [§1](#1-bring-up-and-confirm-the-real-model-is-loaded) |
+| *Optional:* second hospital h2 | `cp config/hospitals/h1.yaml config/hospitals/h2.yaml`, set its `call_number` (a **different** phone from h1's) and `alert_language: ja`. Japanese needs `TTS_BACKEND=elevenlabs` with a plan that allows the Sakura voice; `infra/h2.env` sets the voice and model | `make demo-phone-up` prints a second READY for `infra-h2` ([Two hospitals](#two-hospitals-h1--h2)) |
 
 `ECG_CHECKPOINTS` in `.env` is the real_v2 five-fold ensemble:
 
@@ -131,6 +132,8 @@ $RMSAI cli.graph extract --dir docs                        # doc entities onto s
 $RMSAI cli.kb_vector --embedder bge index --dir docs       # clinical corpus -> Qdrant
 $RMSAI cli.kb_upload --file docs/samples/critical_alarm_sop.md   # optional: a sample SOP to cite
 ```
+
+With a second hospital, load **its** KB the same way once, before any h2 events: `make h2-kb`.
 
 Plain `index` adds to the collection, and re-indexing a document replaces its earlier chunks, so order
 doesn't matter. Only `cli.kb_vector index --reset` wipes the
@@ -281,7 +284,9 @@ are the usual confusions), re-pick with another `--seed`.
 
 ### Open the app first
 
-Log in to `http://localhost:8080/` (PIN `1234`) **before** publishing. The inbox room `rmsai-inbox-h1` only exists while the app is
+Log in to `http://localhost:8080/` (PIN `1234`) **before** publishing, and with two hospitals also
+to h2's app, `http://localhost:8090/` (each app shows only its own hospital's events; the header says
+which one it is). The inbox room `rmsai-inbox-h1` only exists while the app is
 connected, so a push while it's closed fails (`inbox push failed … 503 … inbox room not open`). The
 event isn't lost: on login the app backfills every pending (alerted, unacknowledged) event from the
 graph. Publishing again is also safe: the graph is keyed by event id, and an event the clinician
@@ -323,8 +328,11 @@ With `config/hospitals/h2.yaml` present (copy `h1.yaml`; its `call_number` is h2
 sharing h1's LiveKit. h2's phone worker registers as `rmsai-agent-phone-h2`; `demo-check` fails if
 either agent name equals h1's (an h1 call could otherwise reach h2's worker). Inbound call-in stays
 h1's: never run `cli.sip_setup apply` from the h2 stack. On a fresh h2, load its KB once before any
-events: `make h2-kb`. The Simulate tab (either app) then splits each run by patient across both
-hospitals and publishes both shares at once, so both phones ring together. `HOSPITALS=h1 make
+events: `make h2-kb`. The Simulate tab (h1's app) then splits each run by patient across both
+hospitals and publishes both shares at once, so both phones ring together. Each app's header names
+its hospital and links to the other one. Follow both calls with `make phone-transcript
+HOSPITAL=all`. If both hospitals call the **same** phone, the second dial gets SIP `408` while the
+first call is up and is redialled ([Troubleshooting](#troubleshooting)). `HOSPITALS=h1 make
 demo-phone-up` runs h1 alone; `make docker-down` stops both.
 
 h2 speaks its alert in **Japanese** (`outbound.alert_language: ja` in `h2.yaml`; voice Sakura via
@@ -408,7 +416,7 @@ the missed-call SMS. It needs an account out of trial mode.
 |---|---|
 | Event **out** (relay → your phone → "yes" → alert → Q&A → acknowledge) | works (verified 2026-10-12; needs the account out of trial mode and `SIGNALWIRE_SIP_USER`) |
 | Call **in** (your phone → SignalWire number → PIN → Q&A) | works (verified 2026-10-13) |
-| SMS fallback when an alert call is unanswered | SignalWire SMS from the same number (`--notifier signalwire`, the `make demo-phone-up` default); delivered (test SMS to a +91 number, 2026-10-13). A pickup with no PIN entered counts as unanswered; a PIN lockout is not texted. `cli.call` never texts: to test the SMS, publish an event (`cli.ingest --file … --emit bus`) and don't enter the PIN |
+| SMS fallback when an alert call is unanswered | SignalWire SMS from the same number (`--notifier signalwire`, the `make demo-phone-up` default); delivered (test SMS to a +91 number, 2026-10-13). A pickup with no "yes" counts as unanswered (with `require_pin: true`: no PIN; a PIN lockout is not texted). `cli.call` never texts: to test the SMS, publish an event (`cli.ingest --file … --emit bus`) and don't say "yes" |
 
 Full step-by-step setup: **[`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)**. Once set up:
 
@@ -456,7 +464,7 @@ $RMSAI cli.kb "which critical events happened in the last hour"
 ## 6. Shut down
 
 ```bash
-make docker-down      # stops everything; named volumes (neo4j/qdrant data, model cache) survive
+make docker-down      # stops everything, h2 included; named volumes (neo4j/qdrant data, model cache) survive
 ```
 
 ---
@@ -508,7 +516,13 @@ make docker-down      # stops everything; named volumes (neo4j/qdrant data, mode
 | `make phone-logs`: `registered worker … "url": "ws://localhost:7880"` | phone worker on the wrong LiveKit (fixed in `fe89028`) | update, then `make phone-down phone-up` |
 | `voice-worker-phone` exits: `VOICE_WORKER_ROLE=phone needs LIVEKIT_SIP_URL` | telephony split not configured | set `LIVEKIT_SIP_URL/API_KEY/API_SECRET` in `.env`, then `make phone-up` |
 | `CONSUME_ARGS` in `.env` has no effect | Compose doesn't read the repo-root `.env` | pass it inline: `CONSUME_ARGS="…" make docker-up` |
-| Code edit not picked up | — | `make docker-restart` (source is bind-mounted); rebuild only for dependency / vendored changes |
+| Code edit not picked up (also after `make demo-phone-up`) | `up -d` only recreates containers whose compose settings changed; the source is bind-mounted | `make docker-restart` (both stacks, phone workers included; refused while a call is up); rebuild only for dependency / vendored changes |
+| No **Simulate** tab | you're on h2's app: with two hospitals only h1's app is the console (`SIMULATE_CONSOLE=h1`) | use `http://localhost:8080/` |
+| Simulate: `Failed: ecg_sigma package: …` | the gateway can't see the package | set `ECGPKG_HOST_DIR` (and `ECGPKG_NAME`), then `make demo-phone-up` (recreates the gateway with the mount) |
+| Simulate: `Failed: no ECG_CHECKPOINTS` / `not the model's training package` | stub model, or a package the model wasn't trained on (its test split isn't held out) | set `ECG_CHECKPOINTS` to real_v2 ([§1](#1-bring-up-and-confirm-the-real-model-is-loaded)) and `make docker-restart` |
+| Simulate: `published, but NOT for h2: …` | h2's stack is down; h1's share was published and is in the history | `make h2-up H2_PHONE=1`, then run again |
+| h2's first call fails `SIP dial failed … 408`, then rings a minute later | h1 and h2 call the **same** phone, busy with h1's call | give h2 its own `call_number` in `h2.yaml`, then `make docker-restart` |
+| h2 events don't appear in h1's app | by design: one app per hospital | open `http://localhost:8090/` (the header link) |
 
 ---
 

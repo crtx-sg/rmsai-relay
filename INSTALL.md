@@ -28,6 +28,8 @@ make docker-build
 
 # 4. Bring up every service, in dependency order, then check it (READY = all ok)
 make demo-up
+#    or, with real phone calls (and a second hospital when config/hospitals/h2.yaml exists):
+#    make demo-phone-up
 ```
 
 ![Docker services, cloud services and call flow](deployment.png)
@@ -40,7 +42,13 @@ That starts **redis, neo4j, qdrant, livekit** and the three application services
 app on `http://localhost:8080/`). `make docker-ps` shows the state, `make docker-logs` tails the
 three app services.
 
-The **source is bind-mounted**, so a code edit needs only `make docker-restart` — no rebuild.
+**A second hospital (h2)** runs as its own stack (compose project `infra-h2`, settings in
+`infra/h2.env`, app on `http://localhost:8090/`), sharing h1's LiveKit: add
+`config/hospitals/h2.yaml`, run `make demo-phone-up`, and once `make h2-kb`. See
+[OPERATIONS.md § A second hospital](OPERATIONS.md#a-second-hospital-h2).
+
+The **source is bind-mounted**, so a code edit needs only `make docker-restart` — no rebuild (it
+restarts both stacks; `make demo-up` / `demo-phone-up` do not reload code).
 Rebuild (`make docker-build`) only when `pyproject.toml`, `uv.lock`, or the vendored package
 changes.
 
@@ -68,7 +76,8 @@ both bind 11434) and `--profile emr` (`hapi-fhir` — binds 8080, same as the ga
 gateway with `GATEWAY_PORT`). `--profile telemetry` adds mosquitto. The legacy `--profile later`
 still selects those three. Two more profiles hold on-demand services: `--profile tools` (`tools`,
 the one-shot CLI runner, and `real-samples`, see [real ECG](OPERATIONS.md#curating-a-held-out-real-ecg-demo-set-clireal_samples);
-`docker compose run` enables it implicitly) and `--profile telephony` (`voice-worker-phone`, started
+`docker compose run` enables it implicitly; the gateway mounts the same package for the
+**Simulate** tab) and `--profile telephony` (`voice-worker-phone`, started
 by `make phone-up`, see [Phone calls](TELEPHONY_SETUP.md#phone-calls-livekit-cloud--signalwire)).
 
 #### Two `.env` readers
@@ -84,6 +93,10 @@ CONSUME_ARGS="--channel voice --caller livekit --transport webrtc" make docker-u
 GATEWAY_PORT=8090 make docker-up
 ECGPKG_HOST_DIR=/abs/path/to/packages docker compose -f infra/docker-compose.yml run --rm real-samples list
 ```
+
+Per-hospital values for a second stack (`HOSPITAL_ID`, store URLs, agent names, voice, …) come from
+`infra/h2.env`, and `make demo-phone-up` sets `SIMULATE_TARGETS`, `SIMULATE_CONSOLE` and
+`HOSPITAL_APPS` for both stacks ([CONFIGURATION.md](CONFIGURATION.md#per-hospital-configuration)).
 
 Compose-level keys: `CONSUME_ARGS`, `GATEWAY_PORT`, `CONSUMER_HF_OFFLINE` / `WORKER_HF_OFFLINE` (set `0` on a fresh `hf_cache`), `ECGPKG_HOST_DIR`, `ECGPKG_NAME`,
 `APP_UID`/`APP_GID`, `LIVEKIT_WORKER_HTTP_PORT` (container), `LIVEKIT_SIP_WORKER_HTTP_PORT`
