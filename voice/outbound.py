@@ -250,7 +250,10 @@ def is_question(text: str) -> bool:
     if _POLITE_ACK.match(text):
         return False
     tokens = _ack_tokens(text)
-    return "?" in text or bool(tokens and tokens[0] in _QUESTION)
+    if tokens and tokens[0] in _QUESTION:
+        return True
+    # STT adds a "?" for a rising tone: "Acknowledge it?" is the command (live 2026-11-04 h2 call).
+    return "?" in text and not (tokens and tokens[0].startswith("ack"))
 
 
 def is_plain_no(text: str) -> bool:

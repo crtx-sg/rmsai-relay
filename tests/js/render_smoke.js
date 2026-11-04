@@ -48,9 +48,14 @@ ctx.renderSimulation({ run: "r1-0905-n2-fp50", summary: { expected_calls: 1, tp_
              confidence: 0.85, gate: "false_positive", call: false }] });
 const sim = mk("sim-summary").innerHTML + mk("#sim-events tbody").innerHTML;
 
-const all = models + rows + info + worklistRow + sim;
+// Header: which hospital, with links to the others' apps
+ctx.renderHospitalBadge({ hospital_id: "h1",
+  hospital_apps: { h1: "http://localhost:8080", h2: "http://localhost:8090" } });
+const badge = mk("hospital-badge").innerHTML;
+
+const all = models + rows + info + worklistRow + sim + badge;
 process.stdout.write(JSON.stringify({
-  models, rows, info, worklistRow, runs, sim,
+  models, rows, info, worklistRow, runs, sim, badge, title: ctx.document.title,
   datasetOptions: mk("f-dataset").options.map((o) => o.value),
   theme: { before, after, button: mk("theme-btn").textContent },
   leaks: all.includes("${") || all.includes("undefined"),

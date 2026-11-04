@@ -74,13 +74,14 @@ def test_parse_ack_negation_wins(text):
 
 
 @pytest.mark.parametrize("text", [
-    "Can you confirm the potassium?", "is that correct", "what does copy mean",
+    "Can you confirm the potassium?", "is that correct", "what does copy mean", "is it acknowledged?",
     "yes and what was the heart rate", "confirm the dose of amiodarone for this patient please"])
 def test_parse_ack_questions_and_long_turns_are_not_acks(text):
     assert parse_ack(text) == "unclear"
 
 
 @pytest.mark.parametrize("text", [
-    "yes", "Yes, I acknowledge.", "acknowledged, thank you", "copy that", "roger", "that is correct"])
+    "yes", "Yes, I acknowledge.", "acknowledged, thank you", "copy that", "roger", "that is correct",
+    "acknowledge it?", "Acknowledge this event?"])  # a rising tone, not a question (2026-11-04)
 def test_parse_ack_plain_acks(text):
     assert parse_ack(text) == "yes"

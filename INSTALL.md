@@ -149,7 +149,7 @@ uv run pytest -q -m "not infra"
 | `make demo-up` / `make demo-check` | bring up every default service in dependency order and health-check it (the consumer stages WebRTC rooms: **no phone rings**) / re-run only the check |
 | `make demo-phone-up` | `demo-up` plus real phone calls: also starts the phone worker and runs the consumer with `--transport sip --notifier signalwire`, so calls go through the Redis call queue and an unanswered call (including a pickup with no PIN) is texted (`DEMO_PHONE_NOTIFIER=simulated` to send nothing). A later plain `make demo-up` puts the consumer back on WebRTC |
 | `make phone-up` / `make phone-down` / `make phone-logs` | start / stop / tail the phone-call worker (`voice-worker-phone`, profile `telephony`) |
-| `make phone-transcript` | follow the phone worker's conversation only: STT transcript, what was heard, the graph query, the reply (before TTS), the PIN and the spoken alert |
+| `make phone-transcript` | follow the phone worker's conversation only: STT transcript, what was heard, the graph query, the reply (before TTS), the PIN and the spoken alert. `HOSPITAL=h2` for the second hospital, `HOSPITAL=all` for both (lines prefixed `[h1]` / `[h2]`) |
 | `make test` / `make lint` | `uv run pytest -q` / `ruff check .` |
 
 ### Optional extras (à la carte, if you skipped `make setup-all`)

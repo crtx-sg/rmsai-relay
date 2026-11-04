@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-11-04 two-hospitals";
+const APP_BUILD = "2026-11-04 hospital-badge";
 
 const LK = window.LivekitClient;
 
@@ -332,6 +332,7 @@ async function connect(sess) {
   // Build tag on screen, not just in the console: a stale cached page is the single most expensive
   // thing to misdiagnose here — it looks exactly like a broken worker.
   document.getElementById("room-label").textContent = `${session.room} · app ${APP_BUILD}`;
+  renderHospitalBadge(session);
   document.getElementById("tabs").classList.remove("hidden");
   initVoiceToggle();
   setStatus("connecting…");
@@ -879,6 +880,18 @@ async function pttUp() {
   }
 }
 
+// Which hospital this app is, plus links to the other hospitals' apps (each has its own worklist).
+function renderHospitalBadge(sess) {
+  const id = sess.hospital_id;
+  if (!id) return;
+  document.title = `rmsai · ${id}`;
+  const others = Object.entries(sess.hospital_apps || {}).filter(([h]) => h !== id);
+  const badge = document.getElementById("hospital-badge");
+  badge.innerHTML = `Hospital ${esc(id)}` + others.map(([h, url]) =>
+    `<a href="${esc(url)}" target="_blank" rel="noopener">open ${esc(h)} ↗</a>`).join("");
+  badge.classList.remove("hidden");
+}
+
 // --- Simulate tab -------------------------------------------------------------------------------
 const SIM_TILES = [
   ["expected_calls", "Arrhythmias (should ring)"], ["tp_calls", "Rang"],
@@ -914,7 +927,7 @@ function renderSimulation(data) {
   document.getElementById("sim-events").classList.remove("hidden");
   document.querySelector("#sim-events tbody").innerHTML = (data.events || []).map((e) => `<tr>
     <td>${esc(e.hospital || "")}</td><td>${esc(e.patient)}</td><td>${esc(e.ground_truth)}</td><td>${esc(e.event_type)}</td>
-    <td>${pct(e.confidence)}</td><td>${esc(e.gate)}</td><td>${e.call ? "📞 yes" : "no"}</td></tr>`).join("");
+    <td>${pct(e.confidence)}</td><td>${esc(e.gate)}</td><td>${e.call ? "📞 call" : "no call"}</td></tr>`).join("");
 }
 
 console.log(`[app] build ${APP_BUILD}`);

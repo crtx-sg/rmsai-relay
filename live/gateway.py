@@ -17,6 +17,7 @@ injected `AuditLog`; FastAPI is imported lazily so importing this module stays c
 
 from __future__ import annotations
 
+import os
 import secrets
 import threading
 from pathlib import Path
@@ -117,6 +118,18 @@ class EventInfoRequest(BaseModel):
     event_id: str
 
 
+def hospital_apps(raw: str | None = None) -> dict[str, str]:
+    """`{hospital: app URL}` from HOSPITAL_APPS ("h1=http://…,h2=http://…"), for the header's links
+    to the other hospitals' apps. Malformed entries are dropped (the links are a convenience)."""
+    raw = os.environ.get("HOSPITAL_APPS", "") if raw is None else raw
+    out = {}
+    for part in raw.split(","):
+        name, _, url = part.strip().partition("=")
+        if name and url.startswith(("http://", "https://")):
+            out[name] = url
+    return out
+
+
 def speak_on_select_default(config: Config) -> bool:
     """The app's speak-on-select default: on, except when calls go out alongside the app."""
     modes = {m.strip() for m in (config.dispatch_mode or "").split("+")}
@@ -193,6 +206,7 @@ def create_app(
             "identity": identity,
             "token": token,
             "hospital_id": config.hospital_id,
+            "hospital_apps": hospital_apps(),
             "dispatch_mode": config.dispatch_mode,
             # Whether selecting a row should speak its report, until the clinician toggles it. Off
             # in app+call mode: the clinician may be on the phone alert for the same event, and the

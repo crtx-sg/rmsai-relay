@@ -132,6 +132,9 @@
     #perf-events tbody tr { cursor: pointer; }
     #perf-detail { padding: 1rem; border-top: 3px solid #14213d; margin-top: 1rem; }
     /* One Simulate click (or a CLI ingest) per group, newest first. */
+    #hospital-badge { font-weight: 700; padding: .15rem .5rem; border: 2px solid var(--fg);
+                      border-radius: 4px; }
+    #hospital-badge a { font-weight: 400; margin-left: .5rem; color: inherit; }
     tr.run-sep td { background: var(--panel); border-top: 3px solid var(--fg); font-weight: 600;
                     font-size: .8rem; padding: .35rem .5rem; }
     #sim-view { padding: 1rem; }
@@ -150,6 +153,7 @@
       <button data-tab="perf">Events</button>
       <button data-tab="sim">Simulate</button>
     </nav>
+    <span id="hospital-badge" class="hidden"></span>
     <span id="room-label"></span>
     <button id="voice-btn" class="hidden" title="Speak an event's report aloud when you select it">🔊 Voice</button>
     <button id="theme-btn" title="Switch background">◐ Theme</button>
@@ -242,11 +246,12 @@
        <button id="sim-run">Run simulation</button>
        <span id="sim-status" class="meta"></span>
      </div>
-     <p class="meta">Each true arrhythmia that passes the gate rings the on-call phone. False positives
-       should be filtered out and never ring.</p>
+     <p class="meta">Each event the gate passes rings its hospital's on-call phone (a busy line or no
+       answer is redialled, then texted). False positives should be filtered out and never ring.
+       "Gate: call" is the decision before dialling; what was delivered is on the Events tab.</p>
      <div id="sim-summary"></div>
      <table id="sim-events" class="hidden">
-       <thead><tr><th>Hospital</th><th>Patient</th><th>Truth</th><th>Model said</th><th>Conf.</th><th>Gate</th><th>Rings?</th></tr></thead>
+       <thead><tr><th>Hospital</th><th>Patient</th><th>Truth</th><th>Model said</th><th>Conf.</th><th>Gate</th><th title="The gate's decision before dialling; a busy line or no answer is redialled, then texted">Gate: call</th></tr></thead>
        <tbody></tbody>
      </table>
    </div>

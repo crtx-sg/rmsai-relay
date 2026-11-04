@@ -106,11 +106,13 @@ def _next_run_number(redis_url: str) -> int:
     return int(redis.Redis.from_url(redis_url).incr(_RUN_COUNTER))
 
 
-def _ingest(out_dir: str, redis_url: str, emit: str = "bus") -> list[dict]:
-    """Run `cli.ingest --emit <emit>` on one hospital's files; return its per-event JSON lines."""
+def _ingest(out_dir: str, redis_url: str, hospital: str, emit: str = "bus") -> list[dict]:
+    """Run `cli.ingest --emit <emit>` on one hospital's files; return its per-event JSON lines.
+    Scored with that hospital's policy (HOSPITAL_ID), not the policy of the app that ran it."""
+    env = {**os.environ, "HOSPITAL_ID": hospital} if hospital != "default" else None
     proc = subprocess.run([sys.executable, "-m", "cli.ingest", "--dir", out_dir, "--emit", emit,
                            "--redis-url", redis_url],
-                          capture_output=True, text=True, timeout=600, check=False)
+                          capture_output=True, text=True, timeout=600, check=False, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"cli.ingest failed ({proc.returncode}): {proc.stderr.strip()[-400:]}")
     lines = []
@@ -172,7 +174,7 @@ def run(samples: int, fp_percent: int, *, seed: int | None = None, package: str 
         f.rename(out / hospital_for(patient_of[f.name], list(buses)) / f.name)
     shares = [h for h in buses if any((out / h).glob("*.h5"))]
     with ThreadPoolExecutor(max_workers=len(shares) or 1) as pool:
-        results = list(pool.map(lambda h: ingest(str(out / h), buses[h]), shares))
+        results = list(pool.map(lambda h: ingest(str(out / h), buses[h], h), shares))
     events = [{**e, "hospital": h} for h, lines in zip(shares, results) for e in lines]
     return {"run": run_id, "seed": seed, "pick": pick, "package": pkg.version,
             "shortfall": {k: list(v) for k, v in sel.shortfall.items()},
@@ -192,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="classify and score only: publish nothing (no worklist, no calls)")
     args = parser.parse_args(argv)
-    ingest = (lambda d, url: _ingest(d, url, "stdout")) if args.dry_run else _ingest
+    ingest = (lambda d, url, h: _ingest(d, url, h, "stdout")) if args.dry_run else _ingest
     try:
         result = run(args.samples, args.fp_percent, seed=args.seed, package=args.package,
                      ingest=ingest)

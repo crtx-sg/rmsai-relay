@@ -172,7 +172,8 @@ restart. Console lines: `[queued] … call N in queue`, `[calls] dialling …`/`
 Follows the phone worker and shows only the conversation: `stt: ->` (raw transcript), `heard:`,
 `reply:` (the KB-grounded answer, logged before TTS speaks it), the greeting, `[voice] PIN accepted`
 and `[voice] alert text:` (the event alert spoken after the PIN). It shows new lines only, so start
-it before the call. Ctrl-C stops it.
+it before the call. Ctrl-C stops it. `HOSPITAL=h2` follows the second hospital's phone worker (stack `infra-h2`);
+`HOSPITAL=all` follows both, each line prefixed `[h1]` / `[h2]`.
 
 ---
 

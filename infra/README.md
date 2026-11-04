@@ -14,7 +14,7 @@ make docker-build     # once, and after pyproject.toml / uv.lock / vendored-pack
 make demo-up          # start everything in dependency order, wait for health, then demo-check
 make demo-check       # read-only: containers, endpoints, voice worker registered with LiveKit
 make demo-phone-up    # demo-up + phone worker; consumer on --transport sip --notifier signalwire (real calls + SMS)
-make phone-transcript # follow the phone worker's conversation lines only
+make phone-transcript # follow the phone worker's conversation lines only (HOSPITAL=h2 | all)
 make demo-down        # stop + remove containers (named volumes are kept)
 make docker-logs      # tail the three app services
 ```

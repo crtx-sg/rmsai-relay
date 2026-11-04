@@ -57,7 +57,7 @@ def test_run_stamps_the_run_id_and_scores_the_ingest(tmp_path, monkeypatch):
     out = tmp_path / "out"
     seen = {}
 
-    def fake_ingest(out_dir, redis_url):
+    def fake_ingest(out_dir, redis_url, hospital):
         windows = [w for f in sorted(Path(out_dir).glob("*.h5")) for w in read_hdf5_file(f)]
         seen["runs"] = {w.provenance.run for w in windows}
         return [{"published": "1-0", "patient": w.patient_ref, "event_type": "X",
@@ -81,8 +81,9 @@ def test_two_hospitals_split_by_patient_and_ingest_to_their_own_bus(tmp_path, mo
     monkeypatch.setattr(cli.simulate, "CALL_CLASSES", ("VENTRICULAR_TACHYCARDIA",))
     calls = []
 
-    def fake_ingest(out_dir, redis_url):
-        calls.append((Path(out_dir).name, redis_url))
+    def fake_ingest(out_dir, redis_url, hospital):
+        calls.append((hospital, redis_url))
+        assert Path(out_dir).name == hospital
         return [{"event_id": w.event_id, "patient": w.patient_ref,
                  "ground_truth": w.ground_truth.condition, "call": True, "gate": "ok"}
                 for f in Path(out_dir).glob("*.h5") for w in read_hdf5_file(f)]
@@ -139,3 +140,31 @@ def test_simulate_needs_a_session_and_reports_bad_input(tmp_path):
     ok = client.post("/simulate", json={"session": _token(), "samples": 1, "fp_percent": 0})
     assert ok.status_code == 200 and ok.json()["run"] == "r1-0000-n1-fp0"
     assert audit.read_all()[-1]["action"] == "simulate"
+
+
+def test_each_share_is_scored_with_its_own_hospital_policy(monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    import cli.simulate
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["env"], seen["cmd"] = kw.get("env"), cmd
+        return SimpleNamespace(returncode=0, stdout='{"event_id": "e1"}\n', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert cli.simulate._ingest("d", "redis://localhost:6380/0", "h2") == [{"event_id": "e1"}]
+    assert seen["env"]["HOSPITAL_ID"] == "h2" and "redis://localhost:6380/0" in seen["cmd"]
+    cli.simulate._ingest("d", "redis://x", "default")
+    assert seen["env"] is None  # single hospital, no id: the app's own config as is
+
+
+
+def test_hospital_app_links_parse_and_drop_bad_entries():
+    from live.gateway import hospital_apps
+
+    assert hospital_apps("h1=http://localhost:8080, h2=http://localhost:8090,x=ftp://y,bad") == {
+        "h1": "http://localhost:8080", "h2": "http://localhost:8090"}
+    assert hospital_apps("") == {}
