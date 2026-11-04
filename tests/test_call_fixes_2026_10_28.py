@@ -136,3 +136,24 @@ def test_a_redial_after_a_drop_does_not_reuse_the_first_answer(patched, monkeypa
     bus_consumer.run_queued_call(job, driver=object(), orchestrator=object(), utterances=[],
                                  caller_factory=lambda r: object(), alert_store=store)
     assert seen == [False, False]
+
+
+def test_a_flagged_call_acknowledged_before_it_ended_is_not_rung_again(patched, monkeypatch):  # noqa: F811
+    # The flag is set when the connection drops (2026-11-04), so an ack heard in the reconnect
+    # window must still win: the consumer re-reads the status before redialling.
+    monkeypatch.setattr(bus_consumer, "_record_delivery", lambda *a, **k: None)
+    statuses = iter(["reported", "acknowledged"])
+    monkeypatch.setattr(bus_consumer, "get_event_status", lambda d, uuid: next(statuses))
+    store = _Store()
+    job = CallJob(event_id="e", patient_ref="PT1", event_type="ATRIAL_FIBRILLATION", bed="ICU/3",
+                  criticality="High", reason="ok", payload=event_to_dict(_event(_Afib())))
+    real = bus_consumer._place_live_call
+
+    def _place(*a, **k):
+        CallQueue(store.redis).mark_dropped("e")
+        return real(*a, **k)
+
+    monkeypatch.setattr(bus_consumer, "_place_live_call", _place)
+    bus_consumer.run_queued_call(job, driver=object(), orchestrator=object(), utterances=[],
+                                 caller_factory=lambda r: object(), alert_store=store)
+    assert patched["voice"] == ["ICU/3"]  # one call, no redial
