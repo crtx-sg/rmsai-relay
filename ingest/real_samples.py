@@ -194,7 +194,8 @@ def _clear_previous_picks(out_dir: Path) -> None:
                      len(kept), out_dir, ", ".join(kept))
 
 
-def write_samples(pkg: Package, selection: Selection, out_dir: str | Path) -> list[Path]:
+def write_samples(pkg: Package, selection: Selection, out_dir: str | Path,
+                  run_id: str | None = None) -> list[Path]:
     """Copy the selected events into ``out_dir``, one file per source record. Returns the files.
 
     Each run is a fresh curation: once the selection has passed its checks, every earlier pick
@@ -244,6 +245,8 @@ def write_samples(pkg: Package, selection: Selection, out_dir: str | Path) -> li
                 md.attrs["ecgpkg_version"] = pkg.version
                 md.attrs["ecgpkg_manifest_sha256"] = pkg.manifest_sha256
                 md.attrs["ecgpkg_split"] = rows[0].get("split", "")
+                if run_id:
+                    md.attrs["simulate_run"] = run_id  # groups this run's events in the app
                 for r in sorted(rows, key=lambda r: r["event_key"]):
                     key = r["event_key"]
                     if key not in src:

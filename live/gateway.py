@@ -18,6 +18,7 @@ injected `AuditLog`; FastAPI is imported lazily so importing this module stays c
 from __future__ import annotations
 
 import secrets
+import threading
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -101,6 +102,14 @@ class EventsRequest(BaseModel):
     limit: int = 500
 
 
+class SimulateRequest(BaseModel):
+    """`POST /simulate` body: the inbox session + how many alarms and what share are false."""
+
+    session: str
+    samples: int
+    fp_percent: int = 0
+
+
 class EventInfoRequest(BaseModel):
     """`POST /event-info` body: one event's why + source + outcome, for the detail panel."""
 
@@ -123,6 +132,7 @@ def create_app(
     token_store=None,
     dispatcher=None,
     app_dir: Path | None = None,
+    simulator=None,
 ):
     """Build the gateway FastAPI app.
 
@@ -326,6 +336,33 @@ def create_app(
                     events=len(rows))
         return {**build_perf_view(rows),
                 "filters": {"since": req.since, "model": req.model, "dataset": req.dataset}}
+
+    sim_lock = threading.Lock()
+
+    @api.post("/simulate")
+    def simulate(req: SimulateRequest) -> dict:
+        """Simulate-tab click: real held-out ECG alarms onto the bus (`cli.simulate.run`), so the
+        consumer pushes and calls them like any event. Rings real phones, hence the session gate,
+        the per-click cap (in `plan`) and one run at a time."""
+        if not _session_ok(req.session):
+            audit.write(actor="app", action="simulate", subject="-", outcome="unauthorized")
+            raise HTTPException(status_code=401, detail="invalid session")
+        if not sim_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="a simulation is already running")
+        try:
+            from cli.simulate import run  # noqa: PLC0415
+
+            result = (simulator or run)(req.samples, req.fp_percent)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except RuntimeError as exc:
+            audit.write(actor="app", action="simulate", subject="-", outcome="failed")
+            raise HTTPException(status_code=502, detail=str(exc)) from None
+        finally:
+            sim_lock.release()
+        audit.write(actor="app", action="simulate", subject="-", outcome="published",
+                    run=result["run"], events=len(result["events"]))
+        return result
 
     @api.post("/events")
     def events(req: EventsRequest) -> dict:

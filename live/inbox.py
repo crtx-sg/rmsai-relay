@@ -89,6 +89,7 @@ def build_event_message(
     source: str | None = None,
     truth: str | None = None,
     outcome: str | None = None,
+    run: str | None = None,
 ) -> dict:
     """Assemble a `type:"event"` worklist notification. Fails closed if `patient` isn't a pseudonym.
 
@@ -125,6 +126,7 @@ def build_event_message(
         "source": source,
         "truth": truth,
         "outcome": outcome,
+        "run": run,
         "status": status,
         "artifact_kinds": list(links.keys()),
         "links": links,

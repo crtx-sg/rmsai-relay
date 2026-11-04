@@ -119,6 +119,7 @@ def build_events_view(rows: list[dict], *, low_confidence_below: float | None = 
             "source": row_source(r) if demo else None, "source_label": row_source(r),
             "dataset": r.get("source_dataset"), "model_id": r.get("model_id"),
             "truth": r.get("ground_truth_condition"), "outcome": r.get("eval_outcome"),
+            "run": r.get("source_run"),
             "links": {k: {} for k in r.get("artifact_kinds") or []},
         })
     return out

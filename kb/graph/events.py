@@ -307,6 +307,7 @@ EVAL_FIELDS = (
     "alert_reason_code", "alert_basis", "why", "delivered_app", "delivered_call", "delivered_sms",
     "source_kind", "source_dataset", "source_record", "source_subject", "source_sample",
     "source_label", "source_label_method", "source_label_purity", "source_package", "source_split",
+    "source_run",
 )
 
 

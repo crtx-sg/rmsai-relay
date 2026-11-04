@@ -77,6 +77,7 @@ class Provenance(BaseModel):
     source_label: Optional[str] = None  # the dataset's own label, before mapping to a model class
     package: Optional[str] = None  # ecgpkg version the event was curated from
     split: Optional[str] = None  # train / val / test within that package
+    run: Optional[str] = None  # Simulate-tab run id (one click), e.g. "r3-1402-n10-fp20"
 
 
 class SignalWindow(BaseModel):

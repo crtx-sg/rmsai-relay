@@ -49,6 +49,8 @@ def _row_extras(trace: dict | None) -> dict:
         out["source"] = trace.get("source")
     if trace.get("truth"):
         out["truth"], out["outcome"] = trace["truth"], trace.get("outcome")
+    if trace.get("run"):
+        out["run"] = trace["run"]
     return out
 
 

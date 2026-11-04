@@ -267,6 +267,14 @@ services:
     <<: *app
     command: >
       python -m cli.gateway --host 0.0.0.0 --port ${GATEWAY_PORT:-8080}
+    # The Simulate tab draws held-out ECG from the ecg_sigma package (as `real-samples` does).
+    # Short syntax on purpose: a missing package dir only fails /simulate, not the gateway.
+    environment:
+      ECGPKG_DIR: /ecgpkg/${ECGPKG_NAME:-ecg_pkg_v2}
+    volumes:
+      - ..:/app
+      - hf_cache:/models/hf
+      - ${ECGPKG_HOST_DIR:-../../ecg_sigma/packages}:/ecgpkg:ro
     depends_on:
       redis:
         condition: service_healthy

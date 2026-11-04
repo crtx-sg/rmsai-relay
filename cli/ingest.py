@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     model_classes = getattr(model, "labels", None)
     # The alert gate exactly as cli.consume applies it (it forces outbound on), so the alert-level
     # metrics here predict what the consumer will dispatch.
-    from orchestrator.outbound_flow import should_call  # noqa: PLC0415
+    from orchestrator.outbound_flow import app_only, should_call  # noqa: PLC0415
 
     gate_config = replace(DEFAULT, outbound_enabled=True)
     n = 0
@@ -139,10 +139,12 @@ def main(argv: list[str] | None = None) -> int:
             event.window.ecg_plot_ref = render_ecg_strip(event.window, config=DEFAULT)
         n += 1
         truth = window.ground_truth.condition if window.ground_truth else None
-        would_alert, _ = should_call(event, gate_config)
+        would_alert, reason = should_call(event, gate_config)
         records.append(EvalRecord(event.event_type, truth, event.confidence, dispatched=would_alert))
         outcome = classify_outcome(event.event_type, truth, model_classes).code
-        extra = {"outcome": outcome}
+        # `call`: would this ring the phone (a vitals-only alert stays on the worklist)?
+        extra = {"outcome": outcome, "gate": reason.split(" ", 1)[0],
+                 "call": would_alert and not app_only(reason, gate_config)}
         if anchor == "now":
             extra["source_ts"] = source_ts  # the HDF5 event time, before re-anchoring
         if args.explain:

@@ -137,6 +137,7 @@ def _file_provenance(md: h5py.Group) -> dict:
         "subject": str(_opt(md, "ecgpkg_subject_id") or _opt(md, "subject_id") or "") or None,
         "package": str(_opt(md, "ecgpkg_version")) if _opt(md, "ecgpkg_version") else None,
         "split": str(_opt(md, "ecgpkg_split")) if _opt(md, "ecgpkg_split") else None,
+        "run": str(_opt(md, "simulate_run")) if _opt(md, "simulate_run") else None,
     }
 
 

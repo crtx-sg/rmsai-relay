@@ -95,6 +95,7 @@ def traceability_props(event: DeviceEvent, config: Config = DEFAULT) -> dict:
         "source_label_method": p.label_method if p else None,
         "source_label_purity": p.label_purity if p else None,
         "source_package": p.package if p else None, "source_split": p.split if p else None,
+        "source_run": p.run if p else None,
         "alert_gate": x["decision"]["dispatch"], "alert_reason_code": x["decision"]["reason_code"],
         "alert_reason": x["decision"]["reason"], "alert_basis": x["basis"],
         "why": x["headline"], "why_json": json.dumps(x, ensure_ascii=False),
