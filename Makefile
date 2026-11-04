@@ -184,9 +184,21 @@ phone-transcript:
 			--no-log-prefix voice-worker-phone 2>&1 | grep --line-buffered -E '$(TRANSCRIPT_RE)' \
 			| sed -u "s/^/[$$h] /" & done; wait
 
-# Pick up source edits (no rebuild needed — the repo is bind-mounted).
+# Pick up source edits (no rebuild needed — the repo is bind-mounted): the app services and phone
+# worker of h1 and, if it exists, h2. `up -d` (demo-phone-up) does not: it only recreates a container
+# whose compose settings changed. Refuses while a call is up (a restart mid-call leaves the phone
+# connected to a dead worker); FORCE=1 overrides.
+STACKS = infra $(shell docker compose ls -aq 2>/dev/null | grep -x infra-h2)
 docker-restart:
-	$(DOCKER_USER) $(COMPOSE) restart consumer voice-worker gateway
+	@for p in $(STACKS); do \
+		a=$$(docker compose -f infra/docker-compose.yml -p $$p exec -T redis redis-cli get rmsai:calls:active 2>/dev/null); \
+		[ -z "$$a" ] || { echo "$$p: call in progress (event $$a): restart after it ends, or FORCE=1"; \
+		[ -n "$(FORCE)" ] || exit 1; }; done
+	@for p in $(STACKS); do echo "restarting $$p"; \
+		docker compose -f infra/docker-compose.yml -p $$p --profile telephony restart \
+		consumer voice-worker voice-worker-phone gateway || exit 1; done
+	@./infra/demo-check.sh
+	@if echo "$(STACKS)" | grep -qw infra-h2; then $(H2_ENV) COMPOSE_PROJECT_NAME=infra-h2 ./infra/demo-check.sh; fi
 
 docker-logs:
 	$(COMPOSE) logs -f --tail=50 consumer voice-worker gateway

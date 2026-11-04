@@ -143,7 +143,7 @@ uv run pytest -q -m "not infra"
 | `make stores-check` | which backing stores are reachable, and what to run if one is down |
 | `make docker-build` | build the shared app image (`infra/Dockerfile`) |
 | `make docker-up` / `make docker-down` | start every default service / stop everything (including the `telephony` phone worker, and the h2 stack if it exists). `make demo-down` is the same as `docker-down` |
-| `make docker-restart` | restart the three app services to pick up source edits (no rebuild) |
+| `make docker-restart` | load source edits (no rebuild): restarts consumer, voice-worker, phone worker and gateway of h1 and, if it exists, h2, then health-checks both. Refuses while a call is in progress (`FORCE=1` overrides). `make demo-phone-up` does **not** reload code: it only recreates containers whose compose settings changed |
 | `make docker-logs` / `make docker-ps` | tail the app services / show container state |
 | `make docker-shell` | interactive shell in the app image with the repo mounted |
 | `make demo-up` / `make demo-check` | bring up every default service in dependency order and health-check it (the consumer stages WebRTC rooms: **no phone rings**) / re-run only the check |

@@ -20,7 +20,7 @@ make docker-logs      # tail the three app services
 ```
 
 The source is **bind-mounted**, so a code edit needs `make docker-restart` (consumer, voice-worker,
-gateway; for the phone worker: `make phone-down phone-up`), not a rebuild. The image
+phone worker and gateway, of h1 and h2; refused while a call is in progress), not a rebuild. The image
 carries only the environment: the venv with every extra, the vendored `ecgtranscnn`, and the spaCy
 model Presidio needs. `external/ecgtranscnn/` is gitignored but required at **build** time — clone it
 before the first `docker-build` (pin: `bac4a01`).
