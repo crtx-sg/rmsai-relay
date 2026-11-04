@@ -312,6 +312,10 @@ class OutboundHandler(OrchestratorHandler):
                   f"status=acknowledged (Neo4j updated)", flush=True)
             self._ended.add(session_id)
             return f"Thank you, I've recorded your acknowledgment of {self._this_event()}. Goodbye."
+        # The ack verb, but not a clean ack ("acknowledge this statement": STT misheard "event"):
+        # confirm back. It went to Q&A, which answered with a ward-wide list (live 2026-11-04).
+        if command:
+            return f"Do you want to acknowledge {self._this_event()}? Say acknowledge to close it."
         # A short "no" / "that's not correct" (an answer to the alert or the confirm-back, not a
         # question): say the alert stays open, instead of "I don't have that patient information".
         if is_plain_no(text):

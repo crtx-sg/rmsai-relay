@@ -205,6 +205,35 @@ def is_barge_in(text: str) -> bool:
     return bool(_BARGE_IN_WORD.match(text or ""))
 
 
+def drop_and_redial(event_id: str, *, mark_dropped, delete_room, answered) -> None:
+    """Hang up a broken event call; have the consumer ring it again if it had been answered."""
+    if not answered():
+        # Still ringing, or not confirmed yet: the consumer's retry policy already counts this
+        # attempt as missed. A redial flag on top rang a whole new round after the SMS (2026-10-29).
+        asyncio.ensure_future(delete_room())
+        return
+    try:
+        mark_dropped(event_id)
+    except Exception as exc:  # noqa: BLE001 - still hang up: silence is the worse outcome
+        print(f"[worker] could not mark {event_id} for a redial: {type(exc).__name__}", flush=True)
+    asyncio.ensure_future(delete_room())
+
+
+def redial_on_session_error(session, handler, room_name: str, *, mark_dropped, delete_room) -> None:
+    """An agent session that dies on an error (STT/TTS unreachable: a DNS blip, live 2026-11-04)
+    leaves the caller on a line that can neither hear nor speak, and the event answered but open.
+    End the call and ring it again, unless the alert was already acknowledged."""
+    def _closed(ev) -> None:
+        if getattr(ev, "reason", None) != "error" or handler.is_ended(room_name):
+            return
+        print(f"[worker] agent session failed ({type(getattr(ev, 'error', None)).__name__}) -> "
+              f"ending {room_name} so the event is rung again", flush=True)
+        drop_and_redial(handler.alert.event_id, mark_dropped=mark_dropped, delete_room=delete_room,
+                        answered=lambda: handler.is_authenticated(room_name))
+
+    session.on("close", _closed)
+
+
 def end_call_on_reconnect(room, event_id: str, *, mark_dropped, delete_room,
                           answered=lambda: True) -> None:
     """Hang up an event call once LiveKit has reconnected, and have the consumer ring it again.
@@ -218,17 +247,8 @@ def end_call_on_reconnect(room, event_id: str, *, mark_dropped, delete_room,
     def _reconnected() -> None:
         print(f"[worker] LiveKit reconnected mid-call; our audio no longer reaches the caller -> "
               f"ending {room.name} so the event is rung again", flush=True)
-        if not answered():
-            # Still ringing, or no PIN yet: the consumer's retry policy already counts this attempt
-            # as missed. A redial flag on top rang a whole new round after the SMS (live 2026-10-29).
-            asyncio.ensure_future(delete_room())
-            return
-        try:
-            mark_dropped(event_id)
-        except Exception as exc:  # noqa: BLE001 - still hang up: silence is the worse outcome
-            print(f"[worker] could not mark {event_id} for a redial: {type(exc).__name__}",
-                  flush=True)
-        asyncio.ensure_future(delete_room())
+        drop_and_redial(event_id, mark_dropped=mark_dropped, delete_room=delete_room,
+                        answered=answered)
 
     room.on("reconnecting", lambda: print("[worker] LiveKit connection lost mid-call; reconnecting",
                                           flush=True))
@@ -886,6 +906,12 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
             }),
         ),
     )
+    if not is_inbox and alert_store is not None and getattr(handler, "alert", None) is not None:
+        from orchestrator.call_queue import CallQueue  # noqa: PLC0415
+
+        redial_on_session_error(session, handler, ctx.room.name,
+                                mark_dropped=CallQueue(alert_store.redis).mark_dropped,
+                                delete_room=ctx.delete_room)
     latency = TurnLatency(emit=lambda line: print(line, flush=True))
     session.on("metrics_collected", lambda ev: latency.on_metrics(getattr(ev, "metrics", None)))
     # The caller speaking proves the call is answered (fallback for the greeting gate).
