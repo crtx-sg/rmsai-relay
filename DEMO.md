@@ -486,6 +486,13 @@ make docker-down      # stops everything, h2 included; named volumes (neo4j/qdra
   the current *level* separately, so a steady RR of 25 can add MEWS points while its trend is flat.
   The simulated Diastolic BP (35–49 mmHg) sits below the normal range for nearly every patient, so
   a 10 mmHg drift in it is flagged; that is the data, not the policy.
+- **The Simulate tab's false positives are real, clean normal rhythms, not artifact.** Every sample,
+  FPs included, is a real recording from ecg_sigma's held-out test split (nothing comes from the
+  simulator). An FP is a strict `NORMAL_SINUS` window (only normal beats) presented as if the device
+  had alarmed. Real ICU false alarms mostly come from noise, motion artifact or a lead coming off,
+  which can look like VT or asystole. So the "false positives filtered" rate measures *recognising
+  a normal rhythm*, not *rejecting artifact*. FPs that ring "because of the patient's vitals" ring
+  on vitals ecg_sigma invented ("Only the ECG and HR are real", above), not on the rhythm.
 - **Never use the train split for numbers.** For example, MIT-BIH record 105 scores 0.780, but it
   is in ecgpkg v2's *train* split. `pick` defaults to `test` for this reason.
 - **The data is public, de-identified research data** (PhysioNet). It is still pseudonymized
