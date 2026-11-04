@@ -201,12 +201,20 @@ class OutboundHandler(OrchestratorHandler):
     """
 
     def __init__(self, orchestrator, working_memory, alert: OutboundAlert, *, driver=None,
-                 on_answered=None, on_locked=None, require_pin: bool = True, **kwargs) -> None:
+                 on_answered=None, on_locked=None, require_pin: bool = True,
+                 language: str = "en", **kwargs) -> None:
         super().__init__(orchestrator, working_memory, **kwargs)
         self.alert = alert
         # False: a spoken "yes" replaces the PIN (outbound.require_pin). Still fail-closed: nothing
         # about the patient is voiced before it, and "answered" (no redial) means confirmed.
         self.require_pin = require_pin
+        # "ja": greeting + "say yes" prompt in Japanese (the alert text is already in its language).
+        self._prompt = _PROMPT_CONFIRM
+        self._intro = "Remote clinical line with a patient alert. "
+        if language == "ja":
+            from orchestrator.report import JA_GREETING, JA_PROMPT_CONFIRM  # noqa: PLC0415
+
+            self._prompt, self._intro = JA_PROMPT_CONFIRM, JA_GREETING
         self.driver = driver
         # Called with the event id once the PIN passes, so a consumer crash doesn't re-ring
         # (`CallQueue.mark_answered`).
@@ -215,8 +223,7 @@ class OutboundHandler(OrchestratorHandler):
         self._on_locked_cb = on_locked
 
     def greeting(self) -> str:
-        return super().greeting() if self.require_pin else \
-            f"Remote clinical line with a patient alert. {_PROMPT_CONFIRM}"
+        return super().greeting() if self.require_pin else self._intro + self._prompt
 
     def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
         if self.require_pin or self.working.get_or_create(session_id).authenticated:
@@ -227,7 +234,7 @@ class OutboundHandler(OrchestratorHandler):
                              subject=session_id, outcome="success")
             print(f"[voice] spoken confirmation accepted for session {session_id}", flush=True)
             return self._on_authenticated(session_id)
-        return "" if spoken and is_filler(text) else _PROMPT_CONFIRM
+        return "" if spoken and is_filler(text) else self._prompt
 
     def _on_locked(self, session_id: str) -> None:
         if self._on_locked_cb is not None:
@@ -463,7 +470,8 @@ def build_outbound_handler(
 
     orch, driver = build_orchestrator(embedder=embedder, llm=llm)
     handler = OutboundHandler(orch, orch.working, alert, driver=driver, on_answered=on_answered,
-                              on_locked=on_locked, require_pin=DEFAULT.outbound_require_pin)
+                              on_locked=on_locked, require_pin=DEFAULT.outbound_require_pin,
+                              language=DEFAULT.outbound_alert_language)
     return handler, handler.greeting(), driver.close
 
 

@@ -165,6 +165,14 @@ def test_outbound_handler_pin_then_alert_then_followup(tmp_path):
     assert orch.calls == [("room1", "what were the vitals")]
 
 
+def test_japanese_prompt_still_confirms_on_an_english_yes(tmp_path):
+    working, orch = _FakeWorking(), _FakeOrch()
+    h, alert = _handler(tmp_path, working, orch, require_pin=False, language="ja")
+    assert h.greeting().startswith("患者アラート") and "「yes」" in h.greeting()
+    assert h.respond("hello", session_id="room1") == h.greeting().split("。", 1)[1]
+    assert h.respond("yes", session_id="room1") == alert.spoken_alert
+
+
 def test_outbound_handler_ack_sets_event_status(tmp_path, monkeypatch):
     import kb.graph.events as events
 

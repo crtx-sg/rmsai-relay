@@ -60,6 +60,8 @@ def _spoken_mews(mews) -> str:
 
 def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config = DEFAULT) -> str:
     """A concise spoken alert for the outbound call (the full markdown is for the chart/vector)."""
+    if config.outbound_alert_language == "ja":
+        return spoken_report_ja(event, bed=bed, config=config)
     w = event.window
     a = event.analysis
     crit = event_criticality(event, config)
@@ -91,6 +93,58 @@ def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config 
         f"{crit} criticality, {_spoken_mews(a.mews)}, "
         f"confidence {event.confidence:.0%}.{guidance_txt}{override_txt}"
     )
+
+
+# Japanese alert (outbound.alert_language: ja). Fixed templates over structured fields only, so no
+# machine translation and no LLM; the caller still answers in English (STT stays English).
+_JA_EVENT = {
+    "NORMAL_SINUS": "正常洞調律", "SINUS_BRADYCARDIA": "洞性徐脈", "SINUS_TACHYCARDIA": "洞性頻脈",
+    "ATRIAL_FIBRILLATION": "心房細動", "ATRIAL_FLUTTER": "心房粗動", "PAC": "心房期外収縮",
+    "SVT": "上室性頻拍", "PVC": "心室期外収縮", "VENTRICULAR_TACHYCARDIA": "心室頻拍",
+    "VENTRICULAR_FIBRILLATION": "心室細動", "LBBB": "左脚ブロック", "RBBB": "右脚ブロック",
+    "AV_BLOCK_1": "1度房室ブロック", "AV_BLOCK_2_TYPE1": "2度房室ブロック、ウェンケバッハ型",
+    "AV_BLOCK_2_TYPE2": "2度房室ブロック、モビッツ2型", "ST_ELEVATION": "ST上昇",
+}
+_JA_LEVEL = {"Critical": "重大", "High": "高", "Medium": "中", "Low": "低"}
+JA_GREETING = "患者アラートのお知らせです。"
+JA_PROMPT_CONFIRM = "アラートを聞くには、英語で「yes」と言ってください。"
+# Call only (not the SMS fallback): the caller is heard in English.
+JA_ACK_HINT = "確認する場合は、英語で「acknowledge」と言ってください。"
+
+
+def _ja_why(why: str) -> str:
+    """`common.criticality.vitals_override` reasons in Japanese (unknown ones pass through)."""
+    m = re.fullmatch(r"MEWS (\d+) >= threshold (\d+)", why or "")
+    if m:
+        return f"MEWSスコア{m.group(1)}、基準値{m.group(2)}以上"
+    return {"vitals deteriorating": "バイタルサインの悪化"}.get(why, why)
+
+
+def spoken_report_ja(event: DeviceEvent, *, bed: str | None = None,
+                     config: Config = DEFAULT) -> str:
+    """`spoken_report` in Japanese: same facts and the same rhythm-vs-vitals wording rule. Care
+    guidance (free English text) is left out; the clinician can ask for it in English."""
+    w, a = event.window, event.analysis
+    m = re.search(r"Bed0*(\d+)$", str(bed or ""))
+    where = f"、{m.group(1)}番ベッド" if m else ""
+    name = _JA_EVENT.get(event.event_type, spoken_event(event.event_type))
+    crit = event_criticality(event, config)
+    mews = (f"MEWSスコアは{a.mews.score}、リスク{_JA_LEVEL.get(a.mews.risk, a.mews.risk)}"
+            if a.mews.score is not None else "MEWSは算出できません")
+    pct = f"{event.confidence:.0%}".rstrip("%")
+    basis, why = alert_basis(event, config)
+    if basis == "vitals" and event.event_type == config.criticality_normal_event:
+        lead, note = f"{name}を検出しました", (
+            f"心電図のリズムは正常洞調律と判定されています。このアラートはリズムではなく、"
+            f"患者のバイタルサイン（{_ja_why(why)}）によるものです。")
+    elif basis == "vitals":
+        lead, note = f"{name}の可能性があります", (
+            f"このアラートは患者のバイタルサイン（{_ja_why(why)}）によるものです。心電図は{name}を"
+            f"示唆していますが、信頼度が{pct}パーセントのため、リズムは未確定として扱ってください。")
+    else:
+        lead, note = f"{name}を検出しました", ""
+    return (f"患者{w.patient_ref}{where}のアラートです。{lead}。"
+            f"緊急度は{_JA_LEVEL.get(crit, crit)}、{mews}、信頼度は{pct}パーセントです。{note}")
 
 
 def report_summary(event: DeviceEvent) -> str:

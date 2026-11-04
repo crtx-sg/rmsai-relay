@@ -52,6 +52,8 @@ x-stack-env: &stack-env
   LIVEKIT_SIP_AGENT_NAME:
   AUDIT_LOG_PATH:
   SIMULATE_TARGETS:
+  ELEVENLABS_VOICE_ID:
+  ELEVENLABS_TTS_MODEL:
 
 # Shared definition for the application services: same image, same mounts, same user.
 x-app: &app

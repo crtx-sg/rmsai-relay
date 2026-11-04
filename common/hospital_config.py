@@ -43,12 +43,14 @@ SETTINGS: dict[str, tuple[str, str, str]] = {
     "outbound_max_retries": ("outbound", "max_retries", "OUTBOUND_MAX_RETRIES"),
     "outbound_retry_delay_s": ("outbound", "retry_delay_s", "OUTBOUND_RETRY_DELAY_S"),
     "outbound_require_pin": ("outbound", "require_pin", "OUTBOUND_REQUIRE_PIN"),
+    "outbound_alert_language": ("outbound", "alert_language", "OUTBOUND_ALERT_LANGUAGE"),
     "sip_inbound_allowed_numbers":
         ("outbound", "inbound_allowed_numbers", "SIP_INBOUND_ALLOWED_NUMBERS"),
 }
 
 _LEVELS = ("Low", "Medium", "High", "Critical")
 _DISPATCH = ("app", "call", "app+call")
+_LANGUAGES = ("en", "ja")
 _PHONE = re.compile(r"^\+[1-9]\d{6,14}$")  # E.164
 
 
@@ -117,6 +119,8 @@ def _validate(raw: dict, source: str) -> None:
         bad("outbound.min_arrhythmia_confidence must be between 0 and 1")
     if out["dispatch_mode"] not in _DISPATCH:
         bad(f"outbound.dispatch_mode must be one of {', '.join(_DISPATCH)}")
+    if out["alert_language"] not in _LANGUAGES:
+        bad(f"outbound.alert_language must be one of {', '.join(_LANGUAGES)}")
     if out["min_criticality"] not in _LEVELS:
         bad(f"outbound.min_criticality must be one of {', '.join(_LEVELS)}")
     numbers = [("outbound.call_number", out["call_number"]), ("outbound.from", out["from"])]

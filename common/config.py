@@ -115,6 +115,9 @@ class Config:
     # Outbound calls: the clinician enters the PIN before the alert (True), or just says "yes" (False).
     # Either way the alert is spoken only after a live answer, so voicemail never hears it.
     outbound_require_pin: bool = False
+    # Language of the spoken alert and the "say yes" prompt: "en" or "ja". The caller is still
+    # heard in English (STT_LANGUAGE) and follow-up answers stay English.
+    outbound_alert_language: str = "en"
 
     # Dispatch surface for a critical event (Phase 9). The criticality gate is unchanged; this
     # only chooses where a critical event is delivered:
@@ -354,6 +357,8 @@ class Config:
             outbound_max_retries=_i("OUTBOUND_MAX_RETRIES", H["outbound_max_retries"]),
             outbound_retry_delay_s=_i("OUTBOUND_RETRY_DELAY_S", H["outbound_retry_delay_s"]),
             outbound_require_pin=_b("OUTBOUND_REQUIRE_PIN", H["outbound_require_pin"]),
+            outbound_alert_language=os.environ.get("OUTBOUND_ALERT_LANGUAGE",
+                                                   H["outbound_alert_language"]),
             dispatch_mode=os.environ.get("DISPATCH_MODE", H["dispatch_mode"]),
             hospital_id=hospital_id,
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),

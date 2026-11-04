@@ -176,6 +176,24 @@ def test_fp_override_spoken_report_explains_the_case():
     assert "High criticality" in txt and "driven by the patient's vitals" in txt
 
 
+def test_japanese_alert_keeps_the_rhythm_vs_vitals_rule():
+    from orchestrator.report import spoken_report
+
+    ja = replace(_CFG, outbound_alert_language="ja")
+    fp = spoken_report(_fp_event(deteriorating=True), bed="Unit1-Bed05", config=ja)
+    # same facts as the English alert, in Japanese; the reply instruction says to answer in English
+    import re
+
+    assert re.match(r"患者PT\d+、5番ベッドのアラートです。", fp) and "、、" not in fp
+    assert "正常洞調律と判定" in fp and "バイタルサインの悪化" in fp and "緊急度は高" in fp
+    assert "acknowledge" not in fp  # the call adds that instruction; the SMS must not carry it
+    no_bed = spoken_report(_fp_event(deteriorating=True), config=ja)
+    assert re.match(r"患者PT\d+のアラートです。", no_bed)
+    assert "Detected" not in fp and "criticality" not in fp
+    # en stays the default
+    assert spoken_report(_fp_event(deteriorating=True), bed="ICU/1", config=_CFG).startswith("Alert")
+
+
 # --- full loop over live backends ---
 
 

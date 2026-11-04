@@ -31,7 +31,7 @@ from orchestrator.outbound_flow import (
     OutboundResult, app_only, run_outbound, run_text_notify, should_call,
 )
 from orchestrator.patient_bootstrap import ensure_patient
-from orchestrator.report import spoken_report
+from orchestrator.report import JA_ACK_HINT, spoken_report
 from voice.outbound import CallOutcome
 from voice.outbound_alert import OutboundAlert
 
@@ -292,7 +292,8 @@ def _place_live_call(
     room = f"rmsai-outbound-{w.event_id}"
     alert = OutboundAlert(
         session_id=room, patient_ref=w.patient_ref, event_id=w.event_id,
-        spoken_alert=spoken_report(event, bed=bed_label, config=config), bed=bed_label,
+        spoken_alert=spoken_report(event, bed=bed_label, config=config)
+        + (JA_ACK_HINT if config.outbound_alert_language == "ja" else ""), bed=bed_label,
         event_type=event.event_type,
     )
     alert_store.put(alert)

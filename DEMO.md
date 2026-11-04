@@ -307,6 +307,10 @@ events: `make h2-kb`. The Simulate tab (either app) then splits each run by pati
 hospitals and publishes both shares at once, so both phones ring together. `HOSPITALS=h1 make
 demo-phone-up` runs h1 alone; `make docker-down` stops both.
 
+h2 speaks its alert in **Japanese** (`outbound.alert_language: ja` in `h2.yaml`; voice Sakura via
+`infra/h2.env`): "say yes" prompt and alert in Japanese, then the clinician answers in English
+("yes", "acknowledge", follow-up questions), and follow-up answers are in English.
+
 ### Publish to the bus
 
 ```bash
