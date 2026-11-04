@@ -492,6 +492,15 @@ Expect (with `dispatch_mode` including `call`; this uses the simulated caller): 
 (e.g. AFib/High) persisted + called + acknowledged; a confident NORMAL_SINUS persisted but skipped
 (`false_positive`), unless the vitals trigger `fp_override (…)`, which is common on simulator data.
 
+### Two hospitals + Simulate (demo)
+
+With both stacks up (`make demo-phone-up` and `config/hospitals/h2.yaml`, ideally with h2's own
+`call_number`): in h1's app (:8080) open **Simulate**, run 4 samples at 0 % FP, and follow both
+calls with `make phone-transcript HOSPITAL=all`. Expect each hospital's events on its own app
+(:8080 / :8090), both phones ringing at once, h2 greeting and alerting in Japanese, a spoken "yes"
+playing the alert on each, and the run under its `Run …` bar plus in **All runs**. With one phone for
+both, the second dial gets SIP `408` while the first call is up and is redialled (seen 2026-11-04).
+
 ### Other CLI harnesses (per-subsystem)
 
 ```bash
@@ -499,6 +508,7 @@ uv run python -m cli.gen_synthetic ...     # synthetic signal/event generation
 uv run python -m cli.kb_vector index --dir docs/   # index the clinical corpus (vector)
 uv run python -m cli.kb_upload --dir protocols/    # add SOPs/guidelines/checklists (PDF + markdown)
 uv run python -m cli.real_samples pick --pick ...  # held-out real-ECG events from ecg_sigma -> data/real
+uv run python -m cli.simulate --samples 10 --fp-percent 20 --dry-run  # Simulate tab engine: score only, publish nothing
 uv run python -m cli.kb_route --llm "..."  # which path a question takes (regex / LLM / documents)
 uv run python -m cli.call --caller livekit # ring the on-call number on demand (no event needed)
 uv run python -m cli.inbox_probe --ptt     # probe in-app chat/PTT without the browser
@@ -513,7 +523,7 @@ uv run python -m cli.text_chat             # inbound query by text (PIN-gated, K
 uv run python -m cli.voice                 # offline typed-text voice demo (no audio hardware)
 uv run python -m cli.consume --help        # bus consumer: --channel/--caller/--transport/--notifier/--number
 uv run python -m cli.outbound --file <f>.h5  # single-file outbound loop (--no-answer, --fail-delivery, --notifier)
-uv run python -m cli.gateway               # companion-app gateway (serves app/, /session, /ack, /events, /event-info, /metrics, /artifact*)
+uv run python -m cli.gateway               # companion-app gateway (serves app/, /session, /ack, /events, /event-info, /metrics, /simulate*, /artifact*)
 uv run python -m cli.inbox_publish --dry-run   # print a worklist message + token roundtrip (drop --dry-run to push it)
 uv run python -m cli.voice_worker dev      # agent worker; VOICE_WORKER_ROLE=phone for the phone worker
 uv run python -m cli.livekit_token --room <r>  # join token for a room (playground testing)

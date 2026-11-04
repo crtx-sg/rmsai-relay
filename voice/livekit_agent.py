@@ -561,10 +561,10 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                                  push_to_talk=self._push_to_talk)
             text = join_carried(self._carry, raw, time.monotonic()) if carry_ok else raw
             self._carry = None
-            # Before the PIN the turn may BE the PIN (spoken or keyed): never log it (rule 5). An
-            # outbound call without a PIN (outbound.require_pin: false) waits for "yes": loggable.
-            pin_gate = getattr(self._handler, "require_pin", True)
-            if (is_auth and is_auth(self._session_id)) or not pin_gate:
+            # Before the PIN the turn may BE the PIN (spoken or keyed), or a voicemail greeting with
+            # names: never log it (rule 5). Only a bare "yes" (outbound.require_pin: false) is.
+            confirm = getattr(self._handler, "is_confirmation", None)
+            if (is_auth and is_auth(self._session_id)) or (confirm and confirm(text)):
                 print(f"[worker] heard: {text!r}", flush=True)
             else:
                 print(f"[worker] heard: ({len(text)} chars, before the PIN)", flush=True)

@@ -42,6 +42,7 @@ CALL_CLASSES = ("ATRIAL_FIBRILLATION", "ATRIAL_FLUTTER", "SVT",
 FP_CLASS = "NORMAL_SINUS"
 MAX_SAMPLES = 10  # one click rings the phone up to this many times; SVT has only 25 test windows
 OUT_DIR = "data/simulate"  # + /<this hospital>/<target hospital>/
+HISTORY = "data/simulate/runs.jsonl"  # one line per published run (the Simulate tab's history)
 _RUN_COUNTER = "rmsai:simulate:runs"
 _DEFAULT_PACKAGE = "../ecg_sigma/packages/ecg_pkg_v2"
 
@@ -103,16 +104,26 @@ def hospital_for(patient: str, hospitals: list[str]) -> str:
 def _next_run_number(redis_url: str) -> int:
     import redis  # noqa: PLC0415
 
-    return int(redis.Redis.from_url(redis_url).incr(_RUN_COUNTER))
+    try:
+        return int(redis.Redis.from_url(redis_url).incr(_RUN_COUNTER))
+    except redis.RedisError as exc:
+        raise RuntimeError(f"run counter (Redis {redis_url}): {type(exc).__name__}") from None
 
 
 def _ingest(out_dir: str, redis_url: str, hospital: str, emit: str = "bus") -> list[dict]:
     """Run `cli.ingest --emit <emit>` on one hospital's files; return its per-event JSON lines.
     Scored with that hospital's policy (HOSPITAL_ID), not the policy of the app that ran it."""
-    env = {**os.environ, "HOSPITAL_ID": hospital} if hospital != "default" else None
-    proc = subprocess.run([sys.executable, "-m", "cli.ingest", "--dir", out_dir, "--emit", emit,
-                           "--redis-url", redis_url],
-                          capture_output=True, text=True, timeout=600, check=False, env=env)
+    env = None
+    if hospital != "default":
+        env = {**os.environ, "HOSPITAL_ID": hospital}
+        if hospital != DEFAULT.hospital_id:  # its events are audited in its own log, not ours
+            env["AUDIT_LOG_PATH"] = f"data/audit-{hospital}.jsonl"
+    try:
+        proc = subprocess.run([sys.executable, "-m", "cli.ingest", "--dir", out_dir, "--emit", emit,
+                               "--redis-url", redis_url],
+                              capture_output=True, text=True, timeout=600, check=False, env=env)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"cli.ingest for {hospital} timed out") from None
     if proc.returncode != 0:
         raise RuntimeError(f"cli.ingest failed ({proc.returncode}): {proc.stderr.strip()[-400:]}")
     lines = []
@@ -173,15 +184,59 @@ def run(samples: int, fp_percent: int, *, seed: int | None = None, package: str 
     for f in files:
         f.rename(out / hospital_for(patient_of[f.name], list(buses)) / f.name)
     shares = [h for h in buses if any((out / h).glob("*.h5"))]
+    def _one(h):  # an exception per hospital: one stack failing must not hide the other's calls
+        try:
+            return ingest(str(out / h), buses[h], h), None
+        except Exception as exc:  # noqa: BLE001 - reported per hospital below
+            return [], f"{type(exc).__name__}: {exc}"[:300]
+
     with ThreadPoolExecutor(max_workers=len(shares) or 1) as pool:
-        results = list(pool.map(lambda h: ingest(str(out / h), buses[h], h), shares))
-    events = [{**e, "hospital": h} for h, lines in zip(shares, results) for e in lines]
-    return {"run": run_id, "seed": seed, "pick": pick, "package": pkg.version,
+        results = list(pool.map(_one, shares))
+    errors = {h: err for h, (_, err) in zip(shares, results) if err}
+    if errors and len(errors) == len(shares):
+        raise RuntimeError("; ".join(f"{h}: {e}" for h, e in errors.items()))
+    events = [{**e, "hospital": h} for h, (lines, _) in zip(shares, results) for e in lines]
+    return {"run": run_id, "seed": seed, "pick": pick, "package": pkg.version, "errors": errors,
             "shortfall": {k: list(v) for k, v in sel.shortfall.items()},
             "events": [{k: e.get(k) for k in ("hospital", "patient", "event_type", "ground_truth",
                                               "confidence", "outcome", "gate", "call")}
                        for e in events],
             "summary": tally(events)}
+
+
+def record(result: dict, path: str | Path = HISTORY) -> None:
+    """Append one published run to the history (gate decisions; delivery is per hospital)."""
+    line = {"run": result["run"], "ts": time.time(), "seed": result.get("seed"),
+            "package": result.get("package"), "pick": result.get("pick"),
+            "hospitals": dict(Counter(e.get("hospital") or "-" for e in result["events"])),
+            "summary": result["summary"], "errors": result.get("errors") or {}}
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+
+def history(path: str | Path = HISTORY) -> dict:
+    """Every recorded run (newest first), the summed tiles and two rates with Wilson 95 % intervals:
+    arrhythmias the gate rang, and false positives it filtered. A bad line is skipped."""
+    from inference.metrics import wilson  # noqa: PLC0415
+
+    runs = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for raw in fh:
+                try:
+                    runs.append(json.loads(raw))
+                except ValueError:
+                    continue
+    except FileNotFoundError:
+        pass
+    totals = Counter()
+    for r in runs:
+        totals.update({k: v for k, v in (r.get("summary") or {}).items() if isinstance(v, int)})
+    fps = totals["fp_suppressed"] + totals["fp_called_model"] + totals["fp_called_vitals"]
+    return {"runs": runs[::-1], "totals": dict(totals),
+            "rates": {"rang": wilson(totals["tp_calls"], totals["expected_calls"]),
+                      "fp_filtered": wilson(totals["fp_suppressed"], fps)}}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -195,12 +250,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="classify and score only: publish nothing (no worklist, no calls)")
     args = parser.parse_args(argv)
     ingest = (lambda d, url, h: _ingest(d, url, h, "stdout")) if args.dry_run else _ingest
-    try:
+    try:  # a dry run publishes nothing, so it takes no run number (and needs no Redis)
         result = run(args.samples, args.fp_percent, seed=args.seed, package=args.package,
-                     ingest=ingest)
+                     ingest=ingest, run_number=(lambda: 0) if args.dry_run else None)
     except (ValueError, RuntimeError) as exc:
         print(f"[simulate] {exc}", file=sys.stderr)
         return 2
+    if not args.dry_run:
+        record(result)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

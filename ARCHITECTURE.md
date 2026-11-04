@@ -56,7 +56,7 @@ knowledge lives in Neo4j/Qdrant — so the pipelines are **partially** decoupled
   HDF5 file / MQTT                                     caller audio ─► STT ─► text
         │  ingest/                                            │ (Whisper or ElevenLabs)
         ▼                                                     ▼  VAD (Silero) marks end-of-speech
-  SignalWindow (ECG + vitals + history)                PIN gate (no PHI until authenticated)
+  SignalWindow (ECG + vitals + history)                "yes" / PIN gate (no PHI before it)
         │                                                     │
         ▼  inference/                                         ▼
   ECG model .predict() ─► (event_type, confidence)     Handler  ("the LLM node", but really…)
@@ -183,8 +183,8 @@ version of this flow, with the measured per-vital numbers behind the override, i
 
 If the gate passes, the consumer dispatches per `DISPATCH_MODE`: it pushes the event to the
 **companion app** worklist (`app`), and/or places a **LiveKit** outbound call (SIP phone or WebRTC
-room) or sends an SMS (`call`). If a voice call goes unanswered after its retries (a pickup where no
-PIN is entered counts as unanswered) and a notifier is
+room) or sends an SMS (`call`). If a voice call goes unanswered after its retries (a pickup with no
+spoken "yes" — or no PIN, with `require_pin: true` — counts as unanswered) and a notifier is
 configured (`--notifier signalwire`; `simulated` sends nothing and records `sms_simulated`), the alert is texted instead
 (`run_outbound(fallback_notifier=)`): delivered keeps the event `reported`, otherwise it is
 `notify_failed`. A PIN lockout is not retried and not texted. SIP dials go to the telephony LiveKit (`Config.telephony()`; see *Telephony split*
@@ -280,9 +280,12 @@ LiveKit (LiveKit Cloud), reached through the carrier, a native SignalWire SIP tr
    (default 30 s) of the last one, unless `AUDIO_WAKE_REQUIRED=false`. The companion app's
    push-to-talk bypasses this. A short piece that ends mid-phrase ("What was the…") is held and
    joined to the next one, as is a piece whose answer was cut off before any of it was heard.
-5. **PIN gate**: no patient data is spoken until the caller authenticates (fail-closed). On phone
-   rooms the PIN can also be keyed: 4 digits or `#` submits, `*` starts over (`collect_dtmf`; the
-   digits are never logged). Transcripts with no Latin letter or digit (background speech in another
+5. **Confirmation gate**: no patient data is spoken until the caller confirms (fail-closed). An
+   outbound call asks for a short spoken **"yes"** (`outbound.require_pin: false`, the default): at
+   most four words, not a question, so a voicemail greeting never plays the alert, and that "yes" is
+   what marks the call answered (no redial, no SMS). Call-in, the app and `require_pin: true` use the
+   shared **PIN**; on phone rooms it can also be keyed: 4 digits or `#` submits, `*` starts over
+   (`collect_dtmf`; the digits are never logged, and nothing said before the PIN is). Transcripts with no Latin letter or digit (background speech in another
    script) are treated as noise.
 6. **The Handler is "the LLM node" — but it is not an LLM.** LiveKit's `AgentSession` pipeline
    expects an LLM step; a **stub LLM** satisfies that gate, but `llm_node` is overridden to call our
@@ -442,7 +445,7 @@ dispatch after a restart — the auto-redispatch / `cli.dispatch` that closes th
 On joining, `_entrypoint` reads the room name and picks the Handler:
 - `rmsai-inbox-*` → `InboxHandler` (companion app: push-to-talk, selection-scoped Q&A, speak-on-select);
 - an outbound event room with a staged `OutboundAlert` in **Redis** → `OutboundHandler` (speaks that
-  event's alert after the PIN, then Q&A + acknowledge);
+  event's alert after the "yes" (or PIN), then Q&A + acknowledge);
 - otherwise → inbound KB Q&A. This is what `rmsai-call-*` phone rooms get: no staged alert ⇒ the
   PIN-gated Q&A handler.
 
@@ -601,15 +604,15 @@ sequenceDiagram
     P-->>SW: answers
     SW-->>LK: 200 OK (only now: answer_on_bridge)
     LK-->>C: participant created → connected
-    W->>P: PIN prompt → spoken alert → grounded Q&A (wake word) → "acknowledge" → status acknowledged
+    W->>P: "say yes" (or PIN) prompt → spoken alert → grounded Q&A (wake word) → "acknowledge" → status acknowledged
     P-->>LK: hangs up, room closes
     LK-->>C: call ended
-    C->>C: PIN accepted or locked out? (Redis flags) yes → ANSWERED, no → NO_ANSWER (retry)
+    C->>C: confirmed (yes/PIN) or locked out? (Redis flags) yes → ANSWERED, no → NO_ANSWER (retry)
     C->>C: dispatcher pops the next queued call
 ```
 
 On failure, `CreateSIPParticipant` raises: a ring timeout, busy, or any SIP error such as
-`603 Decline` all map to **NO_ANSWER**, and so does a call that connects but ends with no PIN entered
+`603 Decline` all map to **NO_ANSWER**, and so does a call that connects but ends unconfirmed (no "yes", or no PIN)
 (a decline after pickup, or the carrier's voicemail): `_PinGatedCaller` waits for the hang-up, then
 reads the worker's flags (`rmsai:calls:answered|locked:<event_id>`). A PIN lockout counts as answered:
 no retry, no SMS. `place_with_retries` re-dials `OUTBOUND_MAX_RETRIES` times, each into a fresh room
@@ -647,6 +650,43 @@ sequenceDiagram
   verified (2026-10-13). The SMS fallback sends through
   SignalWire, from the number that rang (a test SMS to +91 was delivered on 2026-10-13).
 - **Set-up:** [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md) (SignalWire) and its "Phone calls" section.
+
+### Two hospitals and the Simulate console
+
+Each hospital is a **whole stack** (compose project; h1 = `infra`, h2 = `infra-h2` with
+`infra/h2.env`): its own Redis (bus, call queue, call slot), Neo4j, Qdrant, consumer, workers and
+app. Only the local LiveKit, the model server and the model cache are shared. Nothing about one
+site's patients can reach the other's graph, and each site has its own call slot, so h1 and h2 ring
+their own numbers **in parallel** (each still one call at a time, most severe first).
+
+```
+                ┌ h1 (infra) ───────────────────────────┐   ┌ h2 (infra-h2) ─────────────────────────┐
+ Simulate (h1 ──┤ redis:6379 → consumer → call queue ─────┼─┐ │ redis:6380 → consumer → call queue      │
+ app = console) │ neo4j:7687 · qdrant:6333 · app :8080    │ │ │ neo4j:7688 · qdrant:6335 · app :8090    │
+ split by       │ phone agent rmsai-agent-phone           │ │ │ phone agent rmsai-agent-phone-h2        │
+ patient hash ──┤ alert en                                │ │ │ alert ja (Sakura), caller heard in en   │
+                └─────────────────────────────────────────┘ │ └─────────────────────────────────────────┘
+                     shared: local LiveKit · model server · hf_cache · LiveKit Cloud project (SIP)
+```
+
+- **Per-stack settings** pass through compose only when set (`x-stack-env`); unset, the app's own
+  `/app/.env` applies, so h1 runs exactly as a single-hospital install. Site policy and numbers stay
+  in `config/hospitals/<id>.yaml`.
+- **Agent names must differ** (`LIVEKIT_AGENT_NAME`, `LIVEKIT_SIP_AGENT_NAME`): both phone workers
+  register with the same LiveKit Cloud project, and LiveKit dispatches by name; a shared name could
+  hand h1's call to h2's worker, which would speak h2's data. `demo-check` fails on a clash. Call-in
+  (the inbound dispatch rule) stays with h1.
+- **Alert language** (`outbound.alert_language: ja`): fixed Japanese templates over the event's
+  structured fields (no translation, no LLM, care guidance left out), the same rhythm-vs-vitals
+  wording rule as English; STT stays English, so the call ends "say acknowledge in English".
+- **Simulate** (`cli/simulate.py`, `POST /simulate`, only on the `SIMULATE_CONSOLE` app): draws N
+  held-out ecg_sigma windows (FP % `NORMAL_SINUS`, the rest AF/AFL/SVT/VT/VF), stamps a run id
+  (`/metadata simulate_run` → `Provenance.run` → `MonitoredEvent.source_run` → worklist `run`),
+  splits them by patient across `SIMULATE_TARGETS` and runs `cli.ingest` for each hospital at once,
+  scored with **that hospital's** policy. It refuses the stub model and a package the model wasn't
+  trained on. Each run's gate decisions are appended to `data/simulate/runs.jsonl`; the tab shows
+  them per run and summed, with Wilson 95 % rates (arrhythmias rang, false positives filtered).
+  Delivery (answered, redialled, texted) stays in each hospital's own Events tab.
 
 ## The models, at a glance
 
@@ -771,7 +811,8 @@ STT/TTS + SIP provisioning (`voice/sip_setup.py`) · `emr/` FHIR · `app/`+`live
 vendored model+simulator (gitignored) · `data/{synthetic,fixtures,real,inference}` (gitignored
 except fixtures) · `docs/` clinical corpus (+ `docs/samples/` upload fixtures and `docs/project/`,
 both excluded from it) · [`DEMO.md`](DEMO.md) demo runbook · [`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)
-LiveKit Cloud + SignalWire setup.
+LiveKit Cloud + SignalWire setup · `infra/h2.env` second-hospital stack · `cli/simulate.py` +
+`data/simulate/` Simulate engine and run history.
 
 ## Knowledge-base data model
 

@@ -44,11 +44,17 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
 4. **Report** critical events to the companion-app worklist (all at once) and/or by an outbound
    voice call: WebRTC, or a real phone call via LiveKit Cloud + SignalWire
    ([Phone calls](TELEPHONY_SETUP.md#phone-calls-livekit-cloud--signalwire)). Phone calls queue in Redis and
-   go out one at a time, most severe first. A text message is the alternative channel, and the SMS
-   fallback covers a call that goes unanswered (including a pickup where no PIN is entered; a PIN
-   lockout is not texted).
-5. **Converse** — after a shared-PIN gate, the clinician asks follow-up questions answered from the
-   KB + that patient's graph, and can verbally **acknowledge** the event (flips its status).
+   go out one at a time per hospital, most severe first. A text message is the alternative channel,
+   and the SMS fallback covers a call that goes unanswered (including a pickup where nobody says
+   "yes" — or, with `outbound.require_pin: true`, enters the PIN; a PIN lockout is not texted).
+5. **Converse** — once the clinician confirms with a spoken "yes" (outbound calls, the default) or
+   the shared PIN (call-in, the app, or `require_pin: true`), they ask follow-up questions answered
+   from the KB + that patient's graph, and can verbally **acknowledge** the event (flips its status).
+
+Two hospitals can run side by side (h1 + h2, each its own stack, number and alert language — h2
+speaks Japanese), and the app's **Simulate** tab drives a demo without the command line: N held-out
+real-ECG alarms with a chosen false-positive share, scored per run and across runs
+([DEMO.md](DEMO.md#or-the-simulate-tab-no-command-line)).
 
 ### What "done" means (POC success criteria)
 
@@ -141,7 +147,7 @@ clinician** and keeps a conversational, evidence-grounded channel open afterward
         │  pipeline gate so llm_node runs):                                                │
         │   audio ─Whisper STT─►[wake word]─► OutboundHandler ─LLM(RAG)────────► Piper TTS │
         │   text  ─chat box────────────────► OutboundHandler ─LLM(RAG)────────► chat text  │
-        │     PIN gate → speak THIS event's alert → Q&A grounded in KB+graph → "ack"       │
+        │  "yes" (or PIN) → speak THIS event's alert → Q&A grounded in KB+graph → "ack"    │
         │     → MonitoredEvent.status = acknowledged                                       │
         │  modality-matched: audio→audio (wake-gated), text→text; never crossed            │
         └──────────────────────────────────────────────────────────────────────────────┘
@@ -188,6 +194,10 @@ over SignalWire work end to end, and phone call-in was verified live on 2026-10-
 | — | Voice on select: header toggle, muted by default in `app+call` so a clinician on the phone alert doesn't hear the event twice (`/select-silent`) | ✅ |
 | — | KB chunks cite their parent heading (`file#Parent › Child`); horizontal rules are not content | ✅ |
 | H1–H3 | Event history: one `pending` definition, `list_events` + `cli.events` (`--ask`), verifiable voice/chat listings that state their filter (or decline), app **Events** tab (`POST /events`, merges model performance), worklist backfill on login, chat → Events-tab link | ✅ |
+| D1 | Demo feedback (2026-11): outbound calls confirm with a spoken "yes" instead of the PIN (`outbound.require_pin`, default false; voicemail can't trigger it); "acknowledge it?" counts as an ack | ✅ verified live (2026-11-04) |
+| D2 | **Simulate** tab + `cli.simulate`: N (≤10) held-out ecg_sigma alarms, FP % NORMAL_SINUS, the rest call-worthy (AF/AFL/SVT/VT/VF); per-run results, run bars on Worklist/Events, run history with Wilson 95 % rates (`data/simulate/runs.jsonl`); h1's app is the console (`SIMULATE_CONSOLE`) | ✅ |
+| D3 | Second hospital stack **h2** (`infra/h2.env`, project `infra-h2`, app :8090): own stores/consumer/workers/number, shares h1's LiveKit; parallel calls; Simulate splits runs by patient; hospital badge + cross-links; `make phone-transcript HOSPITAL=h1\|h2\|all` | ✅ live (both stacks); two different phones not yet tested |
+| D4 | h2 speaks its alert in **Japanese** (`outbound.alert_language: ja`, ElevenLabs Sakura, fixed templates); the caller still answers in English | ✅ verified live (2026-11-04) |
 | E6 | Ask "why am I seeing this?" / "how is the model doing?" by chat or voice | 🔜 optional |
 | — | File-drop auto-publish watcher (inotify → `cli.ingest --emit bus`) | 🔜 planned |
 
@@ -197,7 +207,8 @@ over SignalWire work end to end, and phone call-in was verified live on 2026-10-
 
 - No PHI in logs (redacting logger; patients referenced by pseudonym only).
 - De-identification asserted on model inputs in tests; **fails closed** (no LLM call on de-id error).
-- Caller authentication enforced before any PHI is voiced; the graph is queried only through fixed,
+- Caller confirmation enforced before any PHI is voiced (outbound: a short spoken "yes" from a live
+  listener, so a voicemail never hears the alert; call-in and the app: the PIN); the graph is queried only through fixed,
   read-only, parameterized templates (the LLM router can only pick one), and raw Cypher in the
   `cli.graph lookup` dev path is refused unless read-only.
 - Append-only **JSONL audit log** from Phase 0: `{ts, actor, action, subject(pseudonym), outcome}`

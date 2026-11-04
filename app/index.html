@@ -140,6 +140,10 @@
     #sim-view { padding: 1rem; }
     #sim-form { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; margin-bottom: 1rem; }
     #sim-form label { display: flex; flex-direction: column; font-size: .85rem; gap: .2rem; }
+    .sim-h { font-size: .9rem; margin: 1.25rem 0 .4rem; }
+    #sim-totals { display: flex; gap: .75rem; flex-wrap: wrap; margin: .5rem 0; }
+    #sim-totals .t { background: var(--panel); border-radius: 6px; padding: .5rem .75rem; min-width: 8rem; }
+    #sim-totals .t b { display: block; font-size: 1.4rem; }
     #sim-summary { display: flex; gap: .75rem; flex-wrap: wrap; margin: .75rem 0; }
     #sim-summary .t { background: var(--panel); border-radius: 6px; padding: .5rem .75rem; min-width: 8rem; }
     #sim-summary .t b { display: block; font-size: 1.4rem; }
@@ -250,8 +254,20 @@
        answer is redialled, then texted). False positives should be filtered out and never ring.
        "Gate: call" is the decision before dialling; what was delivered is on the Events tab.</p>
      <div id="sim-summary"></div>
+     <h2 class="sim-h">This run</h2>
      <table id="sim-events" class="hidden">
        <thead><tr><th>Hospital</th><th>Patient</th><th>Truth</th><th>Model said</th><th>Conf.</th><th>Gate</th><th title="The gate's decision before dialling; a busy line or no answer is redialled, then texted">Gate: call</th></tr></thead>
+       <tbody></tbody>
+     </table>
+     <!-- Every run published from this console (data/simulate/runs.jsonl), both hospitals. Gate
+          decisions before dialling; what was delivered is on each hospital's Events tab. -->
+     <h2 class="sim-h">All runs</h2>
+     <div id="sim-rates" class="meta"></div>
+     <div id="sim-totals"></div>
+     <table id="sim-history">
+       <thead><tr><th>Hospitals</th><th>Should ring</th><th>Rang</th>
+         <th>Missed – worklist</th><th>Missed – withheld</th><th>FP filtered</th>
+         <th>FP rang – model</th><th>FP rang – vitals</th></tr></thead>
        <tbody></tbody>
      </table>
    </div>

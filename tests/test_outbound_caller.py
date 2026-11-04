@@ -74,7 +74,7 @@ def test_parse_ack_negation_wins(text):
 
 
 @pytest.mark.parametrize("text", [
-    "Can you confirm the potassium?", "is that correct", "what does copy mean", "is it acknowledged?",
+    "Can you confirm the potassium?", "is that correct", "what does copy mean", "is it acknowledged?", "Acknowledged?",
     "yes and what was the heart rate", "confirm the dose of amiodarone for this patient please"])
 def test_parse_ack_questions_and_long_turns_are_not_acks(text):
     assert parse_ack(text) == "unclear"

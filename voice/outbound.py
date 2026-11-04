@@ -253,7 +253,8 @@ def is_question(text: str) -> bool:
     if tokens and tokens[0] in _QUESTION:
         return True
     # STT adds a "?" for a rising tone: "Acknowledge it?" is the command (live 2026-11-04 h2 call).
-    return "?" in text and not (tokens and tokens[0].startswith("ack"))
+    # "Acknowledged?" stays a question (is it done?); only the imperative is the command.
+    return "?" in text and not (tokens and tokens[0] in ("ack", "acknowledge"))
 
 
 def is_plain_no(text: str) -> bool:

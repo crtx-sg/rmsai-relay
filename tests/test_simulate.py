@@ -122,7 +122,8 @@ from tests.test_gateway_perf import _CFG, _token  # noqa: E402
 
 def _client(tmp_path, simulator):
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
-    return TestClient(create_app(_CFG, audit=audit, simulator=simulator)), audit
+    return TestClient(create_app(_CFG, audit=audit, simulator=simulator,
+                                 simulate_history=tmp_path / "runs.jsonl")), audit
 
 
 def test_simulate_needs_a_session_and_reports_bad_input(tmp_path):
@@ -168,3 +169,82 @@ def test_hospital_app_links_parse_and_drop_bad_entries():
     assert hospital_apps("h1=http://localhost:8080, h2=http://localhost:8090,x=ftp://y,bad") == {
         "h1": "http://localhost:8080", "h2": "http://localhost:8090"}
     assert hospital_apps("") == {}
+
+
+def test_history_sums_runs_with_wilson_rates(tmp_path):
+    from cli.simulate import history, record
+
+    path = tmp_path / "runs.jsonl"
+    assert history(path)["runs"] == []  # no file yet
+    for run, s in (("r1-0900-n4-fp50", {"expected_calls": 2, "tp_calls": 1, "fp_suppressed": 2}),
+                   ("r2-0910-n2-fp50", {"expected_calls": 1, "tp_calls": 1, "fp_called_model": 1})):
+        record({"run": run, "events": [{"hospital": "h1"}, {"hospital": "h2"}], "summary": s}, path)
+    with path.open("a") as fh:
+        fh.write("not json\n")  # skipped, not fatal
+    h = history(path)
+    assert [r["run"] for r in h["runs"]] == ["r2-0910-n2-fp50", "r1-0900-n4-fp50"]  # newest first
+    assert h["runs"][0]["hospitals"] == {"h1": 1, "h2": 1}
+    assert (h["rates"]["rang"]["k"], h["rates"]["rang"]["n"]) == (2, 3)
+    assert (h["rates"]["fp_filtered"]["k"], h["rates"]["fp_filtered"]["n"]) == (2, 3)
+
+
+def test_only_the_console_hospital_simulates_and_records(tmp_path, monkeypatch):
+    sim = lambda n, fp: {"run": "r1-0000-n1-fp0", "events": [{"hospital": "h1"}],  # noqa: E731
+                         "summary": {"expected_calls": 1, "tp_calls": 1}}
+    hist = tmp_path / "runs.jsonl"
+
+    def client():
+        return TestClient(create_app(_CFG, audit=AuditLog(str(tmp_path / "a.jsonl")),
+                                     simulator=sim, simulate_history=hist))
+
+    body = {"session": _token(), "samples": 1}
+    monkeypatch.setenv("SIMULATE_CONSOLE", "h9")  # another hospital is the console
+    other = client()
+    assert other.post("/simulate", json=body).status_code == 403
+    assert other.post("/simulate/history", json={"session": _token()}).status_code == 403
+    assert not hist.exists()
+    monkeypatch.setenv("SIMULATE_CONSOLE", _CFG.hospital_id)  # this one is
+    console = client()
+    assert console.post("/simulate", json=body).status_code == 200
+    h = console.post("/simulate/history", json={"session": _token()}).json()
+    assert [r["run"] for r in h["runs"]] == ["r1-0000-n1-fp0"]
+
+
+def test_one_hospital_failing_keeps_the_others_published_run(tmp_path, monkeypatch):
+    import cli.simulate
+
+    monkeypatch.setenv("SIMULATE_TARGETS", "h1=redis://localhost:6379/0,h2=redis://localhost:6380/0")
+    monkeypatch.setattr(cli.simulate, "CALL_CLASSES", ("VENTRICULAR_TACHYCARDIA",))
+    import itertools
+
+    turn = itertools.cycle(["h1", "h2"])  # the two VT records go one to each hospital
+    monkeypatch.setattr(cli.simulate, "hospital_for", lambda p, hs: next(turn))
+
+    def ingest(out_dir, redis_url, hospital):
+        if hospital == "h2":
+            raise RuntimeError("h2 Redis down")
+        return [{"event_id": w.event_id, "patient": w.patient_ref, "call": True, "gate": "ok",
+                 "ground_truth": w.ground_truth.condition}
+                for f in Path(out_dir).glob("*.h5") for w in read_hdf5_file(f)]
+
+    kw = dict(seed=3, package=str(_make_package(tmp_path / "pkg")), out_dir=str(tmp_path / "out"),
+              checkpoints=("x.pt",), run_number=lambda: 1)
+    result = run(2, 0, ingest=ingest, **kw)
+    assert list(result["errors"]) == ["h2"] and "h2 Redis down" in result["errors"]["h2"]
+    assert [e["hospital"] for e in result["events"]] == ["h1"]  # h1's call still counted
+    with pytest.raises(RuntimeError):  # every hospital failed: nothing published, say so
+        run(2, 0, ingest=lambda *a: (_ for _ in ()).throw(RuntimeError("down")), **kw)
+
+
+def test_other_hospitals_are_audited_in_their_own_log(monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    import cli.simulate
+
+    seen = {}
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: (seen.update(env=kw["env"]),
+                        SimpleNamespace(returncode=0, stdout="", stderr=""))[1])
+    other = "zz" if cli.simulate.DEFAULT.hospital_id != "zz" else "yy"
+    cli.simulate._ingest("d", "redis://x", other)
+    assert seen["env"]["AUDIT_LOG_PATH"] == f"data/audit-{other}.jsonl"

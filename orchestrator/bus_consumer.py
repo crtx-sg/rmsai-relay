@@ -379,7 +379,7 @@ class _PinGatedCaller:
             return outcome
         if reached:
             return outcome
-        print(f"[consume] call in {self.room} ended with no PIN entered: counted as missed",
+        print(f"[consume] call in {self.room} ended unconfirmed (no yes/PIN): counted as missed",
               flush=True)
         return CallOutcome.NO_ANSWER
 

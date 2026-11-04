@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-11-04 hospital-badge";
+const APP_BUILD = "2026-11-04 review-fixes";
 
 const LK = window.LivekitClient;
 
@@ -85,23 +85,27 @@ function fmtOutcome(code) {
 }
 
 // --- run separators (Simulate tab) ---------------------------------------------------------------
-// "r3-1402-n10-fp20" -> "Run 3 · 14:02 · 10 samples · 20% FP"; rows with no run came from a CLI ingest.
+// "r3-1402-n10-fp20" -> "Run 3 · 14:02 · 10 samples · 20% FP"; rows with no run: device / CLI ingest.
 function runLabel(run) {
   const m = /^r(\d+)-(\d\d)(\d\d)-n(\d+)-fp(\d+)/.exec(run || "");
-  if (!m) return run ? `Run ${run}` : "CLI ingest";
+  if (!m) return run ? `Run ${run}` : "Not from Simulate";
   return `Run ${m[1]} · ${m[2]}:${m[3]} · ${m[4]} samples · ${m[5]}% FP`;
 }
 
 // Newest first, but each run kept together (groups ordered by their newest row), so a run gets
 // exactly one separator even when its event times interleave with another run's.
 function groupByRun(rows, key) {
-  const sorted = [...rows].sort((a, b) => (b[key] || 0) - (a[key] || 0));
+  const t = (r) => r[key] || r.ts || 0;
+  const sorted = [...rows].sort((a, b) => t(b) - t(a));
+  // Rows with no run (real device, CLI ingest) keep their place: each stretch of them is its own group.
   const groups = new Map();
-  for (const r of sorted) {
-    const g = r.run || "";
+  let stretch = 0;
+  sorted.forEach((r, i) => {
+    if (!r.run && (i === 0 || sorted[i - 1].run)) stretch += 1;
+    const g = r.run || `~${stretch}`;
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(r);
-  }
+  });
   return [...groups.values()].flat();
 }
 
@@ -333,6 +337,8 @@ async function connect(sess) {
   // thing to misdiagnose here — it looks exactly like a broken worker.
   document.getElementById("room-label").textContent = `${session.room} · app ${APP_BUILD}`;
   renderHospitalBadge(session);
+  // With two hospitals only the console app (SIMULATE_CONSOLE) runs simulations.
+  document.querySelector('#tabs button[data-tab="sim"]').classList.toggle("hidden", session.simulate === false);
   document.getElementById("tabs").classList.remove("hidden");
   initVoiceToggle();
   setStatus("connecting…");
@@ -588,6 +594,7 @@ function showTab(tab) {
   document.getElementById("perf-view").classList.toggle("hidden", tab !== "perf");
   document.getElementById("sim-view").classList.toggle("hidden", tab !== "sim");
   if (tab === "perf") { ensureTypeOptions(); loadPerf(); }
+  if (tab === "sim") loadSimHistory();
 }
 
 function perfVisible() { return !document.getElementById("perf-view").classList.contains("hidden"); }
@@ -911,8 +918,11 @@ async function runSimulation() {
     const res = await sessionPost("/simulate", { samples, fp_percent: fp });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { status.textContent = `Failed: ${data.detail || res.status}`; return; }
-    status.textContent = `${runLabel(data.run)} published`;
+    const errs = Object.entries(data.errors || {}).map(([h, e]) => `${h}: ${e}`).join("; ");
+    status.textContent = errs ? `${runLabel(data.run)} published, but NOT for ${errs}`
+      : `${runLabel(data.run)} published`;
     renderSimulation(data);
+    loadSimHistory();
   } catch (err) {
     status.textContent = `Failed: ${err}`;
   } finally {
@@ -928,6 +938,35 @@ function renderSimulation(data) {
   document.querySelector("#sim-events tbody").innerHTML = (data.events || []).map((e) => `<tr>
     <td>${esc(e.hospital || "")}</td><td>${esc(e.patient)}</td><td>${esc(e.ground_truth)}</td><td>${esc(e.event_type)}</td>
     <td>${pct(e.confidence)}</td><td>${esc(e.gate)}</td><td>${e.call ? "📞 call" : "no call"}</td></tr>`).join("");
+}
+
+async function loadSimHistory() {
+  try {
+    const res = await sessionPost("/simulate/history", {});
+    if (res.ok) renderSimHistory(await res.json());
+  } catch (err) { console.warn("[simulate] history", err); }
+}
+
+// "75% (6/8, 95% CI 41–93%)"
+function fmtRate(label, r) {
+  if (!r) return `${label}: –`;
+  return `${label}: <b>${pct(r.value)}</b> (${r.k}/${r.n}, 95% CI ${pct(r.low)}–${pct(r.high)})`;
+}
+
+function renderSimHistory(h) {
+  const t = h.totals || {};
+  document.getElementById("sim-rates").innerHTML = `${(h.runs || []).length} run(s) · ` +
+    `${fmtRate("Arrhythmias rang", h.rates && h.rates.rang)} · ` +
+    `${fmtRate("False positives filtered", h.rates && h.rates.fp_filtered)}`;
+  document.getElementById("sim-totals").innerHTML = SIM_TILES.map(([k, label]) =>
+    `<div class="t"><b>${esc(t[k] ?? 0)}</b>${esc(label)}</div>`).join("");
+  document.querySelector("#sim-history tbody").innerHTML = (h.runs || []).map((r) => {
+    const s = r.summary || {};
+    const hosp = Object.entries(r.hospitals || {}).map(([k, n]) => `${esc(k)} ${esc(n)}`).join(" · ");
+    return `<tr class="run-sep"><td colspan="8">${esc(runLabel(r.run))}</td></tr><tr>
+      <td>${hosp}</td>${["expected_calls", "tp_calls", "missed_worklist", "missed", "fp_suppressed",
+        "fp_called_model", "fp_called_vitals"].map((k) => `<td>${esc(s[k] ?? 0)}</td>`).join("")}</tr>`;
+  }).join("");
 }
 
 console.log(`[app] build ${APP_BUILD}`);

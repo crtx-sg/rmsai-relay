@@ -29,7 +29,7 @@ but only as a logged override.
 | `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE` *(hospital)* | `0.60` | a non-normal (arrhythmia) event is only asserted *as a rhythm* if confidence is at/above this. Below it: withheld when the vitals are calm, or re-based as a **vitals-driven alert** (rhythm marked unconfirmed) when they aren't. Vitals never raise the bar |
 | `OUTBOUND_CALL_VITALS_ALERTS` *(hospital)* | `false` | phone a vitals-driven alert (rhythm below the confidence gate, vitals warrant it). `false` = worklist only; the consumer logs `no call: vitals-driven alert … reported to the app only` |
 | `OUTBOUND_CALL_NUMBER` / `OUTBOUND_FROM` *(hospital)* | — | destination (the default for `--number` on `cli.consume`/`cli.outbound`, and for `cli.call`) + caller ID (the SignalWire number; also the SMS sender). A real call/SMS with neither `--number` nor `OUTBOUND_CALL_NUMBER` refuses to start; a placeholder is used only for simulated runs |
-| `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` *(hospital)* | `2` / `30` | no-answer retry policy: 1 + `max_retries` attempts, each redial in its own room, then the SMS fallback. A pickup with no PIN counts as no answer; a PIN lockout ends it with no retry and no SMS |
+| `OUTBOUND_MAX_RETRIES` / `OUTBOUND_RETRY_DELAY_S` *(hospital)* | `2` / `30` | no-answer retry policy: 1 + `max_retries` attempts, each redial in its own room, then the SMS fallback. A pickup with no "yes" (or no PIN, with `require_pin: true`) counts as no answer; a PIN lockout ends it with no retry and no SMS |
 | `OUTBOUND_REQUIRE_PIN` *(hospital)* | `false` | outbound calls: `false` = the clinician says "yes" to hear the alert (a short yes, so voicemail never triggers it); `true` = the PIN gate. A pickup without the yes/PIN counts as no answer. Inbound call-in and the app always need the PIN |
 | `OUTBOUND_ALERT_LANGUAGE` *(hospital)* | `en` | `ja` speaks the outbound alert and the "say yes" prompt in Japanese (fixed templates over the event fields; no translation, care guidance left out). The caller is still heard in English (`STT_LANGUAGE`) and follow-up answers stay English. Needs a multilingual TTS model (`ELEVENLABS_TTS_MODEL=eleven_flash_v2_5`) and a Japanese voice (h2: Sakura, set in `infra/h2.env`) |
 | `INBOUND_AUTH_PIN` | shared PIN | verified before any PHI is voiced; spoken or keyed on a phone (4 digits or `#`, `*` starts over). 3 wrong tries lock that call out (the count resets every call) |
@@ -175,6 +175,7 @@ config/hospitals/
   default.yaml        every setting, the defaults (committed)
   h1.example.yaml     template for a site file (committed, placeholder numbers)
   h1.yaml             the site's own values (gitignored: it holds real phone numbers)
+  h2.yaml             a second site run as its own stack (gitignored; see below)
 ```
 
 `HOSPITAL_ID` in `.env` picks the file (`h1` → `h1.yaml`); `HOSPITAL_CONFIG_DIR` moves the directory.
@@ -201,8 +202,21 @@ see the file without a rebuild).
 
 **Validation** stops startup with a message naming the key: phone numbers must be **quoted** E.164
 (`"+15551234567"`; unquoted, YAML reads `+91…` as an integer and drops the `+`), `dispatch_mode` must be
-`app`, `call` or `app+call`, `min_criticality` one of `Low`/`Medium`/`High`/`Critical`, confidences
-between 0 and 1, and `default.yaml` must define every setting.
+`app`, `call` or `app+call`, `min_criticality` one of `Low`/`Medium`/`High`/`Critical`,
+`alert_language` `en` or `ja`, confidences between 0 and 1, and `default.yaml` must define every
+setting.
+
+**Two hospitals at once** (h1 + h2): each runs as its own Docker stack, and `infra/h2.env` (committed,
+no secrets) gives h2 its `HOSPITAL_ID`, ports, store URLs, agent names, audit log and voice. Compose
+passes these per-stack values (`x-stack-env` in `infra/docker-compose.yml`) only when they are set
+in the shell, so an unset value falls back to `.env` and h1 is unaffected. `make demo-phone-up` also
+sets, for both stacks:
+
+| Variable | Value with two hospitals | Effect |
+|---|---|---|
+| `SIMULATE_TARGETS` | `h1=redis://localhost:6379/0,h2=redis://localhost:6380/0` | Simulate splits each run by patient across these buses (unset: this hospital only) |
+| `SIMULATE_CONSOLE` | `h1` | only that hospital's app shows Simulate and keeps the run history (unset: every app) |
+| `HOSPITAL_APPS` | `h1=http://localhost:8080,h2=http://localhost:8090` | the header's links to the other hospitals' apps |
 
 Check what a process actually loaded:
 

@@ -58,9 +58,11 @@ def is_filler(text: str) -> bool:
     return bool(_FILLER.match(text)) or bool(text) and not re.search(r"[A-Za-z0-9]", text)
 _AUTH_OK = "Thank you, you are authenticated. How can I help?"
 _PROMPT_CONFIRM = "Please say yes to hear the alert."
-# A short spoken "yes" (≤ 4 words, not a question) confirms a live listener. Short on purpose: a
-# voicemail greeting ("…leave a message right after the tone") must never trigger the alert.
-_CONFIRM_YES = re.compile(r"\b(?:yes|yeah|yep|yup|ya)\b", re.IGNORECASE)
+# The whole utterance must be a "yes" (optionally "hello, yes" / "yes, go ahead"): a voicemail
+# greeting split at a pause ("…[pause] Yeah, leave a message") must never trigger the alert.
+_CONFIRM_YES = re.compile(
+    r"^\W*(?:(?:hello|hi|hey|ok|okay)\W+)?(?:yes|yeah|yep|yup)"
+    r"(?:\W+(?:please|go ahead|speaking|i'?m here|i am here))?\W*$", re.IGNORECASE)
 _LOCKED = "I could not verify your PIN. Ending the call for safety."
 
 
@@ -225,11 +227,15 @@ class OutboundHandler(OrchestratorHandler):
     def greeting(self) -> str:
         return super().greeting() if self.require_pin else self._intro + self._prompt
 
+    def is_confirmation(self, text: str) -> bool:
+        """The spoken "yes" that replaces the PIN (never digits, so never a PIN)."""
+        return not self.require_pin and bool(_CONFIRM_YES.match(text or ""))
+
     def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
         if self.require_pin or self.working.get_or_create(session_id).authenticated:
             return super().respond(text, session_id=session_id, spoken=spoken)
         # Checked before the filler rule, which would swallow "yeah".
-        if _CONFIRM_YES.search(text or "") and len(text.split()) <= 4 and not is_question(text):
+        if self.is_confirmation(text):
             self.audit.write(actor=f"caller:{session_id}", action="outbound_confirm",
                              subject=session_id, outcome="success")
             print(f"[voice] spoken confirmation accepted for session {session_id}", flush=True)

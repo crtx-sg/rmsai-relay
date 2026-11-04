@@ -142,12 +142,13 @@ uv run pytest -q -m "not infra"
 | `make stores-up` / `make stores-down` | start / stop **only** the backing stores (redis, neo4j, qdrant, livekit) — the target to use when you run the CLIs on the host |
 | `make stores-check` | which backing stores are reachable, and what to run if one is down |
 | `make docker-build` | build the shared app image (`infra/Dockerfile`) |
-| `make docker-up` / `make docker-down` | start every default service / stop everything (including the `telephony` phone worker). `make demo-down` is the same as `docker-down` |
+| `make docker-up` / `make docker-down` | start every default service / stop everything (including the `telephony` phone worker, and the h2 stack if it exists). `make demo-down` is the same as `docker-down` |
 | `make docker-restart` | restart the three app services to pick up source edits (no rebuild) |
 | `make docker-logs` / `make docker-ps` | tail the app services / show container state |
 | `make docker-shell` | interactive shell in the app image with the repo mounted |
 | `make demo-up` / `make demo-check` | bring up every default service in dependency order and health-check it (the consumer stages WebRTC rooms: **no phone rings**) / re-run only the check |
-| `make demo-phone-up` | `demo-up` plus real phone calls: also starts the phone worker and runs the consumer with `--transport sip --notifier signalwire`, so calls go through the Redis call queue and an unanswered call (including a pickup with no PIN) is texted (`DEMO_PHONE_NOTIFIER=simulated` to send nothing). A later plain `make demo-up` puts the consumer back on WebRTC |
+| `make demo-phone-up` | `demo-up` plus real phone calls: also starts the phone worker and runs the consumer with `--transport sip --notifier signalwire`, so calls go through the Redis call queue and an unanswered call (including a pickup with no "yes") is texted (`DEMO_PHONE_NOTIFIER=simulated` to send nothing). With `config/hospitals/h2.yaml` present it also starts the second hospital's stack (`infra-h2`, app :8090); `HOSPITALS=h1` for h1 only. A later plain `make demo-up` puts the consumer back on WebRTC |
+| `make h2-up` / `make h2-kb` | (re)start the second hospital's stack alone (`H2_PHONE=1` adds its phone worker) / load its knowledge base once, before any h2 events |
 | `make phone-up` / `make phone-down` / `make phone-logs` | start / stop / tail the phone-call worker (`voice-worker-phone`, profile `telephony`) |
 | `make phone-transcript` | follow the phone worker's conversation only: STT transcript, what was heard, the graph query, the reply (before TTS), the PIN and the spoken alert. `HOSPITAL=h2` for the second hospital, `HOSPITAL=all` for both (lines prefixed `[h1]` / `[h2]`) |
 | `make test` / `make lint` | `uv run pytest -q` / `ruff check .` |

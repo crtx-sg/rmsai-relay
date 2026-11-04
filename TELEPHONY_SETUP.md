@@ -13,6 +13,11 @@ and the call-flow diagrams in [ARCHITECTURE.md](ARCHITECTURE.md#telephony-split-
 > (step 4), or SignalWire answers `603 Decline`.
 > **2026-10-29:** a pickup with no PIN entered counts as a missed call (retried, then texted);
 > each redial gets its own room; the PIN can be keyed as well as spoken.
+> **2026-11-04:** outbound calls ask for a spoken **"yes"** instead of the PIN by default
+> (`outbound.require_pin: false`; set `true` for the PIN flow below). A pickup with no "yes" is a
+> missed call, exactly as a pickup with no PIN was. Call-in keeps the PIN. A second hospital (h2)
+> has its own phone agent `rmsai-agent-phone-h2` on the same LiveKit Cloud project and its own
+> `call_number`; it speaks its alert in Japanese ([DEMO.md](DEMO.md#two-hospitals-h1--h2)).
 
 ---
 
@@ -199,8 +204,9 @@ restart).
 ## 8. Test
 
 ```bash
-# A. On-demand outbound: rings the hospital's outbound.call_number, the agent asks for the PIN
-#    (say it, or key 4 digits / #). It redials on no answer but never texts: it has no event.
+# A. On-demand outbound: rings the hospital's outbound.call_number, the agent asks for "yes"
+#    (or, with require_pin: true, the PIN: say it, or key 4 digits / #). It redials on no answer
+#    but never texts: it has no event.
 uv run python -m cli.call --caller livekit
 
 # B. Inbound: call your SignalWire number from an allowed phone → PIN prompt → ask a question
@@ -208,12 +214,12 @@ uv run python -m cli.call --caller livekit
 # C. Event-driven alert call (the consumer container on the SIP transport)
 #    hospital file: outbound.dispatch_mode: app+call (the default); then the consumer on SIP + the phone worker:
 make demo-phone-up        # = CONSUME_ARGS="--channel voice --caller livekit --transport sip --notifier signalwire" + --profile telephony
-#    publish an event (DEMO.md §5); the phone rings → PIN → spoken alert → Q&A → "acknowledge"
+#    publish an event (DEMO.md §5); the phone rings → "yes" → spoken alert → Q&A → "acknowledge"
 ```
 
 `cli.call` exits 0 when answered, 1 when not answered after retries, 2 when the setup is invalid.
 To test the SMS fallback, use C: publish one event (`cli.ingest --file … --emit bus`) and decline
-every attempt, or pick up and hang up without the PIN.
+every attempt, or pick up and hang up without saying "yes".
 
 ---
 
@@ -233,13 +239,13 @@ every attempt, or pick up and hang up without the PIN.
 | Events alert in the app but **no phone rings**; the consumer log shows `-> answered (attempts 1)` plus a `[webrtc] join room to take the call:` token | the consumer runs `--transport webrtc` (the `make demo-up` default; the "answer" is simulated) | `make demo-phone-up` |
 | The call connects but the caller hears **silence**; the phone worker logs `ElevenLabs API error 401 … quota` | the ElevenLabs credits ran out (TTS and STT both fail) | top up, or switch `TTS_BACKEND`/`STT_BACKEND` to piper/whisper |
 | `--notifier signalwire needs …` | SMS keys missing | set the keys it names in `.env`, and `outbound.from` in the hospital file |
-| Phone picked up, yet the log says `ended with no PIN entered: counted as missed` | a decline after pickup, or the carrier's voicemail | expected: it rings again, then texts (`SMS fallback: sms_delivered`) |
+| Phone picked up, yet the log says `ended unconfirmed (no yes/PIN): counted as missed` | a decline after pickup, or the carrier's voicemail | expected: it rings again, then texts (`SMS fallback: sms_delivered`) |
 | A retry is answered, the PIN prompt plays, then nothing you say registers | the caller's audio never reached the worker: no `[worker] receiving audio from clinician (SIP)` line in `make phone-logs` | key the PIN instead; report the time and logs |
 | The call hangs up mid-Q&A and the phone rings again | `[worker] LiveKit reconnected mid-call`: after a reconnect our audio no longer reaches the phone | expected; at most 2 redials, only if the PIN had been accepted |
 | After 3 wrong PINs: no more calls, no SMS | the lockout (`rmsai:calls:locked:<event_id>`, 24 h) | acknowledge in the app, or call in; the next call starts with 3 fresh tries |
 | First dial after a consumer restart fails with `Couldn't build proto file into descriptor pool` | a consumer older than `a4c7dee` | update and restart (the protobufs now load at startup) |
 | The call stays open after a restart and the agent answers as a KB line | the consumer or phone worker was restarted during the call | hang up; restart only when no call is up |
-| A call went unanswered but no SMS arrived | a pickup with no PIN is a missed attempt (`ended with no PIN entered: counted as missed`); after the last attempt the consumer log says which: `[sms] SIMULATED, not sent` (consumer runs without `--notifier`), `rejected (…)` (SignalWire's code), or `sent via signalwire` | `make demo-phone-up`; or check SignalWire's **Logs → Messages** (carrier filtering abroad) |
+| A call went unanswered but no SMS arrived | a pickup with no "yes" (or PIN) is a missed attempt (`ended unconfirmed (no yes/PIN): counted as missed`); after the last attempt the consumer log says which: `[sms] SIMULATED, not sent` (consumer runs without `--notifier`), `rejected (…)` (SignalWire's code), or `sent via signalwire` | `make demo-phone-up`; or check SignalWire's **Logs → Messages** (carrier filtering abroad) |
 
 **Note on retries:** a SIP error such as `603` counts as "no answer", so the relay retries
 (`OUTBOUND_MAX_RETRIES`, every `OUTBOUND_RETRY_DELAY_S`) and then, with `--notifier signalwire`, sends
@@ -310,12 +316,13 @@ What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-
    to the Domain App, whose SWML `connect` (`answer_on_bridge`) rings the PSTN number and answers
    the LiveKit leg only when the phone does.
 5. **Answered:** the phone joins the room as a participant. The worker finds the staged alert
-   (`OutboundHandler`): PIN, then the spoken alert, then grounded Q&A (wake word), then
+   (`OutboundHandler`): a spoken "yes" (or the PIN, with `require_pin: true`), then the spoken
+   alert, then grounded Q&A (wake word), then
    "acknowledge" sets the event `acknowledged`. "This event" in a question means the called event.
    The PIN can be spoken or keyed (4 digits or `#`; `*` starts over); 3 wrong PINs lock that call out
    (the count is per call). The consumer waits for the hang-up, then reads the worker's flags
    (`rmsai:calls:answered:<event_id>` / `rmsai:calls:locked:<event_id>`, 24 h TTL). Neither set (a
-   decline after pickup, or voicemail) logs `ended with no PIN entered: counted as missed` and goes to
+   decline after pickup, or voicemail) logs `ended unconfirmed (no yes/PIN): counted as missed` and goes to
    step 6. A lockout is not retried and not texted.
 6. **Not answered, or a SIP error** (any failure, including `408` or `603`, counts as no answer):
    the relay stages the alert in a fresh room, dispatches the agent there and retries `OUTBOUND_MAX_RETRIES` times,
@@ -356,8 +363,8 @@ meanwhile is not texted and stays `acknowledged`). With
 the text channel **and** for voice calls that go unanswered after retries.
 
 **When it fires:** the call is not answered after `1 + max_retries` attempts (ring timeout, busy,
-any SIP error such as `408` or `603`, or a pickup with no PIN entered, voicemail included). A call
-answered with the right PIN sends no SMS, and neither does a PIN lockout. `cli.call` never texts (it
+any SIP error such as `408` or `603`, or a pickup with no "yes" / PIN, voicemail included). A call
+confirmed with "yes" (or the right PIN) sends no SMS, and neither does a PIN lockout. `cli.call` never texts (it
 has no event). Nor does an event acknowledged elsewhere (e.g. in the app) while the call rang; it stays
 acknowledged. An invalid number or missing trunk fails fast and is never texted.
 

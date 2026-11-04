@@ -25,7 +25,7 @@ and `cli.sip_setup` / `make phone-up` / `make demo-phone-up`.
 | Mode | Set | What you get |
 |---|---|---|
 | **App only** | `outbound.dispatch_mode: app` in `config/hospitals/<HOSPITAL_ID>.yaml`, then `make docker-restart` | worklist, event-scoped chat and voice in the app, speak-on-select (§5A) |
-| **Event call in the browser** | nothing: `app+call` is the default `dispatch_mode` | per critical event, the consumer log prints a room + token; join in the LiveKit playground → PIN → spoken alert → Q&A → acknowledge (§5B) |
+| **Event call in the browser** | nothing: `app+call` is the default `dispatch_mode` | per critical event, the consumer log prints a room + token; join in the LiveKit playground → "yes" → spoken alert → Q&A → acknowledge (§5B) |
 | **Offline, scripted** | nothing (host `uv run`) | the whole loop with no browser or audio (below) |
 
 ```bash
@@ -295,6 +295,13 @@ Worklist and Events rows are grouped per click under a `Run 3 · 14:02 · 10 sam
 bar. Same thing from a terminal, without publishing: `$RMSAI cli.simulate --samples 10
 --fp-percent 20 --dry-run`.
 
+With two hospitals, Simulate is on **h1's app only** (`SIMULATE_CONSOLE=h1`, set by `make
+demo-phone-up`; h2's app hides the tab): one run sequence and one history. **All runs** lists every
+published run under its `Run …` bar (with the h1/h2 split), the summed tiles, and two rates with
+95 % intervals: arrhythmias the gate rang, and false positives it filtered. These are the gate's
+decisions before dialling; what was delivered is on each hospital's Events tab. The history is
+`data/simulate/runs.jsonl` (kept across restarts; move it aside to start a fresh series).
+
 ### Two hospitals (h1 + h2)
 
 With `config/hospitals/h2.yaml` present (copy `h1.yaml`; its `call_number` is h2's clinician),
@@ -370,7 +377,7 @@ With `outbound.dispatch_mode: app+call` (the default; CONFIGURATION.md, "Per-hos
 changing it run `make docker-restart`), publish an event. For each critical event, the consumer log prints an `rmsai-outbound-<event_id>` room and a
 `Token:`. Join it at <https://agents-playground.livekit.io> (Manual → URL + token → allow mic):
 
-1. Say the PIN.
+1. Say *"yes"* (or the PIN, if the hospital sets `outbound.require_pin: true`).
 2. Hear **this** event's alert.
 3. Ask follow-ups with the wake word: *"hey vios, what were the vitals?"*
 4. Say *"acknowledge"* to flip the event's status.
@@ -386,7 +393,7 @@ the missed-call SMS. It needs an account out of trial mode.
 
 | Direction | Status |
 |---|---|
-| Event **out** (relay → your phone → PIN → alert → Q&A → acknowledge) | works (verified 2026-10-12; needs the account out of trial mode and `SIGNALWIRE_SIP_USER`) |
+| Event **out** (relay → your phone → "yes" → alert → Q&A → acknowledge) | works (verified 2026-10-12; needs the account out of trial mode and `SIGNALWIRE_SIP_USER`) |
 | Call **in** (your phone → SignalWire number → PIN → Q&A) | works (verified 2026-10-13) |
 | SMS fallback when an alert call is unanswered | SignalWire SMS from the same number (`--notifier signalwire`, the `make demo-phone-up` default); delivered (test SMS to a +91 number, 2026-10-13). A pickup with no PIN entered counts as unanswered; a PIN lockout is not texted. `cli.call` never texts: to test the SMS, publish an event (`cli.ingest --file … --emit bus`) and don't enter the PIN |
 
@@ -394,10 +401,10 @@ Full step-by-step setup: **[`TELEPHONY_SETUP.md`](TELEPHONY_SETUP.md)**. Once se
 
 ```bash
 make phone-up && make phone-logs           # "registered worker" url must be the Cloud URL
-uv run python -m cli.call --caller livekit # on-demand: rings the hospital's outbound.call_number → PIN → Q&A
+uv run python -m cli.call --caller livekit # on-demand: rings the hospital's outbound.call_number → "yes" → Q&A
 # event-driven (dispatch_mode app+call, the default): consumer on SIP + SignalWire SMS fallback + phone worker
 make demo-phone-up        # a later plain `make demo-up` puts the consumer back on WebRTC
-# publish an event (§5): the phone rings → PIN → this event's alert → Q&A → "acknowledge"
+# publish an event (§5): the phone rings → "yes" → this event's alert → Q&A → "acknowledge"
 ```
 
 How the call flows on the wire: [TELEPHONY_SETUP.md § Call flow](TELEPHONY_SETUP.md#call-flow-technical).
@@ -407,7 +414,7 @@ How the call flows on the wire: [TELEPHONY_SETUP.md § Call flow](TELEPHONY_SETU
 The full list, with an example for every kind of question, is in
 [`docs/project/queries.md`](docs/project/queries.md). In short:
 
-After the PIN, questions are answered from the graph for **the event the call is about** (not the
+After the "yes", questions are answered from the graph for **the event the call is about** (not the
 patient's newest event), or from the clinical documents. A question about a patient that no graph
 query covers gets a short list of what can be asked; it is never answered by the model guessing.
 

@@ -111,6 +111,12 @@ class SimulateRequest(BaseModel):
     fp_percent: int = 0
 
 
+class SessionOnlyRequest(BaseModel):
+    """A body that carries only the inbox session (proof of PIN)."""
+
+    session: str
+
+
 class EventInfoRequest(BaseModel):
     """`POST /event-info` body: one event's why + source + outcome, for the detail panel."""
 
@@ -146,6 +152,7 @@ def create_app(
     dispatcher=None,
     app_dir: Path | None = None,
     simulator=None,
+    simulate_history: str | Path | None = None,
 ):
     """Build the gateway FastAPI app.
 
@@ -163,6 +170,11 @@ def create_app(
     app_dir = _APP_DIR if app_dir is None else app_dir
 
     api = FastAPI(title="rmsai companion-app gateway")
+
+    # One console runs the simulations (SIMULATE_CONSOLE=h1 with two hospitals): one run sequence
+    # and one history across both hospitals. Unset: every app may simulate (single hospital).
+    console = os.environ.get("SIMULATE_CONSOLE", "")
+    simulate_here = not console or console == config.hospital_id
 
     def _session_ok(token: str) -> bool:
         """A valid inbox token: signed by us, unexpired, scoped to this hospital's room."""
@@ -207,6 +219,7 @@ def create_app(
             "token": token,
             "hospital_id": config.hospital_id,
             "hospital_apps": hospital_apps(),
+            "simulate": simulate_here,
             "dispatch_mode": config.dispatch_mode,
             # Whether selecting a row should speak its report, until the clinician toggles it. Off
             # in app+call mode: the clinician may be on the phone alert for the same event, and the
@@ -353,6 +366,11 @@ def create_app(
 
     sim_lock = threading.Lock()
 
+    def _sim_history():
+        from cli.simulate import HISTORY  # noqa: PLC0415
+
+        return simulate_history or HISTORY
+
     @api.post("/simulate")
     def simulate(req: SimulateRequest) -> dict:
         """Simulate-tab click: real held-out ECG alarms onto the bus (`cli.simulate.run`), so the
@@ -361,6 +379,8 @@ def create_app(
         if not _session_ok(req.session):
             audit.write(actor="app", action="simulate", subject="-", outcome="unauthorized")
             raise HTTPException(status_code=401, detail="invalid session")
+        if not simulate_here:
+            raise HTTPException(status_code=403, detail=f"simulations run from hospital {console}")
         if not sim_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="a simulation is already running")
         try:
@@ -374,9 +394,27 @@ def create_app(
             raise HTTPException(status_code=502, detail=str(exc)) from None
         finally:
             sim_lock.release()
-        audit.write(actor="app", action="simulate", subject="-", outcome="published",
+        audit.write(actor="app", action="simulate", subject="-",
+                    outcome="partial" if result.get("errors") else "published",
                     run=result["run"], events=len(result["events"]))
+        try:  # the events are already published: a history write failure must not fail the run
+            from cli.simulate import record  # noqa: PLC0415
+
+            record(result, _sim_history())
+        except OSError as exc:
+            print(f"[gateway] simulate history not written: {exc}", flush=True)
         return result
+
+    @api.post("/simulate/history")
+    def simulate_history_view(req: SessionOnlyRequest) -> dict:
+        """Every recorded run with summed tiles and Wilson 95 % rates (gate decisions)."""
+        if not _session_ok(req.session):
+            raise HTTPException(status_code=401, detail="invalid session")
+        if not simulate_here:
+            raise HTTPException(status_code=403, detail=f"simulations run from hospital {console}")
+        from cli.simulate import history  # noqa: PLC0415
+
+        return history(_sim_history())
 
     @api.post("/events")
     def events(req: EventsRequest) -> dict:

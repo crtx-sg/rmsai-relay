@@ -113,10 +113,11 @@ HOSPITALS ?= h1 $(if $(wildcard config/hospitals/h2.yaml),h2)
 H2_ENV := set -a; . infra/h2.env; set +a;
 H2_COMPOSE := $(COMPOSE) -p infra-h2
 SIM_TARGETS := $(if $(filter h2,$(HOSPITALS)),h1=redis://localhost:6379/0$(,)h2=redis://localhost:6380/0)
+SIM_CONSOLE := $(if $(filter h2,$(HOSPITALS)),h1)
 APP_LINKS := $(if $(filter h2,$(HOSPITALS)),h1=http://localhost:8080$(,)h2=http://localhost:8090)
 
 demo-phone-up:
-	SIMULATE_TARGETS="$(SIM_TARGETS)" HOSPITAL_APPS="$(APP_LINKS)" CONSUME_ARGS="$(DEMO_PHONE_CONSUME_ARGS)" $(DOCKER_USER) \
+	SIMULATE_TARGETS="$(SIM_TARGETS)" HOSPITAL_APPS="$(APP_LINKS)" SIMULATE_CONSOLE="$(SIM_CONSOLE)" CONSUME_ARGS="$(DEMO_PHONE_CONSUME_ARGS)" $(DOCKER_USER) \
 		$(COMPOSE) --profile telephony up -d --wait --wait-timeout 180
 	@./infra/demo-check.sh
 	@if [ -n "$(filter h2,$(HOSPITALS))" ]; then $(MAKE) --no-print-directory h2-up H2_PHONE=1; fi
@@ -125,7 +126,7 @@ demo-phone-up:
 # compose doesn't start a second LiveKit in this project. H2_PHONE=1 adds the phone worker.
 h2-up:
 	$(H2_ENV) $(DOCKER_USER) $(H2_COMPOSE) up -d --wait --wait-timeout 180 redis neo4j qdrant
-	$(H2_ENV) SIMULATE_TARGETS="$(SIM_TARGETS)" HOSPITAL_APPS="$(APP_LINKS)" CONSUME_ARGS="$(if $(H2_PHONE),$(DEMO_PHONE_CONSUME_ARGS))" \
+	$(H2_ENV) SIMULATE_TARGETS="$(SIM_TARGETS)" HOSPITAL_APPS="$(APP_LINKS)" SIMULATE_CONSOLE="$(SIM_CONSOLE)" CONSUME_ARGS="$(if $(H2_PHONE),$(DEMO_PHONE_CONSUME_ARGS))" \
 		$(DOCKER_USER) $(H2_COMPOSE) $(if $(H2_PHONE),--profile telephony) up -d --wait \
 		--wait-timeout 180 --no-deps consumer voice-worker gateway $(if $(H2_PHONE),voice-worker-phone)
 	@$(H2_ENV) COMPOSE_PROJECT_NAME=infra-h2 ./infra/demo-check.sh

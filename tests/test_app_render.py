@@ -137,9 +137,10 @@ def test_theme_toggle_flips_black_and_white_without_storage(rendered):
 
 def test_runs_are_grouped_with_one_separator_each(rendered):
     r = rendered["runs"]
-    # b (CLI, ts 9) is newest; c/a (one run) stay together though d sits between them in time
-    assert r["order"] == ["b", "d", "c", "a"] and r["seps"] == 1  # leading CLI group: no bar
-    assert r["label"] == "Run 3 · 14:02 · 10 samples · 20% FP" and r["cli"] == "CLI ingest"
+    # newest first; rows without a run keep their place (b above the run, d below it), the run's
+    # rows c/a stay together: bars before the run and before d, none above the leading b
+    assert r["order"] == ["b", "c", "a", "d"] and r["seps"] == 2
+    assert r["label"] == "Run 3 · 14:02 · 10 samples · 20% FP" and r["cli"] == "Not from Simulate"
 
 
 def test_simulate_panel(rendered):
@@ -150,3 +151,10 @@ def test_header_names_the_hospital_and_links_the_others(rendered):
     b = rendered["badge"]
     assert b.startswith("Hospital h1") and 'href="http://localhost:8090"' in b and "open h2" in b
     assert "open h1" not in b and rendered["title"] == "rmsai · h1"
+
+
+def test_simulate_history_bars_totals_and_intervals(rendered):
+    h = rendered["hist"]
+    assert "Run 5 · 11:02 · 4 samples · 50% FP" in h and "h1 1 · h2 3" in h
+    assert "Arrhythmias rang: <b>100%</b> (2/2, 95% CI 34%–100%)" in h
+    assert "False positives filtered: –" in h

@@ -137,6 +137,10 @@ def test_without_pin_a_spoken_yes_plays_the_alert_and_marks_answered(tmp_path):
     assert h.respond("tell me about the patient", session_id="room1") == h.respond(
         "Please leave a message right after the tone yes", session_id="room1")
     assert h.respond("yes what is this?", session_id="room1").startswith("Please say yes")
+    # a voicemail greeting split at a pause, or a "yes" inside a longer turn, never confirms
+    for vm in ("Yeah, leave a message.", "Yes, leave a message", "No. Yes.", "Ya.", "1234"):
+        assert h.respond(vm, session_id="room1").startswith("Please say yes"), vm
+    assert h.is_confirmation("Hello, yes.") and h.is_confirmation("Yes, go ahead")
     assert h.respond("um", session_id="room1", spoken=True) == ""
     assert answered == [] and not h.is_authenticated("room1")
     # "Yeah." is a confirmation here, not filler.

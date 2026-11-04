@@ -205,6 +205,26 @@ livekit neo4j qdrant redis   Up (healthy)
 > the containers then fail to bind. Two workers registered under the same `LIVEKIT_AGENT_NAME` also
 > split dispatches between them.
 
+#### A second hospital (h2)
+
+With `config/hospitals/h2.yaml` present (copy of `h1.yaml`: h2's `call_number`, `alert_language:
+ja`), `make demo-phone-up` also starts stack **h2**: compose project `infra-h2`, settings in
+`infra/h2.env`, app on **:8090**, Redis/Neo4j/Qdrant on 6380/7688/6335, phone agent
+`rmsai-agent-phone-h2`, sharing h1's LiveKit. `HOSPITALS=h1 make demo-phone-up` skips it.
+
+```bash
+make h2-kb                                  # once, on a fresh h2, BEFORE any h2 events
+make h2-up H2_PHONE=1                       # (re)start h2 alone, with its phone worker
+set -a; . infra/h2.env; set +a; COMPOSE_PROJECT_NAME=infra-h2 ./infra/demo-check.sh
+make phone-transcript HOSPITAL=all          # both hospitals' calls, lines prefixed [h1]/[h2]
+docker compose -f infra/docker-compose.yml -p infra-h2 logs -f consumer   # any h2 service
+```
+
+`demo-check` fails if h2's agent names equal h1's (h1's call could reach h2's worker). Never run
+`cli.sip_setup apply` from h2: call-in stays with h1. Only h1's app has the **Simulate** tab
+(`SIMULATE_CONSOLE=h1`); its runs split across both hospitals, and the history is
+`data/simulate/runs.jsonl`.
+
 ### 3. Initialize the knowledge base
 
 Both stores start empty. The **graph** needs its schema, care protocols, and document entities; the
@@ -273,8 +293,8 @@ docker compose -f infra/docker-compose.yml logs -f consumer
 # [queued] PT6580/VENTRICULAR_TACHYCARDIA @ Unit1/Unit1-Bed01: call 1 in queue [app worklist pushed]
 # [calls] dialling for PT6580/VENTRICULAR_TACHYCARDIA @ Unit1/Unit1-Bed01 (Critical, event daf16c2d…)
 # [calls] skip PT6581/ATRIAL_FIBRILLATION @ Unit1/Unit1-Bed02: already acknowledged (event …)
-# a pickup with no PIN is a missed attempt; after the last attempt the alert is texted:
-# [consume] call in rmsai-outbound-…-r1 ended with no PIN entered: counted as missed
+# a pickup with no "yes" (or PIN) is a missed attempt; after the last attempt the alert is texted:
+# [consume] call in rmsai-outbound-…-r1 ended unconfirmed (no yes/PIN): counted as missed
 # [consume] call no_answer after 3 attempt(s); SMS fallback: sms_delivered -> status reported
 ```
 
@@ -495,7 +515,7 @@ llama3.2:3b), and `EPISODIC_RECALL=false` (default).
 ### 9. Shut down
 
 ```bash
-make docker-down          # stop + remove containers; named volumes survive
+make docker-down          # stop + remove containers (h1 and, if it exists, h2); named volumes survive
 ```
 
 Data survives a `down`: Neo4j (`neo4j_data`), Qdrant (`qdrant_data`), the model cache (`hf_cache`),
@@ -507,7 +527,8 @@ consumer or phone worker only when no call is up: mid-call the worker dies befor
 phone stays connected, and a re-dispatched agent joins the room as an inbound KB agent.
 
 ```bash
-docker compose -f infra/docker-compose.yml down -v      # ⚠️ ALSO deletes graph + vectors + model cache
+docker compose -f infra/docker-compose.yml down -v      # ⚠️ ALSO deletes graph + vectors + model cache (shared with h2)
+docker compose -f infra/docker-compose.yml -p infra-h2 --profile telephony down -v   # h2's graph + vectors only
 docker compose -f infra/docker-compose.yml stop consumer   # stop one service
 docker compose -f infra/docker-compose.yml restart voice-worker
 ```
