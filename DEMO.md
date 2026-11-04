@@ -284,6 +284,17 @@ graph. Publishing again is also safe: the graph is keyed by event id, and an eve
 already acknowledged keeps its status and is not alerted again. To re-run the demo on the same
 files, reopen them first: `$RMSAI cli.events --reopen`.
 
+### Or: the Simulate tab (no command line)
+
+In the app, **Simulate** takes *samples* (1–10) and *false positives %*. Each click draws that many
+held-out ecg_sigma events (FP % NORMAL_SINUS, the rest AF / flutter / SVT / VT / VF), publishes
+them like the command below, and shows what the gate does with each: rang, missed (worklist only /
+withheld), false positives filtered, or a false positive that rang because of the model or the
+patient's vitals. **Calls are real**: every event that passes the gate rings the on-call phone.
+Worklist and Events rows are grouped per click under a `Run 3 · 14:02 · 10 samples · 20% FP`
+bar. Same thing from a terminal, without publishing: `$RMSAI cli.simulate --samples 10
+--fp-percent 20 --dry-run`.
+
 ### Publish to the bus
 
 ```bash

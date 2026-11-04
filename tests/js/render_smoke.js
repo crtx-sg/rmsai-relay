@@ -34,9 +34,23 @@ const before = vm.runInContext("currentTheme()", ctx);
 vm.runInContext("toggleTheme()", ctx);
 const after = ctx.document.documentElement.dataset.theme;
 
-const all = models + rows + info + worklistRow;
+// Simulate tab: run separators + the results panel
+const runs = vm.runInContext(`(() => {
+  const rs = [{ event_id: "a", ts: 5, run: "r2-1402-n2-fp0" }, { event_id: "b", ts: 9 },
+              { event_id: "c", ts: 7, run: "r2-1402-n2-fp0" }, { event_id: "d", ts: 1 }];
+  const order = groupByRun(rs, "ts");
+  return { order: order.map((r) => r.event_id),
+           seps: order.map((r, i) => runSep(order[i - 1], r, 8)).filter(Boolean).length,
+           label: runLabel("r3-1402-n10-fp20"), cli: runLabel(undefined) };
+})()`, ctx);
+ctx.renderSimulation({ run: "r1-0905-n2-fp50", summary: { expected_calls: 1, tp_calls: 1, fp_suppressed: 1 },
+  events: [{ patient: "PT935761", ground_truth: "NORMAL_SINUS", event_type: "NORMAL_SINUS",
+             confidence: 0.85, gate: "false_positive", call: false }] });
+const sim = mk("sim-summary").innerHTML + mk("#sim-events tbody").innerHTML;
+
+const all = models + rows + info + worklistRow + sim;
 process.stdout.write(JSON.stringify({
-  models, rows, info, worklistRow,
+  models, rows, info, worklistRow, runs, sim,
   datasetOptions: mk("f-dataset").options.map((o) => o.value),
   theme: { before, after, button: mk("theme-btn").textContent },
   leaks: all.includes("${") || all.includes("undefined"),

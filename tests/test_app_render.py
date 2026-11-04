@@ -133,3 +133,14 @@ def test_theme_toggle_flips_black_and_white_without_storage(rendered):
     assert t["before"] in {"light", "dark"} and t["after"] in {"light", "dark"}
     assert t["after"] != t["before"]
     assert t["button"] in {"☀ Light", "☾ Dark"}
+
+
+def test_runs_are_grouped_with_one_separator_each(rendered):
+    r = rendered["runs"]
+    # b (CLI, ts 9) is newest; c/a (one run) stay together though d sits between them in time
+    assert r["order"] == ["b", "d", "c", "a"] and r["seps"] == 1  # leading CLI group: no bar
+    assert r["label"] == "Run 3 · 14:02 · 10 samples · 20% FP" and r["cli"] == "CLI ingest"
+
+
+def test_simulate_panel(rendered):
+    assert "False positives filtered" in rendered["sim"] and "PT935761" in rendered["sim"]

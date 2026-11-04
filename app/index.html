@@ -131,6 +131,15 @@
     table.cm td.off { background: #c0392b1a; }
     #perf-events tbody tr { cursor: pointer; }
     #perf-detail { padding: 1rem; border-top: 3px solid #14213d; margin-top: 1rem; }
+    /* One Simulate click (or a CLI ingest) per group, newest first. */
+    tr.run-sep td { background: var(--panel); border-top: 3px solid var(--fg); font-weight: 600;
+                    font-size: .8rem; padding: .35rem .5rem; }
+    #sim-view { padding: 1rem; }
+    #sim-form { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; margin-bottom: 1rem; }
+    #sim-form label { display: flex; flex-direction: column; font-size: .85rem; gap: .2rem; }
+    #sim-summary { display: flex; gap: .75rem; flex-wrap: wrap; margin: .75rem 0; }
+    #sim-summary .t { background: var(--panel); border-radius: 6px; padding: .5rem .75rem; min-width: 8rem; }
+    #sim-summary .t b { display: block; font-size: 1.4rem; }
   </style>
 </head>
 <body>
@@ -139,6 +148,7 @@
     <nav id="tabs" class="hidden">
       <button data-tab="worklist" class="active">Worklist</button>
       <button data-tab="perf">Events</button>
+      <button data-tab="sim">Simulate</button>
     </nav>
     <span id="room-label"></span>
     <button id="voice-btn" class="hidden" title="Speak an event's report aloud when you select it">🔊 Voice</button>
@@ -221,6 +231,24 @@
        <tbody></tbody>
      </table>
      <section id="perf-detail" class="hidden"></section>
+   </div>
+   <div id="sim-view" class="hidden">
+     <!-- Alarms from held-out real ECG (ecg_sigma test split). False positives are NORMAL_SINUS
+          windows; the rest are arrhythmias that should ring. Every call-worthy event rings the
+          on-call phone, exactly like a real event. -->
+     <div id="sim-form">
+       <label>Samples (1–10) <input id="sim-n" type="number" min="1" max="10" value="5" /></label>
+       <label>False positives % <input id="sim-fp" type="number" min="0" max="100" step="10" value="20" /></label>
+       <button id="sim-run">Run simulation</button>
+       <span id="sim-status" class="meta"></span>
+     </div>
+     <p class="meta">Each true arrhythmia that passes the gate rings the on-call phone. False positives
+       should be filtered out and never ring.</p>
+     <div id="sim-summary"></div>
+     <table id="sim-events" class="hidden">
+       <thead><tr><th>Patient</th><th>Truth</th><th>Model said</th><th>Conf.</th><th>Gate</th><th>Rings?</th></tr></thead>
+       <tbody></tbody>
+     </table>
    </div>
   </main>
 

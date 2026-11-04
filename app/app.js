@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-10-27 events-row-selected";
+const APP_BUILD = "2026-11-04 simulate-tab";
 
 const LK = window.LivekitClient;
 
@@ -84,8 +84,36 @@ function fmtOutcome(code) {
             UNSCORABLE: "unscorable" })[code] || code || "";
 }
 
+// --- run separators (Simulate tab) ---------------------------------------------------------------
+// "r3-1402-n10-fp20" -> "Run 3 · 14:02 · 10 samples · 20% FP"; rows with no run came from a CLI ingest.
+function runLabel(run) {
+  const m = /^r(\d+)-(\d\d)(\d\d)-n(\d+)-fp(\d+)/.exec(run || "");
+  if (!m) return run ? `Run ${run}` : "CLI ingest";
+  return `Run ${m[1]} · ${m[2]}:${m[3]} · ${m[4]} samples · ${m[5]}% FP`;
+}
+
+// Newest first, but each run kept together (groups ordered by their newest row), so a run gets
+// exactly one separator even when its event times interleave with another run's.
+function groupByRun(rows, key) {
+  const sorted = [...rows].sort((a, b) => (b[key] || 0) - (a[key] || 0));
+  const groups = new Map();
+  for (const r of sorted) {
+    const g = r.run || "";
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(r);
+  }
+  return [...groups.values()].flat();
+}
+
+// The separator row to put before `r`, or "" when it continues the previous row's run.
+function runSep(prev, r, cols) {
+  if (prev && (prev.run || "") === (r.run || "")) return "";
+  if (!prev && !r.run) return ""; // no simulation on top: no leading "CLI ingest" bar
+  return `<tr class="run-sep"><td colspan="${cols}">${esc(runLabel(r.run))}</td></tr>`;
+}
+
 function render() {
-  const rows = [...state.rows.values()].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const rows = groupByRun(state.rows.values(), "ts");
   const tbody = document.getElementById("rows");
   const table = document.getElementById("table");
   const empty = document.getElementById("empty");
@@ -94,7 +122,11 @@ function render() {
   table.classList.toggle("hidden", rows.length === 0);
 
   tbody.innerHTML = "";
+  let prev = null;
   for (const r of rows) {
+    const sep = runSep(prev, r, 8);
+    prev = r;
+    if (sep) tbody.insertAdjacentHTML("beforeend", sep);
     const tr = document.createElement("tr");
     const acked = r.status === "acknowledged";
     const classes = [];
@@ -553,6 +585,7 @@ function showTab(tab) {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   document.getElementById("wl-view").classList.toggle("hidden", tab !== "worklist");
   document.getElementById("perf-view").classList.toggle("hidden", tab !== "perf");
+  document.getElementById("sim-view").classList.toggle("hidden", tab !== "sim");
   if (tab === "perf") { ensureTypeOptions(); loadPerf(); }
 }
 
@@ -645,7 +678,8 @@ function renderEvents(data, labelled) {
   document.getElementById("perf-count").textContent =
     `${data.total} event(s), ${data.pending} pending · ${desc}${data.truncated ? " · showing the newest only" : ""}`;
   const tbody = document.querySelector("#perf-events tbody");
-  tbody.innerHTML = data.events.map((e) => `<tr data-event-id="${esc(e.event_id)}"${e.event_id === perfSelected ? ' class="selected"' : ""}>
+  const events = groupByRun(data.events, "processed_at");
+  tbody.innerHTML = events.map((e, i) => `${runSep(events[i - 1], e, 12)}<tr data-event-id="${esc(e.event_id)}"${e.event_id === perfSelected ? ' class="selected"' : ""}>
     <td>${esc(fmtDateTime(e.ts))}</td><td>${esc(e.patient)}</td><td>${esc(e.bed || "")}</td>
     <td>${esc(e.event_type)} <span class="sub">${pct(e.confidence)}${e.alert_basis === "vitals" ? " · vitals alert" : ""}</span>
       <span class="sub">id ${esc(String(e.event_id).slice(0, 8))}</span></td>
@@ -845,7 +879,46 @@ async function pttUp() {
   }
 }
 
+// --- Simulate tab -------------------------------------------------------------------------------
+const SIM_TILES = [
+  ["expected_calls", "Arrhythmias (should ring)"], ["tp_calls", "Rang"],
+  ["missed_worklist", "Missed – worklist only"], ["missed", "Missed – withheld"],
+  ["fp_suppressed", "False positives filtered"], ["fp_called_model", "FP rang – model error"],
+  ["fp_called_vitals", "FP rang – patient vitals"],
+];
+
+async function runSimulation() {
+  const btn = document.getElementById("sim-run");
+  const status = document.getElementById("sim-status");
+  const samples = parseInt(document.getElementById("sim-n").value, 10);
+  const fp = parseInt(document.getElementById("sim-fp").value, 10);
+  btn.disabled = true;
+  status.textContent = "Classifying… (calls follow on the phone)";
+  try {
+    const res = await sessionPost("/simulate", { samples, fp_percent: fp });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { status.textContent = `Failed: ${data.detail || res.status}`; return; }
+    status.textContent = `${runLabel(data.run)} published`;
+    renderSimulation(data);
+  } catch (err) {
+    status.textContent = `Failed: ${err}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderSimulation(data) {
+  const s = data.summary || {};
+  document.getElementById("sim-summary").innerHTML = SIM_TILES.map(([k, label]) =>
+    `<div class="t"><b>${esc(s[k] ?? 0)}</b>${esc(label)}</div>`).join("");
+  document.getElementById("sim-events").classList.remove("hidden");
+  document.querySelector("#sim-events tbody").innerHTML = (data.events || []).map((e) => `<tr>
+    <td>${esc(e.patient)}</td><td>${esc(e.ground_truth)}</td><td>${esc(e.event_type)}</td>
+    <td>${pct(e.confidence)}</td><td>${esc(e.gate)}</td><td>${e.call ? "📞 yes" : "no"}</td></tr>`).join("");
+}
+
 console.log(`[app] build ${APP_BUILD}`);
+document.getElementById("sim-run").addEventListener("click", runSimulation);
 document.getElementById("login-btn").addEventListener("click", login);
 document.getElementById("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 // Event delegation for the per-row buttons + row selection (the table is re-rendered each message).
