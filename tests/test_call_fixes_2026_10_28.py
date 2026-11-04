@@ -82,7 +82,8 @@ def test_reconnect_hangs_up_and_marks_the_call_for_a_redial():
     async def _run():
         end_call_on_reconnect(room, "e", mark_dropped=marked.append, delete_room=_delete)
         room.handlers["reconnecting"]()
-        assert not deleted  # only once reconnected
+        assert marked == ["e"]  # flagged at once: the phone leg may end before we reconnect
+        assert not deleted  # hang up only once reconnected
         room.handlers["reconnected"]()
         await asyncio.sleep(0)
 

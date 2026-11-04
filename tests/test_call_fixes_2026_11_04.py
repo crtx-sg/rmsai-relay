@@ -73,3 +73,33 @@ def test_no_redial_once_acknowledged_or_on_a_normal_close():
     assert _close(_Handler(), "participant_disconnected") == ([], [])
     # failed before the "yes": a missed attempt for the retry policy, no extra redial flag
     assert _close(_Handler(authenticated=False), "error") == ([], [True])
+
+
+def _reconnect(*, answered=True, ended=False):
+    from voice.livekit_agent import end_call_on_reconnect
+
+    room, marked, deleted = _Session(), [], []
+    room.name = "room1"
+
+    async def _delete():
+        deleted.append(True)
+
+    async def _run():
+        end_call_on_reconnect(room, "E1", mark_dropped=marked.append, delete_room=_delete,
+                              answered=lambda: answered, ended=lambda: ended)
+        room.handlers["reconnecting"]()
+        flagged_before_reconnect = list(marked)
+        room.handlers["reconnected"]()
+        await asyncio.sleep(0)
+        return flagged_before_reconnect
+
+    return asyncio.run(_run()), marked, deleted
+
+
+def test_a_dropped_call_is_flagged_before_the_phone_leg_ends():
+    # live 2026-11-04 (PT914543): the call ended 6 s before LiveKit reconnected; flag was too late
+    assert _reconnect() == (["E1"], ["E1"], [True])  # flagged once, then hung up
+
+
+def test_no_redial_after_an_acknowledged_call_drops():
+    assert _reconnect(ended=True) == ([], [], [])

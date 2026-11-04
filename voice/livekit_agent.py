@@ -235,7 +235,7 @@ def redial_on_session_error(session, handler, room_name: str, *, mark_dropped, d
 
 
 def end_call_on_reconnect(room, event_id: str, *, mark_dropped, delete_room,
-                          answered=lambda: True) -> None:
+                          answered=lambda: True, ended=lambda: False) -> None:
     """Hang up an event call once LiveKit has reconnected, and have the consumer ring it again.
 
     With livekit 1.1.8 / agents 1.6.0, after a signal reconnect ("ping timeout" -> resume) the
@@ -244,14 +244,30 @@ def end_call_on_reconnect(room, event_id: str, *, mark_dropped, delete_room,
     shortcut: hangs up on every reconnect, even one the audio might survive; drop it once an SDK
     upgrade is shown to keep the outgoing track alive.
     """
+    flagged = []
+
+    def _reconnecting() -> None:
+        print("[worker] LiveKit connection lost mid-call; reconnecting", flush=True)
+        if ended() or not answered():
+            return
+        # Flag now, not on "reconnected": the phone leg can end first, and the consumer reads the
+        # flag as soon as the call ends; a late flag left the event unrung (live 2026-11-04).
+        try:
+            mark_dropped(event_id)
+            flagged.append(True)
+        except Exception as exc:  # noqa: BLE001 - "reconnected" tries again
+            print(f"[worker] could not mark {event_id} for a redial: {type(exc).__name__}",
+                  flush=True)
+
     def _reconnected() -> None:
+        if ended():
+            return  # acknowledged: the call is already ending, nothing to ring again
         print(f"[worker] LiveKit reconnected mid-call; our audio no longer reaches the caller -> "
               f"ending {room.name} so the event is rung again", flush=True)
         drop_and_redial(event_id, mark_dropped=mark_dropped, delete_room=delete_room,
-                        answered=answered)
+                        answered=lambda: answered() and not flagged)
 
-    room.on("reconnecting", lambda: print("[worker] LiveKit connection lost mid-call; reconnecting",
-                                          flush=True))
+    room.on("reconnecting", _reconnecting)
     room.on("reconnected", _reconnected)
 
 
@@ -855,7 +871,8 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         end_call_on_reconnect(ctx.room, handler.alert.event_id,
                               mark_dropped=CallQueue(alert_store.redis).mark_dropped,
                               delete_room=ctx.delete_room,
-                              answered=lambda: handler.is_authenticated(ctx.room.name))
+                              answered=lambda: handler.is_authenticated(ctx.room.name),
+                              ended=lambda: handler.is_ended(ctx.room.name))
     from livekit import rtc as _rtc  # noqa: PLC0415
 
     def _yield_if_duplicate(_participant=None) -> bool:
