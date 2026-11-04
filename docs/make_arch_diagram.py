@@ -76,7 +76,7 @@ band(2, 37, 188, 35, C_DB, "SHARED KNOWLEDGE BASE   &   DISPATCH")
 band(2, 2, 188, 31, C_CONV, "CONVERSATION PIPELINE   (clinician Q&A, voice or text)")
 
 # --- event pipeline (top, left→right) ----------------------------------------------------------
-e1 = box(5, 80, 22, 14, "Device\nHDF5 file / MQTT")
+e1 = box(5, 80, 22, 14, "Device\nHDF5 file / MQTT\n(or app Simulate tab)", fs=9.0)
 e2 = box(31, 80, 22, 14, "Ingest\n→ SignalWindow\n(ECG+vitals+history)", fs=8.8)
 e3 = box(57, 80, 24, 14, "ECG Model\nECGTransCovNet\n(CNN+Transformer, ML)", C_MODEL, fs=8.8)
 e4 = box(85, 80, 24, 14, "Vitals analysis\nMEWS (rules) +\nMann-Kendall (stats)", fs=8.8)
@@ -106,7 +106,7 @@ note(180, 66, "persist (write)", color=DBRW)
 
 # --- dispatch (middle, left): the gate fans out to the worklist (now) and the call queue -------
 d1 = box(5, 43, 32, 13, "App worklist push\nevery gated event, AT ONCE\n→ inbox room data message", C_DISP, fs=8.0)
-q1 = box(43, 43, 30, 13, "Redis call queue\nZSET rmsai:calls:queue\n+ HASH rmsai:calls:jobs", C_BUS, fs=8.0)
+q1 = box(43, 43, 30, 13, "Redis call queue (per hospital)\nZSET rmsai:calls:queue\n+ HASH rmsai:calls:jobs", C_BUS, fs=8.0)
 d2 = box(81, 43, 30, 13, "CallDispatcher (1 thread)\nskip if acked · stage alert\n→ dial per-event room", C_DISP, fs=8.0)
 
 
@@ -137,14 +137,14 @@ note((d2["x"] + d2["w"] + db1["x"]) / 2, d2["cy"] + 3.2, "status?", fs=7.2, colo
 
 ax.text(96, -1.5,
         "Call queue:  score = (3 − severity rank) · 10¹³ + enqueue ms  →  every Critical before any High, first-come within a level   ·   "
-        "recover() re-queues unfinished jobs after a consumer restart, except calls already answered (right PIN)   ·   "
+        "recover() re-queues unfinished jobs after a consumer restart, except calls already answered (“yes” / right PIN)   ·   "
         "WebRTC / text dispatch inline (no queue)",
         ha="center", va="center", fontsize=8.2, color="#7c2d12", style="italic")
 
 # --- conversation pipeline (bottom, left→right) ------------------------------------------------
-c1 = box(5, 8, 22, 19, "Clinician\nphone (SIP) /\nbrowser (WebRTC) /\ncompanion app\n(worklist · Events tab)", fs=8.2)
+c1 = box(5, 8, 22, 19, "Clinician\nphone (SIP) /\nbrowser (WebRTC) /\ncompanion app\n(worklist · Events ·\nSimulate tabs)", fs=8.0)
 c2 = box(34, 10, 20, 17, "LiveKit Server\ntransport only\n(WebRTC / SIP)", fs=8.6)
-c3 = box(61, 7, 38, 20, "Voice Worker  (agent)\njoins ONE room\n\nSTT → VAD → gates (PIN/wake)\n→ Handler → TTS", fs=8.8)
+c3 = box(61, 7, 38, 20, "Voice Worker  (agent)\njoins ONE room\n\nSTT → VAD → gates (“yes”·PIN/wake)\n→ Handler → TTS", fs=8.8)
 c4 = box(106, 10, 42, 17, "Orchestrator  (RAG turn)\nguardrails → retrieve (vector+graph)\n→ de-id → LLM → guardrails", fs=8.4)
 
 note(96, 4.4, "STT: Whisper / ElevenLabs   ·   TTS: Piper / ElevenLabs   ·   VAD: Silero   ·   "

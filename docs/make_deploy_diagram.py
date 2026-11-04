@@ -93,7 +93,7 @@ def step(x, y, n, color=DATA):
 # --- title -------------------------------------------------------------------------------------
 ax.text(107, 131, "rmsai-relay — deployment: Docker services, cloud services & call flow",
         ha="center", va="center", fontsize=18, fontweight="bold", color="#0f172a")
-ax.text(107, 127, "one Compose project on the host (network_mode: host)  ·  cloud services carry synthetic data only",
+ax.text(107, 127, "one Compose project per hospital on the host (network_mode: host; h1, optional h2)  ·  cloud services carry synthetic data only",
         ha="center", va="center", fontsize=10.5, color="#475569")
 
 # --- bands -------------------------------------------------------------------------------------
@@ -103,18 +103,18 @@ band(150, 8, 40, 104, C_CLOUD, "CLOUD", "synthetic / public data only", ec=CLOUD
 band(193, 8, 20, 104, C_USER, "ON CALL")
 
 # --- clinician devices -------------------------------------------------------------------------
-browser = box(4, 78, 19, 20, "Browser", "companion app\nworklist · chat ·\npush-to-talk ·\nEvents tab", C_USER)
-phone = box(195, 56, 16, 18, "Phone", "PSTN call\n(PIN → alert\n→ Q&A → ack)\n+ SMS", C_USER)
+browser = box(4, 78, 19, 20, "Browser", "companion app\nworklist · chat ·\npush-to-talk ·\nEvents · Simulate", C_USER)
+phone = box(195, 56, 16, 18, "Phone", "PSTN call\n(\"yes\" → alert\n→ Q&A → ack)\n+ SMS", C_USER)
 
 # --- app containers (one shared image, source bind-mounted) ------------------------------------
-gw = box(31, 76, 21, 25, "gateway", ":8080  cli.gateway\n\nPIN /session · /ack\n/events · /metrics\n/artifact links\naudit log", C_APP)
-vw = box(54, 76, 21, 25, "voice-worker", "agent rmsai-agent\n:8091 (local LiveKit)\n\ninbox room + WebRTC\ncalls: STT → PIN →\norchestrator → TTS", C_APP)
+gw = box(31, 76, 21, 25, "gateway", ":8080  cli.gateway\n\nPIN /session · /ack\n/events · /metrics\n/simulate → cli.ingest\n/artifact links · audit", C_APP)
+vw = box(54, 76, 21, 25, "voice-worker", "agent rmsai-agent\n:8091 (local LiveKit)\n\ninbox room + WebRTC\ncalls: STT → yes/PIN\n→ orchestrator → TTS", C_APP)
 ing = box(77, 76, 21, 25, "tools  (one-shot)", "cli.ingest --emit bus\n\nHDF5 → SignalWindow\n→ ECGTransCovNet\n→ MEWS / trends\n→ DeviceEvent", C_APP, ls=DASH)
 con = box(100, 76, 21, 25, "consumer", "cli.consume\nmain thread:\npersist · gate\nworklist push\nZADD call queue", C_APP, fs=7.4)
 # the dispatcher is a thread inside the consumer process, not the voice worker
 disp = box(101.4, 77.2, 18.2, 8.6, "CallDispatcher thread",
            "ZPOPMIN · stage alert\ndial · wait for hang-up", fc="#ede9fe", ec="#6d28d9", fs=6.2)
-vwp = box(123, 76, 21, 25, "voice-worker-phone", "rmsai-agent-phone · :8082\nanswers; never dials\n\nper turn:\nSTT → PIN/wake gate\n→ orchestrator → TTS", C_APP, fs=7.2)
+vwp = box(123, 76, 21, 25, "voice-worker-phone", "rmsai-agent-phone · :8082\nanswers; never dials\n\nper turn:\nSTT → yes/wake gate\n→ orchestrator → TTS", C_APP, fs=7.2)
 
 # --- backing stores ----------------------------------------------------------------------------
 lk = box(31, 42, 21, 20, "livekit", ":7880 / 7881 / 7882udp\n\nlocal media server\ninbox room\nWebRTC call rooms", C_LK)
@@ -128,11 +128,16 @@ box(31, 23, 56, 14, "app image: one for all app services (in-process, local)",
     "ECGTransCovNet (torch) · Presidio + spaCy de-id (DEID_BACKEND)\n"
     "BGE embeddings · Silero VAD · faster-whisper / Piper (local STT/TTS)", "#ffffff", fs=7.6)
 box(90, 23, 54, 14, "./data  (bind mount)  +  named volumes",
-    "HDF5 inputs · reports · ECG plots · kb_uploads · audit.jsonl\n"
-    "neo4j_data · qdrant_data · hf_cache (model cache)", "#ffffff", fs=7.6)
-box(31, 11, 113, 9, "optional profiles",
-    "model-server Ollama (llm) · mosquitto MQTT (telemetry) · hapi-fhir EMR (emr) · real-samples (tools) · "
-    "voice-worker-phone (telephony)", fc="#ffffff", ls=DASH, fs=7.2)
+    "HDF5 inputs · reports · ECG plots · kb_uploads · audit*.jsonl\n"
+    "simulate/runs.jsonl · neo4j_data · qdrant_data · hf_cache (models)", "#ffffff", fs=7.6)
+box(31, 11, 56, 9, "optional profiles",
+    "model-server Ollama (llm) · mosquitto MQTT (telemetry)\n"
+    "hapi-fhir EMR (emr) · real-samples (tools) · voice-worker-phone (telephony)",
+    fc="#ffffff", ls=DASH, fs=6.8)
+box(90, 11, 54, 9, "second hospital (optional): project infra-h2, infra/h2.env",
+    "same services, own redis :6380 · neo4j :7688 · qdrant :6335 · app :8090\n"
+    "agent rmsai-agent-phone-h2 · Japanese alert · shares livekit + Ollama",
+    fc="#ffffff", ec="#7c3aed", ls=DASH, fs=6.8)
 
 # --- cloud services ----------------------------------------------------------------------------
 el = box(153, 92, 34, 13.5, "ElevenLabs", "STT Scribe · TTS flash\n(STT_BACKEND / TTS_BACKEND)", C_VENDOR, ec=CLOUD)
@@ -223,12 +228,12 @@ step(197, 76, "7", DBRW)
 
 # --- numbered flow caption ---------------------------------------------------------------------
 caption = (
-    "①  cli.ingest classifies the HDF5 event and XADDs it to the Redis stream.   "
+    "①  cli.ingest (or the app's Simulate tab, per hospital) classifies the HDF5 event and XADDs it to that hospital's Redis stream.   "
     "②  consumer reads it, persists to Neo4j + Qdrant and runs the alert gate.   "
     "③  every gated event is pushed to the app worklist at once (LiveKit server API → inbox room).\n"
     "④  the call is queued (Redis ZSET, most severe first); the consumer's CallDispatcher thread stages the alert and dials via LiveKit Cloud, one call at a time.\n"
     "⑤  SignalWire rings the phone.   "
-    "⑥  the phone worker answers: per turn, caller audio → STT (ElevenLabs) → PIN/wake gate → orchestrator (KB, Ollama) → Presidio → TTS (ElevenLabs) → audio back.\n"
+    "⑥  the phone worker answers: per turn, caller audio → STT (ElevenLabs) → “yes”/wake gate → orchestrator (KB, Ollama) → Presidio → TTS (ElevenLabs) → audio back.\n"
     "⑦  \"acknowledge\" (phone) or Ack (app) sets the event's status in Neo4j; a queued call for an acknowledged event is skipped.   "
     "In the app, the voice-worker serves the inbox room the same way over the local LiveKit."
 )
