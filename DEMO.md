@@ -166,6 +166,8 @@ package v2 (manifest 096bdfbafa04), split=test
 # pick removes earlier pick files from data/real first (other .h5 files there are kept, with a warning)
 docker compose -f infra/docker-compose.yml run --rm real-samples pick \
     --pick VENTRICULAR_TACHYCARDIA:2,ATRIAL_FIBRILLATION:2,NORMAL_SINUS:1
+# or the Simulate tab's mix: N events, FP % NORMAL_SINUS, the rest AF/AFL/SVT/VT/VF at random
+docker compose -f infra/docker-compose.yml run --rm real-samples pick --samples 10 --fp-percent 20
 ```
 
 ```
@@ -234,6 +236,8 @@ docker compose -f infra/docker-compose.yml run --rm real-samples  pick --pick VE
 
 | Flag | Default | Purpose |
 |---|---|---|
+| `--pick LABEL:N,…` *or* `--samples N` | — (one is required) | exact counts per class, *or* N events mixed as in the Simulate tab (no 10-event cap) |
+| `--fp-percent P` | `0` | with `--samples`: the NORMAL_SINUS (false-positive) share, `round(N × P %)` |
 | `--dataset mitbih vfdb …` | all | restrict to source databases |
 | `--seed N` | random (printed) | repeat an earlier draw |
 | `--out DIR` | `data/real` | output directory (must be outside the package; it is checksummed) |
@@ -292,8 +296,17 @@ them like the command below, and shows what the gate does with each: rang, misse
 withheld), false positives filtered, or a false positive that rang because of the model or the
 patient's vitals. **Calls are real**: every event that passes the gate rings the on-call phone.
 Worklist and Events rows are grouped per click under a `Run 3 · 14:02 · 10 samples · 20% FP`
-bar. Same thing from a terminal, without publishing: `$RMSAI cli.simulate --samples 10
---fp-percent 20 --dry-run`.
+bar.
+
+**The same from the command line** (two ways):
+
+| | Command | What you get |
+|---|---|---|
+| Exactly what the tab does | `docker compose -f infra/docker-compose.yml exec gateway python -m cli.simulate --samples 10 --fp-percent 20` | run id + bar, split across h1/h2, scored per hospital, appended to the history. `--dry-run`: score only, publish nothing |
+| Pick, look, then publish | `… run --rm real-samples pick --samples 10 --fp-percent 20`, then `$RMSAI cli.ingest --dir data/real --emit bus` | one hospital's bus (h2: add `--redis-url redis://localhost:6380/0`); rows sit under "Not from Simulate", not in the history. Any `--pick`/`--seed`/`--dataset` |
+
+`cli.simulate` runs in the gateway container because that one mounts the ecg_sigma package and
+carries `SIMULATE_TARGETS` (the `tools` container has neither).
 
 With two hospitals, Simulate is on **h1's app only** (`SIMULATE_CONSOLE=h1`, set by `make
 demo-phone-up`; h2's app hides the tab): one run sequence and one history. **All runs** lists every

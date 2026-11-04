@@ -2,6 +2,7 @@
 
   python -m cli.real_samples list
   python -m cli.real_samples pick --pick VENTRICULAR_TACHYCARDIA:3,ATRIAL_FIBRILLATION:2,NORMAL_SINUS:2
+  python -m cli.real_samples pick --samples 10 --fp-percent 20     # the Simulate tab's mix
   python -m cli.ingest --dir data/real --emit bus
 
 `--package` defaults to `ECGPKG_DIR` (else `../ecg_sigma/packages/ecg_pkg_v2`). The package must be
@@ -60,7 +61,17 @@ def _cmd_list(pkg, args) -> int:
 
 
 def _cmd_pick(pkg, args) -> int:
-    pick = parse_pick(args.pick)
+    if args.seed is None:  # a new draw each run; the printed seed repeats it
+        args.seed = random.SystemRandom().randrange(2**31)
+    if args.samples is not None:  # the Simulate tab's mix: fp% NORMAL_SINUS, rest call-worthy
+        from cli.simulate import plan  # noqa: PLC0415
+
+        try:
+            pick = plan(args.samples, args.fp_percent, random.Random(args.seed), max_samples=None)
+        except ValueError as exc:
+            raise SampleError(str(exc)) from None
+    else:
+        pick = parse_pick(args.pick)
     checkpoints = DEFAULT.ecg_checkpoints if args.checkpoint is None else tuple(args.checkpoint)
     if not checkpoints:
         print("[real_samples] WARNING no ECG_CHECKPOINTS/--checkpoint: cannot confirm this package "
@@ -78,8 +89,6 @@ def _cmd_pick(pkg, args) -> int:
               "results are not a performance estimate", file=sys.stderr)
 
     datasets = set(args.dataset) if args.dataset else None
-    if args.seed is None:  # a new draw each run; the printed seed repeats it
-        args.seed = random.SystemRandom().randrange(2**31)
     sel = select_events(pkg, pick, split=args.split, datasets=datasets, seed=args.seed)
     for label, (want, got) in sel.shortfall.items():
         print(f"[real_samples] {label}: wanted {want}, only {got} in split={args.split}",
@@ -108,7 +117,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="events available per label in the split")
 
     p = sub.add_parser("pick", help="write the selected events as reader-ready HDF5")
-    p.add_argument("--pick", required=True, help="LABEL:N[,LABEL:N...] using class names.")
+    what = p.add_mutually_exclusive_group(required=True)
+    what.add_argument("--pick", help="LABEL:N[,LABEL:N...] using class names.")
+    what.add_argument("--samples", type=int,
+                      help="N events, mixed as in the app's Simulate tab: --fp-percent of them "
+                           "NORMAL_SINUS, the rest AF/AFL/SVT/VT/VF at random (no 10-event cap)")
+    p.add_argument("--fp-percent", type=int, default=0,
+                   help="with --samples: the false-positive (NORMAL_SINUS) share, 0..100")
     p.add_argument("--dataset", nargs="*", help="restrict to these datasets (e.g. mitbih vfdb).")
     p.add_argument("--seed", type=int, default=None,
                    help="repeat an earlier draw (default: a random seed, printed in the summary)")
@@ -120,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--allow-mismatch", action="store_true",
                    help="proceed even if the package is not the checkpoint's training package.")
     args = parser.parse_args(argv)
+    if getattr(args, "fp_percent", 0) and getattr(args, "samples", None) is None:
+        parser.error("--fp-percent goes with --samples (with --pick, list NORMAL_SINUS:N yourself)")
 
     try:
         pkg = load_package(args.package)

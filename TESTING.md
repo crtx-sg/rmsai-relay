@@ -508,6 +508,7 @@ uv run python -m cli.gen_synthetic ...     # synthetic signal/event generation
 uv run python -m cli.kb_vector index --dir docs/   # index the clinical corpus (vector)
 uv run python -m cli.kb_upload --dir protocols/    # add SOPs/guidelines/checklists (PDF + markdown)
 uv run python -m cli.real_samples pick --pick ...  # held-out real-ECG events from ecg_sigma -> data/real
+uv run python -m cli.real_samples pick --samples 10 --fp-percent 20  # same, the Simulate tab's mix
 uv run python -m cli.simulate --samples 10 --fp-percent 20 --dry-run  # Simulate tab engine: score only, publish nothing
 uv run python -m cli.kb_route --llm "..."  # which path a question takes (regex / LLM / documents)
 uv run python -m cli.call --caller livekit # ring the on-call number on demand (no event needed)

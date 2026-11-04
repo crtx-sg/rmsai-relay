@@ -47,10 +47,12 @@ _RUN_COUNTER = "rmsai:simulate:runs"
 _DEFAULT_PACKAGE = "../ecg_sigma/packages/ecg_pkg_v2"
 
 
-def plan(samples: int, fp_percent: int, rng: random.Random) -> dict[str, int]:
-    """`{label: count}`: round(samples x fp%) NORMAL_SINUS, the rest uniform over CALL_CLASSES."""
-    if not 1 <= samples <= MAX_SAMPLES:
-        raise ValueError(f"samples must be 1..{MAX_SAMPLES}, got {samples}")
+def plan(samples: int, fp_percent: int, rng: random.Random,
+         max_samples: int | None = MAX_SAMPLES) -> dict[str, int]:
+    """`{label: count}`: round(samples x fp%) NORMAL_SINUS, the rest uniform over CALL_CLASSES.
+    `max_samples=None`: no cap (the command-line pick, which rings nothing by itself)."""
+    if samples < 1 or (max_samples is not None and samples > max_samples):
+        raise ValueError(f"samples must be 1..{max_samples or 'any'}, got {samples}")
     if not 0 <= fp_percent <= 100:
         raise ValueError(f"fp_percent must be 0..100, got {fp_percent}")
     fps = round(samples * fp_percent / 100)

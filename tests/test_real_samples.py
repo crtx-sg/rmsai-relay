@@ -114,6 +114,22 @@ def test_cli_pick_then_ingest_dir_scores(tmp_path, capsys):
     assert summary["model"] == "stub" and "STUB" in captured.err  # never a silent stub score
 
 
+def test_cli_pick_by_samples_and_fp_percent_uses_the_simulate_mix(tmp_path, monkeypatch, capsys):
+    import cli.simulate
+
+    root = _make_package(tmp_path / "pkg")  # test split: VT x2, AF x1
+    monkeypatch.setattr(cli.simulate, "FP_CLASS", "ATRIAL_FIBRILLATION")  # stand-in "normal"
+    monkeypatch.setattr(cli.simulate, "CALL_CLASSES", ("VENTRICULAR_TACHYCARDIA",))
+    base = ["--package", str(root), "pick", "--out", str(tmp_path / "o"), "--checkpoint"]
+    assert samples_main([*base, "--samples", "3", "--fp-percent", "34", "--seed", "1"]) == 0
+    labels = [json.loads(ln)["label"] for ln in capsys.readouterr().out.splitlines()[:-1]]
+    assert sorted(labels) == ["ATRIAL_FIBRILLATION", "VENTRICULAR_TACHYCARDIA",
+                              "VENTRICULAR_TACHYCARDIA"]  # round(3 x 34%) = 1 FP, 2 call-worthy
+    assert samples_main([*base, "--samples", "0"]) == 2  # validated, not a traceback
+    with pytest.raises(SystemExit):  # --fp-percent only means something with --samples
+        samples_main([*base, "--pick", "PVC:1", "--fp-percent", "20"])
+
+
 def test_cli_refuses_manifest_mismatch(tmp_path, monkeypatch, capsys):
     import cli.real_samples as mod
 
