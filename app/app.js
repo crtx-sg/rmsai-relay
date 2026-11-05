@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-11-05 simulate-labels";
+const APP_BUILD = "2026-11-05 run-test";
 
 const LK = window.LivekitClient;
 
