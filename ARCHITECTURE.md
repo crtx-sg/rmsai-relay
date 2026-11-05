@@ -836,6 +836,51 @@ archived report narrative. Key nodes/edges:
   - `CO_MORBID_WITH` (derived from cohort co-occurrence, carries confidence/count/window): only
     after `cli.graph ingest` seeds a patient cohort.
 
+### Graph schema
+
+Read from a live stack (h1, 2026-11-05); each hospital has its own Neo4j with this schema.
+`kb/graph/schema.py` (`migrate`) creates a unique constraint on `id` for every label, plus indexes on
+`MonitoredEvent.timestamp`, `.criticality`, `.uuid` and `Bed.label`.
+
+```mermaid
+graph LR
+  Patient -- "ASSIGNED_TO {current}" --> Bed
+  Bed -- IN_UNIT --> Unit
+  Patient -- HAD_EVENT --> MonitoredEvent
+  Patient -- "HAS_DIAGNOSIS {status, severity}" --> Condition
+  Patient -- "PRESCRIBED {status}" --> Treatment
+  Patient -- PRESENTS --> Symptom
+  Patient -- HAD_SURGERY --> Surgery
+  MonitoredEvent -- AT_BED --> Bed
+  MonitoredEvent -- OF_CONDITION --> Condition
+  MonitoredEvent -- HAS_REPORT --> Report
+  MonitoredEvent -- HAS_ACTION --> ActionItem
+  MonitoredEvent -- "FOLLOWED_BY {gap_s}" --> MonitoredEvent
+  Guideline -- "APPLIES_TO {source}" --> Condition
+  Guideline -- "RECOMMENDS {source}" --> Treatment
+  Condition -- "INDICATES {source}" --> Treatment
+  Treatment -- MANAGES --> Condition
+  CareProtocol -- APPLIES_TO --> Condition
+  CareProtocol -- HAS_STEP --> ProtocolStep
+  ProtocolStep -- RECOMMENDS --> Treatment
+```
+
+| Label | Properties |
+|---|---|
+| `Patient` | id, pseudonym, age, gender (no names) |
+| `Bed` / `Unit` | id, label / id, name |
+| `MonitoredEvent` | **identity, lifecycle:** id, uuid, timestamp, processed_at, status · **model:** event_type, confidence, is_false_positive, model_id, model_classes · **severity:** criticality, mews_risk · **gate:** alert_gate, alert_reason, alert_reason_code, alert_basis, why, why_json · **delivery:** delivered_app, delivered_call, delivered_sms · **vitals:** hr, sbp, dbp, spo2, rr, temp, and `<vital>_history` / `<vital>_history_ts` for each · **provenance:** source_kind, source_dataset, source_package, source_split, source_record, source_sample, source_subject, source_label, source_label_method, source_label_purity, source_device, source_run (Simulate run), signal_ref, ecg_plot_ref · **scoring:** ground_truth_condition, eval_outcome |
+| `Report` | id, uri, summary, index_status, generated_at |
+| `ActionItem` | id, text, status, priority |
+| `Condition` / `Symptom` / `Surgery` | id, name |
+| `Treatment` | id, name, type |
+| `Guideline` | id, title, source_doc, chunk_ref |
+| `CareProtocol` | id, title, version, source, event_type, min_severity |
+| `ProtocolStep` | id, order, kind, text |
+
+Provenance and scoring fields are filled from the event's source; `source_run` is set only for
+Simulate events. `CO_MORBID_WITH` (above) appears only after a cohort is seeded.
+
 The `FOLLOWED_BY` chain is rebuilt for the patient on every persisted event, so it stays right when
 events arrive out of order or are replayed. For events persisted before it existed, backfill once
 with `cli.graph chain`. To walk a patient's history in the Neo4j Browser:
