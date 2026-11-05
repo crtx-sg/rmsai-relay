@@ -4,8 +4,8 @@ Every question the voice agent (phone or WebRTC call) and the companion-app chat
 answers it, and where the answer comes from. Each example below is checked against the router
 (`kb/graph/lookup.py` `match_intent`) and pinned in `tests/test_query_coverage.py`,
 `tests/test_call_2026_10_14.py`, `tests/test_review_2026_10_14.py`, `tests/test_patient_ranking.py`,
-`tests/test_call_fixes_2026_10_28.py`, `tests/test_call_fixes_2026_10_29.py` and
-`tests/test_protocol_answer.py`.
+`tests/test_call_fixes_2026_10_28.py`, `tests/test_call_fixes_2026_10_29.py`,
+`tests/test_call_fixes_2026_11_04.py`, `tests/test_outbound_voice.py` and `tests/test_protocol_answer.py`.
 `cli.events --ask "<question>"` shows what any question resolves to, its rows and the answer.
 
 **Where answers come from.** *Graph* answers are read straight from Neo4j by a fixed template: no
@@ -15,23 +15,26 @@ questions are the exception, read verbatim with no LLM (section 6). A
 question about a patient that no graph template covers is never handed to the LLM: the agent says
 what it can answer instead.
 
-**Session scope.** On an outbound call (after the PIN) "this event" is the event the call is about and
+**Session scope.** On an outbound call (after the "yes", or the PIN) "this event" is the event the call is about and
 "this patient" its patient; in app chat they are the selected worklist row. Questions that name a bed
 or a PT number work anywhere. Text answers list rows; spoken answers are shortened for the phone.
 
-## 1. On a call: PIN, acknowledgment, conversation
+## 1. On a call: confirmation, acknowledgment, conversation
 
 | Say | What happens |
 |---|---|
-| "one two three four" (or keypad digits) | PIN gate. Nothing about a patient is said before it. Keyed: 4 digits or `#`, `*` starts over. Three wrong PINs: "Ending the call for safety" and the call is hung up; the right PIN is refused after that. The call is not rung again and nothing is texted. |
-| "acknowledged" · "yes" · "copy that" · "that's correct" · "I've acknowledged it" · "kindly acknowledge this" · "acknowledge bed two" (this call's bed) · STT slips "acknowledge this evening" · "Acknowledged, Emmett" (the word plus one misheard word) | Acknowledges **the event the call is about** and says which: "…your acknowledgment of the ventricular fibrillation alert for patient PT998224 on bed 2. Goodbye." No wake word needed. |
+| "yes" · "yeah" · "hello, yes" · "yes, go ahead" · "yes, speaking" | Starts an outbound alert call (the default, `outbound.require_pin: false`): the agent asks "Please say yes to hear the alert" and reads the alert only after a reply that is just a yes, so a voicemail greeting never hears it. A pickup without the yes counts as a missed call (rung again, then texted). Call-in and the app still use the PIN. Known limit for the demo: after the yes, questions about other patients are also answered. |
+| "one two three four" (or keypad digits) | PIN gate, when `outbound.require_pin: true` and on call-in. Nothing about a patient is said before it. Keyed: 4 digits or `#`, `*` starts over. Three wrong PINs: "Ending the call for safety" and the call is hung up; the right PIN is refused after that. The call is not rung again and nothing is texted. |
+| "acknowledged" · "yes" · "copy that" · "that's correct" · "I've acknowledged it" · "kindly acknowledge this" · "acknowledge bed two" (this call's bed) · "acknowledge it?" · STT slips "acknowledge this evening", "acknowledge this statement" · "Acknowledged, Emmett" (the word plus one misheard word) | Acknowledges **the event the call is about** and says which: "…your acknowledgment of the ventricular fibrillation alert for patient PT998224 on bed 2. Goodbye." No wake word needed. |
+| an acknowledge command it can't parse ("acknowledge it now please doctor") | Asked back, nothing closed: "Do you want to acknowledge the … alert …? Say acknowledge to close it." |
 | "acknowledge bed seven" / "acknowledge PT986685" (another event) | Refused: "On this call I can only acknowledge … Please acknowledge other events in the app." |
 | "don't acknowledge yet" · "not yet" · "No, that is not correct" | Nothing is acknowledged: "Okay, I have not acknowledged …; it stays open. What would you like to know?" |
-| "is bed two acknowledged?" · "who acknowledged bed seven?" | A question, answered from the event history; never acknowledges. |
+| "is bed two acknowledged?" · "who acknowledged bed seven?" · "Acknowledged?" | A question, answered from the event history; never acknowledges. |
 | "hey vios, …" | Wake word for follow-up questions when `AUDIO_WAKE_REQUIRED=true` (then 30 s awake window). Replies to the alert never need it. |
 | "repeat that" · "say that again" · "can you repeat?" | The previous answer again; right after the alert, the alert again. |
 | "thank you" · "goodbye" · "that's all, bye" | A short courtesy reply. |
 | "stop" · "wait" · "hold on" | Stops the agent speaking (barge-in). "yeah", "okay", "mm-hmm" while it talks are ignored, and so is speech with no Latin letter or digit (background talk in another language). |
+| (h2, `outbound.alert_language: ja`) | The greeting and the alert are spoken in Japanese and ask for "yes" / "acknowledge" in English. Every reply and question after that is in English. |
 | a pause mid-question ("What was the… MEWS score… for bed seven") | The pieces are joined into one question. |
 
 ## 2. This event (graph)
