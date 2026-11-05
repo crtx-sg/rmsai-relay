@@ -27,9 +27,9 @@ VOICE = "#2563eb"       # voice/audio (blue)
 DBRW = "#16a34a"        # db read/write (green)
 DASH = (0, (5, 3))
 
-fig, ax = plt.subplots(figsize=(19, 11.5))
+fig, ax = plt.subplots(figsize=(19, 16.3))
 ax.set_xlim(0, 192)
-ax.set_ylim(-4, 116)
+ax.set_ylim(-54, 116)
 ax.axis("off")
 
 
@@ -185,6 +185,73 @@ arrow(d1["bot"], (c1["cx"], c1["y"] + c1["h"]), color=DATA, rad=-0.12)
 arrow(d2["bot"], (c2["cx"], c2["y"] + c2["h"]), color=VOICE, rad=0.0)
 note(15, 35, "worklist", fs=8, color=DATA)
 note(70, 35, "place call (one at a time)", fs=8, color=VOICE)
+
+# --- graph schema (bottom band): what the Neo4j box holds ---------------------------------------
+band(2, -51, 188, 46, "#f8fafc", "GRAPH SCHEMA   (the Neo4j box above · one per hospital)")
+EDGE = "#475569"
+TOP, MID, BOT = -18, -29, -41
+
+
+def node(cx, cy, text, fc=C_BOX, w=15):
+    return box(cx - w / 2, cy - 2.5, w, 5, text, fc=fc, fs=8.6)
+
+
+def elabel(x, y, text):
+    ax.text(x, y, text, ha="center", va="center", fontsize=7, color="#334155", zorder=6,
+            bbox=dict(boxstyle="round,pad=0.12", fc="#f8fafc", ec="none"))
+
+
+def rel(p1, p2, text, lx=None, ly=None, rad=0.0):
+    arrow(p1, p2, color=EDGE, lw=1.4, rad=rad)
+    elabel(lx if lx is not None else (p1[0] + p2[0]) / 2, ly if ly is not None else (p1[1] + p2[1]) / 2, text)
+
+
+def rail(points, text, lx, ly):
+    path(points, color=EDGE, lw=1.4)
+    elabel(lx, ly, text)
+
+
+C_EV, C_KN = "#e0e7ff", "#fef3c7"
+g_pat = node(40, MID, "Patient")
+g_sym = node(14, TOP, "Symptom")
+g_sur = node(14, BOT, "Surgery")
+g_bed = node(62, BOT, "Bed")
+g_unit = node(86, BOT, "Unit")
+g_ev = node(86, MID, "MonitoredEvent", fc=C_EV, w=18)
+g_rep = node(113, TOP, "Report", fc=C_EV)
+g_act = node(113, BOT, "ActionItem", fc=C_EV)
+g_con = node(140, TOP, "Condition", fc=C_KN)
+g_trt = node(140, BOT, "Treatment", fc=C_KN)
+g_gui = node(165, MID, "Guideline", fc=C_KN)
+g_cp = node(181, TOP, "CareProtocol", fc=C_KN, w=14)
+g_ps = node(181, BOT, "ProtocolStep", fc=C_KN, w=14)
+
+rel((32.5, MID + 1.5), (21.5, TOP - 2.5), "PRESENTS")
+rel((32.5, MID - 1.5), (21.5, BOT + 2.5), "HAD_SURGERY")
+rel((45, MID - 2.5), (58, BOT + 2.5), "ASSIGNED_TO\n{current}", lx=48, ly=-36)
+rel((80, MID - 2.5), (66, BOT + 2.5), "AT_BED", lx=76, ly=-36)
+rel((69.5, BOT), (78.5, BOT), "IN_UNIT", ly=BOT + 1.6)
+rel((47.5, MID), (77, MID), "HAD_EVENT")
+rail([(42, MID + 2.5), (42, -10), (143, -10), (143, TOP + 2.5)], "HAS_DIAGNOSIS {status, severity}", 92, -10)
+rail([(38, MID - 2.5), (38, -48), (140, -48), (140, BOT - 2.5)], "PRESCRIBED {status}", 92, -48)
+rail([(90, MID + 2.5), (90, -13), (137, -13), (137, TOP + 2.5)], "OF_CONDITION", 120, -13)
+ax.add_patch(FancyArrowPatch((89, MID - 2.5), (94, MID - 2.5), arrowstyle="-|>", mutation_scale=12,
+                             color=EDGE, lw=1.4, connectionstyle="arc3,rad=1.6", zorder=4))
+elabel(99, -35.5, "FOLLOWED_BY {gap_s}")
+rel((95, MID + 1.5), (105.5, TOP - 2.5), "HAS_REPORT", lx=102, ly=-22.5)
+rel((95, MID - 1.5), (105.5, BOT + 2.5), "HAS_ACTION", lx=106, ly=-31)
+rel((137, TOP - 2.5), (137, BOT + 2.5), "INDICATES", lx=131, ly=MID)
+rel((143, BOT + 2.5), (143, TOP - 2.5), "MANAGES", lx=149, ly=MID)
+rel((157.5, MID + 2), (147.5, TOP - 1.5), "APPLIES_TO", lx=160, ly=-22.5)
+rel((157.5, MID - 2), (147.5, BOT + 1.5), "RECOMMENDS", lx=160, ly=-35.5)
+rel((174, TOP), (147.5, TOP), "APPLIES_TO", lx=165, ly=TOP + 1.6)
+rel((181, TOP - 2.5), (181, BOT + 2.5), "HAS_STEP", lx=181, ly=MID)
+rel((174, BOT), (147.5, BOT), "RECOMMENDS", lx=165, ly=BOT - 1.6)
+note(96, -52.5, "unique id on every label  ·  MonitoredEvent: rhythm, confidence, criticality, MEWS, vitals + histories, "
+     "gate & why, delivery (app/call/SMS), provenance incl. Simulate source_run, eval outcome  ·  "
+     "Patient: pseudonym, age, gender (no names)", fs=8)
+ax.text(188, -8, "white = patient record   ·   blue = events   ·   yellow = clinical knowledge",
+        ha="right", va="center", fontsize=8.5, color="#334155", zorder=5)
 
 # --- legends -----------------------------------------------------------------------------------
 box_legend = [Patch(facecolor=C_MODEL, edgecolor="#334155", label="ML / model"),
