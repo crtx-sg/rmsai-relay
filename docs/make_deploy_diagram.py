@@ -228,7 +228,7 @@ step(197, 76, "7", DBRW)
 
 # --- numbered flow caption ---------------------------------------------------------------------
 caption = (
-    "①  cli.ingest (or the app's Simulate tab, per hospital) classifies the HDF5 event and XADDs it to that hospital's Redis stream.   "
+    "①  cli.ingest (or h1's Simulate tab, samples split across h1/h2) classifies the HDF5 event and XADDs it to that hospital's Redis stream.   "
     "②  consumer reads it, persists to Neo4j + Qdrant and runs the alert gate.   "
     "③  every gated event is pushed to the app worklist at once (LiveKit server API → inbox room).\n"
     "④  the call is queued (Redis ZSET, most severe first); the consumer's CallDispatcher thread stages the alert and dials via LiveKit Cloud, one call at a time.\n"
