@@ -219,7 +219,8 @@ def record(result: dict, path: str | Path = HISTORY) -> None:
 
 def history(path: str | Path = HISTORY) -> dict:
     """Every recorded run (newest first), the summed tiles and two rates with Wilson 95 % intervals:
-    arrhythmias the gate rang, and false positives it filtered. A bad line is skipped."""
+    arrhythmias the gate rang, and false positives it filtered (vitals-driven rings excluded).
+    A bad line is skipped."""
     from inference.metrics import wilson  # noqa: PLC0415
 
     runs = []
@@ -235,7 +236,8 @@ def history(path: str | Path = HISTORY) -> dict:
     totals = Counter()
     for r in runs:
         totals.update({k: v for k, v in (r.get("summary") or {}).items() if isinstance(v, int)})
-    fps = totals["fp_suppressed"] + totals["fp_called_model"] + totals["fp_called_vitals"]
+    # A normal rhythm rung for its vitals is policy (a deteriorating patient rings), not a model miss.
+    fps = totals["fp_suppressed"] + totals["fp_called_model"]
     return {"runs": runs[::-1], "totals": dict(totals),
             "rates": {"rang": wilson(totals["tp_calls"], totals["expected_calls"]),
                       "fp_filtered": wilson(totals["fp_suppressed"], fps)}}

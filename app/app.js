@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-11-04 review-fixes";
+const APP_BUILD = "2026-11-05 simulate-labels";
 
 const LK = window.LivekitClient;
 
@@ -900,12 +900,26 @@ function renderHospitalBadge(sess) {
 }
 
 // --- Simulate tab -------------------------------------------------------------------------------
-const SIM_TILES = [
-  ["expected_calls", "Arrhythmias (should ring)"], ["tp_calls", "Rang"],
-  ["missed_worklist", "Missed – worklist only"], ["missed", "Missed – withheld"],
-  ["fp_suppressed", "False positives filtered"], ["fp_called_model", "FP rang – model error"],
-  ["fp_called_vitals", "FP rang – patient vitals"],
+// Two rows by ground truth; every normal-rhythm sample is a false alarm.
+// "Missed" = withheld + worklist-only (shown as a note).
+const SIM_ROWS = [
+  ["Arrhythmias", [["expected_calls", "Should ring"], ["tp_calls", "Rang"], ["missed", "Missed"]]],
+  ["False alarms (normal rhythm)", [["fp_suppressed", "Filtered (no call)"],
+                                    ["fp_called_model", "Rang – model false positive"],
+                                    ["fp_called_vitals", "Rang – vitals"]]],
 ];
+const SIM_COLS = SIM_ROWS.flatMap(([, tiles]) => tiles.map(([k]) => k));
+
+function simCount(s, k) {
+  return k === "missed" ? (s.missed || 0) + (s.missed_worklist || 0) : (s[k] ?? 0);
+}
+
+function simTiles(s) {
+  return SIM_ROWS.map(([group, tiles]) => `<div class="sim-row"><span class="sim-g">${esc(group)}</span>` +
+    tiles.map(([k, label]) => `<div class="t"><b>${esc(simCount(s, k))}</b>${esc(label)}` +
+      (k === "missed" && s.missed_worklist ? `<small>${esc(s.missed_worklist)} on worklist</small>` : "") +
+      "</div>").join("") + "</div>").join("");
+}
 
 async function runSimulation() {
   const btn = document.getElementById("sim-run");
@@ -932,8 +946,7 @@ async function runSimulation() {
 
 function renderSimulation(data) {
   const s = data.summary || {};
-  document.getElementById("sim-summary").innerHTML = SIM_TILES.map(([k, label]) =>
-    `<div class="t"><b>${esc(s[k] ?? 0)}</b>${esc(label)}</div>`).join("");
+  document.getElementById("sim-summary").innerHTML = simTiles(s);
   document.getElementById("sim-events").classList.remove("hidden");
   document.querySelector("#sim-events tbody").innerHTML = (data.events || []).map((e) => `<tr>
     <td>${esc(e.hospital || "")}</td><td>${esc(e.patient)}</td><td>${esc(e.ground_truth)}</td><td>${esc(e.event_type)}</td>
@@ -957,15 +970,13 @@ function renderSimHistory(h) {
   const t = h.totals || {};
   document.getElementById("sim-rates").innerHTML = `${(h.runs || []).length} run(s) · ` +
     `${fmtRate("Arrhythmias rang", h.rates && h.rates.rang)} · ` +
-    `${fmtRate("False positives filtered", h.rates && h.rates.fp_filtered)}`;
-  document.getElementById("sim-totals").innerHTML = SIM_TILES.map(([k, label]) =>
-    `<div class="t"><b>${esc(t[k] ?? 0)}</b>${esc(label)}</div>`).join("");
+    `${fmtRate("False positives filtered", h.rates && h.rates.fp_filtered)} (vitals rings excluded)`;
+  document.getElementById("sim-totals").innerHTML = simTiles(t);
   document.querySelector("#sim-history tbody").innerHTML = (h.runs || []).map((r) => {
     const s = r.summary || {};
     const hosp = Object.entries(r.hospitals || {}).map(([k, n]) => `${esc(k)} ${esc(n)}`).join(" · ");
-    return `<tr class="run-sep"><td colspan="8">${esc(runLabel(r.run))}</td></tr><tr>
-      <td>${hosp}</td>${["expected_calls", "tp_calls", "missed_worklist", "missed", "fp_suppressed",
-        "fp_called_model", "fp_called_vitals"].map((k) => `<td>${esc(s[k] ?? 0)}</td>`).join("")}</tr>`;
+    return `<tr class="run-sep"><td colspan="7">${esc(runLabel(r.run))}</td></tr><tr>
+      <td>${hosp}</td>${SIM_COLS.map((k) => `<td>${esc(simCount(s, k))}</td>`).join("")}</tr>`;
   }).join("");
 }
 

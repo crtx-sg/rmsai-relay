@@ -297,9 +297,11 @@ files, reopen them first: `$RMSAI cli.events --reopen`.
 
 In the app, **Simulate** takes *samples* (1–10) and *false positives %*. Each click draws that many
 held-out ecg_sigma events (FP % NORMAL_SINUS, the rest AF / flutter / SVT / VT / VF), publishes
-them like the command below, and shows what the gate does with each: rang, missed (worklist only /
-withheld), false positives filtered, or a false positive that rang because of the model or the
-patient's vitals. **Calls are real**: every event that passes the gate rings the on-call phone.
+them like the command below, and shows what the gate does with each, in two rows. **Arrhythmias:** should ring, rang,
+missed (a note says how many of the missed are still on the worklist). **False alarms (normal rhythm):**
+filtered (no call), rang – model false positive (the model confidently called the normal rhythm an
+arrhythmia), rang – vitals (a deteriorating patient rings regardless, so that one is policy, not a
+false positive). **Calls are real**: every event that passes the gate rings the on-call phone.
 Worklist and Events rows are grouped per click under a `Run 3 · 14:02 · 10 samples · 20% FP`
 bar.
 
@@ -316,7 +318,8 @@ carries `SIMULATE_TARGETS` (the `tools` container has neither).
 With two hospitals, Simulate is on **h1's app only** (`SIMULATE_CONSOLE=h1`, set by `make
 demo-phone-up`; h2's app hides the tab): one run sequence and one history. **All runs** lists every
 published run under its `Run …` bar (with the h1/h2 split), the summed tiles, and two rates with
-95 % intervals: arrhythmias the gate rang, and false positives it filtered. These are the gate's
+95 % intervals: arrhythmias the gate rang, and false positives it filtered (normal rhythms rung for their vitals
+are left out of that rate). These are the gate's
 decisions before dialling; what was delivered is on each hospital's Events tab. The history is
 `data/simulate/runs.jsonl` (kept across restarts; move it aside to start a fresh series).
 

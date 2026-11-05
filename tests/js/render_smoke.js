@@ -43,7 +43,7 @@ const runs = vm.runInContext(`(() => {
            seps: order.map((r, i) => runSep(order[i - 1], r, 8)).filter(Boolean).length,
            label: runLabel("r3-1402-n10-fp20"), cli: runLabel(undefined) };
 })()`, ctx);
-ctx.renderSimulation({ run: "r1-0905-n2-fp50", summary: { expected_calls: 1, tp_calls: 1, fp_suppressed: 1 },
+ctx.renderSimulation({ run: "r1-0905-n2-fp50", summary: { expected_calls: 2, tp_calls: 1, missed_worklist: 1, fp_suppressed: 1 },
   events: [{ patient: "PT935761", ground_truth: "NORMAL_SINUS", event_type: "NORMAL_SINUS",
              confidence: 0.85, gate: "false_positive", call: false }] });
 const sim = mk("sim-summary").innerHTML + mk("#sim-events tbody").innerHTML;

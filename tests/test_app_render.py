@@ -144,7 +144,7 @@ def test_runs_are_grouped_with_one_separator_each(rendered):
 
 
 def test_simulate_panel(rendered):
-    assert "False positives filtered" in rendered["sim"] and "PT935761" in rendered["sim"]
+    assert "False alarms (normal rhythm)" in rendered["sim"] and "1 on worklist" in rendered["sim"] and "PT935761" in rendered["sim"]
 
 
 def test_header_names_the_hospital_and_links_the_others(rendered):

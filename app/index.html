@@ -141,12 +141,11 @@
     #sim-form { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; margin-bottom: 1rem; }
     #sim-form label { display: flex; flex-direction: column; font-size: .85rem; gap: .2rem; }
     .sim-h { font-size: .9rem; margin: 1.25rem 0 .4rem; }
-    #sim-totals { display: flex; gap: .75rem; flex-wrap: wrap; margin: .5rem 0; }
-    #sim-totals .t { background: var(--panel); border-radius: 6px; padding: .5rem .75rem; min-width: 8rem; }
-    #sim-totals .t b { display: block; font-size: 1.4rem; }
-    #sim-summary { display: flex; gap: .75rem; flex-wrap: wrap; margin: .75rem 0; }
-    #sim-summary .t { background: var(--panel); border-radius: 6px; padding: .5rem .75rem; min-width: 8rem; }
-    #sim-summary .t b { display: block; font-size: 1.4rem; }
+    .sim-row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; margin: .5rem 0; }
+    .sim-g { width: 8rem; font-weight: 600; font-size: .85rem; }
+    .sim-row .t { background: var(--panel); border-radius: 6px; padding: .5rem .75rem; min-width: 8rem; }
+    .sim-row .t b { display: block; font-size: 1.4rem; }
+    .sim-row .t small { display: block; color: var(--sub); font-size: .75rem; }
   </style>
 </head>
 <body>
@@ -265,9 +264,9 @@
      <div id="sim-rates" class="meta"></div>
      <div id="sim-totals"></div>
      <table id="sim-history">
-       <thead><tr><th>Hospitals</th><th>Should ring</th><th>Rang</th>
-         <th>Missed – worklist</th><th>Missed – withheld</th><th>FP filtered</th>
-         <th>FP rang – model</th><th>FP rang – vitals</th></tr></thead>
+       <thead><tr><th></th><th colspan="3">Arrhythmias</th><th colspan="3">False alarms (normal rhythm)</th></tr>
+         <tr><th>Hospitals</th><th>Should ring</th><th>Rang</th><th>Missed</th>
+         <th>Filtered (no call)</th><th>Rang – model false positive</th><th>Rang – vitals</th></tr></thead>
        <tbody></tbody>
      </table>
    </div>

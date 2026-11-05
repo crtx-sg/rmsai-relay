@@ -177,7 +177,8 @@ def test_history_sums_runs_with_wilson_rates(tmp_path):
     path = tmp_path / "runs.jsonl"
     assert history(path)["runs"] == []  # no file yet
     for run, s in (("r1-0900-n4-fp50", {"expected_calls": 2, "tp_calls": 1, "fp_suppressed": 2}),
-                   ("r2-0910-n2-fp50", {"expected_calls": 1, "tp_calls": 1, "fp_called_model": 1})):
+                   ("r2-0910-n2-fp50", {"expected_calls": 1, "tp_calls": 1, "fp_called_model": 1,
+                                         "fp_called_vitals": 1})):
         record({"run": run, "events": [{"hospital": "h1"}, {"hospital": "h2"}], "summary": s}, path)
     with path.open("a") as fh:
         fh.write("not json\n")  # skipped, not fatal
@@ -185,7 +186,7 @@ def test_history_sums_runs_with_wilson_rates(tmp_path):
     assert [r["run"] for r in h["runs"]] == ["r2-0910-n2-fp50", "r1-0900-n4-fp50"]  # newest first
     assert h["runs"][0]["hospitals"] == {"h1": 1, "h2": 1}
     assert (h["rates"]["rang"]["k"], h["rates"]["rang"]["n"]) == (2, 3)
-    assert (h["rates"]["fp_filtered"]["k"], h["rates"]["fp_filtered"]["n"]) == (2, 3)
+    assert (h["rates"]["fp_filtered"]["k"], h["rates"]["fp_filtered"]["n"]) == (2, 3)  # vitals ring excluded
 
 
 def test_only_the_console_hospital_simulates_and_records(tmp_path, monkeypatch):
