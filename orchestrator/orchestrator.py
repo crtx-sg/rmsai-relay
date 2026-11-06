@@ -687,6 +687,23 @@ def _mews_score(why_json) -> int | None:
         return None
 
 
+def _answer_criticality_count(rows: list[dict]) -> str:
+    """'Of 23 patients, 3 have open critical or high alerts: 1 critical (bed 2), 2 high (bed 19,
+    bed 13).' Counted on each patient's most severe open alert, as the ranking orders them."""
+    by_level: dict[str, list[str]] = {}
+    for r in rows:
+        level = r.get("open_criticality")
+        if level in ("Critical", "High") and int(r.get("open_alerts") or 0):
+            by_level.setdefault(level, []).append(spoken_bed(r.get("bed")))
+    n = sum(len(v) for v in by_level.values())
+    if not n:
+        return f"Of {len(rows)} patients, none has an open critical or high alert."
+    parts = [f"{len(beds)} {level.lower()} ({', '.join(beds)})"
+             for level in ("Critical", "High") if (beds := by_level.get(level))]
+    return (f"Of {len(rows)} patients, {n} {'has' if n == 1 else 'have'} open critical or high "
+            f"alerts: {', '.join(parts)}.")
+
+
 def _answer_patient_ranking(rows: list[dict], *, order: str | None = None,
                             spoken: bool = False) -> str:
     """Every patient, sickest first (or in bed order): open alerts by their most severe criticality,
@@ -1348,6 +1365,8 @@ class Orchestrator:
                                else "I couldn't find that event.")
             elif name == "action_items_for_event":
                 answer_text = _answer_action_items(operational_rows)
+            elif name == "patients_by_criticality" and params.get("count"):
+                answer_text = _answer_criticality_count(operational_rows)
             elif name == "patients_by_criticality":
                 answer_text = _answer_patient_ranking(operational_rows, order=params.get("order"),
                                                       spoken=spoken)

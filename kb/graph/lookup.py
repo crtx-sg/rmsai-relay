@@ -218,6 +218,13 @@ _PRIOR_EVENTS = re.compile(r"\b(?:past|prior|previous|earlier)\s+(?:events?|aler
 # "Which vitals are deteriorating", "the trends for this patient": every vital's verdict.
 _OCCUPANT = re.compile(r"\b(?:assigned|occup\w*|admitted|lying)\b|\bwho(?:'s|\s+is)\s+(?:on|in|at)\b|"
                        r"\b(?:any|a)\s+patients?\s+(?:on|in|at)\s+bed\b", re.IGNORECASE)
+# The whole ward, not this patient: "events of other patients in this unit" (live 2026-11-06, the
+# LLM router listed the called patient's own events).
+_WARD_SCOPE = re.compile(r"\b(?:other|all)\s+patients\b|\b(?:in|on|across)\s+(?:this|the|my)\s+"
+                         r"(?:unit|ward)\b", re.IGNORECASE)
+# "How many patients are critical?": a count, not the 23-line ranking (live 2026-11-06).
+_CRITICAL_COUNT = re.compile(r"\b(?:how\s+many|count|number\s+of)\b.*\bpatients?\b.*"
+                             r"\b(?:critical|high|serious|unstable|sick)\b", re.IGNORECASE)
 _TRENDS = re.compile(r"\b(?:trends?|trending|deteriorat\w*|worsening|getting\s+worse)\b", re.IGNORECASE)
 
 
@@ -393,6 +400,8 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     if bed_label and _OCCUPANT.search(q) and not named:
         return "bed_last_event", {"bed": bed_label}
 
+    if _CRITICAL_COUNT.search(q) and not named and not bed_label:
+        return "patients_by_criticality", {"count": True}
     # The ward ranked sickest first (or walked in bed order when asked): rounds / triage lists.
     if _PATIENT_RANKING.search(q) and not named and not bed_label:
         return "patients_by_criticality", ({"order": "bed"} if _BED_ORDER.search(q) else {})
@@ -477,6 +486,11 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
             and not (_ALARM_COUNTS.search(q) and not scoped and not _WORKLIST.search(q)):
         return _history(now=now, status=status, patient=scope_patient, bed=bed_label, etype=etype,
                         hours=hours, critical=critical)
+    # "events of other patients in this unit": the ward's events, not the called patient's.
+    # ("critical events" in the ward is T1 below.)
+    if not scoped and not topic and not critical and _WARD_SCOPE.search(q) \
+            and ("event" in q or _ALARM_WORD.search(q)):
+        return _history(now=now, hours=hours)
     # "events for this patient", "this patient's history / past / prior events" (any status).
     if this_patient and not topic and ("event" in q or _HISTORY_WORD.search(q)
                                        or _ALARM_WORD.search(q)):

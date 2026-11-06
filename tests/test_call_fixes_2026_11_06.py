@@ -163,3 +163,30 @@ def test_past_and_course_questions_route_to_the_stored_readings():
     assert route("What was the blood pressure some time ago?")[1]["focus"] == "bp"
     assert route("What was the heart rate?")[0] == "vitals_at_selected_event"  # unchanged
     assert route("Is the patient deteriorating?")[0] == "event_summary"  # unchanged
+
+
+def test_ward_questions_route_to_the_ward_not_this_patient():
+    from kb.graph.lookup import match_intent
+
+    def route(q):
+        return match_intent(q, now=time.time(), patient_ref="PT1", event_ref="E1")
+
+    assert route("What were the other events of other patients in this unit?") == (
+        "event_history", {"status": "any"})
+    for q in ("How many patients are critical?", "How many patient the critical conditions?",
+              "What is the count of number of patients who are critical in this unit?"):
+        assert route(q) == ("patients_by_criticality", {"count": True}), q
+    assert route("what are the conditions of this patient")[0] == "patient_clinical_history"
+
+
+def test_critical_count_counts_open_critical_and_high_alerts():
+    from orchestrator.orchestrator import _answer_criticality_count
+
+    rows = [{"bed": "Unit1/Unit1-Bed02", "open_criticality": "Critical", "open_alerts": 2},
+            {"bed": "Unit1/Unit1-Bed19", "open_criticality": "High", "open_alerts": 1},
+            {"bed": "Unit1/Unit1-Bed13", "open_criticality": "High", "open_alerts": 1},
+            {"bed": "Unit1/Unit1-Bed05", "open_criticality": None, "open_alerts": 0}]
+    assert _answer_criticality_count(rows) == (
+        "Of 4 patients, 3 have open critical or high alerts: 1 critical (bed 2), "
+        "2 high (bed 19, bed 13).")
+    assert "none has" in _answer_criticality_count(rows[3:])
