@@ -249,3 +249,49 @@ def test_other_hospitals_are_audited_in_their_own_log(monkeypatch):
     other = "zz" if cli.simulate.DEFAULT.hospital_id != "zz" else "yy"
     cli.simulate._ingest("d", "redis://x", other)
     assert seen["env"]["AUDIT_LOG_PATH"] == f"data/audit-{other}.jsonl"
+
+
+def test_call_progress_reads_each_hospitals_queue(monkeypatch):
+    import redis
+
+    from cli.simulate import call_progress
+
+    class _R:
+        def __init__(self, active=None, jobs=(), answered=()):
+            self.active, self.jobs, self.answered = active, set(jobs), set(answered)
+
+        def get(self, key):
+            if key == "rmsai:calls:active":
+                return self.active.encode() if self.active else None
+            return b"1" if any(key == f"rmsai:calls:answered:{e}" for e in self.answered) else None
+
+        def hexists(self, _key, eid):
+            return eid in self.jobs
+
+    stacks = {"redis://h1": _R(active="a", jobs={"a", "b"}), "redis://h2": _R(answered={"c"})}
+    monkeypatch.setattr(redis.Redis, "from_url", staticmethod(lambda url, **_: stacks[url]))
+    events = [{"event_id": i, "hospital": h} for i, h in
+              (("a", "h1"), ("b", "h1"), ("c", "h2"), ("d", "h2"), ("e", "h9"))]
+    got = call_progress(events, {"h1": "redis://h1", "h2": "redis://h2"})
+    assert [r["state"] for r in got] == ["on_call", "queued", "answered", "idle", "unknown"]
+
+
+def test_progress_endpoint_is_session_gated(tmp_path):
+    from fastapi.testclient import TestClient
+
+    seen = []
+
+    def _progress(events):
+        seen.append(events)
+        return [{"event_id": e["event_id"], "hospital": e["hospital"], "state": "queued"}
+                for e in events]
+
+    client = TestClient(create_app(_CFG, audit=AuditLog(str(tmp_path / "a.jsonl")),
+                                   progress=_progress, simulate_history=tmp_path / "r.jsonl"))
+    body = {"events": [{"event_id": "a", "hospital": "h1"}]}
+    assert client.post("/simulate/progress", json={"session": "bad", **body}).status_code == 401
+    ok = client.post("/simulate/progress", json={"session": _token(), **body})
+    assert ok.status_code == 200 and ok.json()["calls"][0]["state"] == "queued"
+    too_many = {"session": _token(), "events": [{"event_id": str(i), "hospital": "h1"}
+                                                for i in range(11)]}
+    assert client.post("/simulate/progress", json=too_many).status_code == 400

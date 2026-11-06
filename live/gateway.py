@@ -111,6 +111,13 @@ class SimulateRequest(BaseModel):
     fp_percent: int = 0
 
 
+class SimulateProgressRequest(BaseModel):
+    """`POST /simulate/progress` body: the session + the run's called events (id, hospital)."""
+
+    session: str
+    events: list[dict]
+
+
 class SessionOnlyRequest(BaseModel):
     """A body that carries only the inbox session (proof of PIN)."""
 
@@ -153,6 +160,7 @@ def create_app(
     app_dir: Path | None = None,
     simulator=None,
     simulate_history: str | Path | None = None,
+    progress=None,
 ):
     """Build the gateway FastAPI app.
 
@@ -404,6 +412,21 @@ def create_app(
         except OSError as exc:
             print(f"[gateway] simulate history not written: {exc}", flush=True)
         return result
+
+    @api.post("/simulate/progress")
+    def simulate_progress(req: SimulateProgressRequest) -> dict:
+        """Each called event's state in its hospital's call queue, for the tab's progress bar."""
+        if not _session_ok(req.session):
+            raise HTTPException(status_code=401, detail="invalid session")
+        if not simulate_here:
+            raise HTTPException(status_code=403, detail=f"simulations run from hospital {console}")
+        from cli.simulate import MAX_SAMPLES, call_progress  # noqa: PLC0415
+
+        if len(req.events) > MAX_SAMPLES:
+            raise HTTPException(status_code=400, detail=f"at most {MAX_SAMPLES} events")
+        events = [{"event_id": str(e.get("event_id") or "")[:64], "hospital": str(e.get("hospital")
+                   or "")[:16]} for e in req.events if isinstance(e, dict)]
+        return {"calls": (progress or call_progress)(events)}
 
     @api.post("/simulate/history")
     def simulate_history_view(req: SessionOnlyRequest) -> dict:

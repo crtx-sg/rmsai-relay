@@ -200,10 +200,38 @@ def run(samples: int, fp_percent: int, *, seed: int | None = None, package: str 
     events = [{**e, "hospital": h} for h, (lines, _) in zip(shares, results) for e in lines]
     return {"run": run_id, "seed": seed, "pick": pick, "package": pkg.version, "errors": errors,
             "shortfall": {k: list(v) for k, v in sel.shortfall.items()},
-            "events": [{k: e.get(k) for k in ("hospital", "patient", "event_type", "ground_truth",
-                                              "confidence", "outcome", "gate", "call")}
+            "events": [{k: e.get(k) for k in ("event_id", "hospital", "patient", "event_type",
+                                              "ground_truth", "confidence", "outcome", "gate",
+                                              "call")}
                        for e in events],
             "summary": tally(events)}
+
+
+def call_progress(events: list[dict], urls: dict[str, str] | None = None) -> list[dict]:
+    """Where each of a run's calls is now, from its hospital's Redis call queue: `on_call` (holds
+    the call slot: dialling, ringing or talking), `queued`, `answered` (the "yes" was given, the
+    call is over) or `idle` (not queued yet, or over without a "yes"). `unknown` if unreadable."""
+    import redis  # noqa: PLC0415
+
+    from orchestrator.call_queue import CallQueue  # noqa: PLC0415
+
+    urls = urls if urls is not None else targets()
+    clients, out = {}, []
+    for e in events:
+        eid, state = str(e.get("event_id") or ""), "unknown"
+        url = urls.get(e.get("hospital") or "")
+        if eid and url:
+            try:
+                r = clients.setdefault(url, redis.Redis.from_url(url, socket_timeout=2))
+                q = CallQueue(r)
+                active = r.get(q.active_key)
+                state = ("on_call" if active in (eid, eid.encode()) else
+                         "queued" if r.hexists(q.jobs_key, eid) else
+                         "answered" if q.reached(eid) else "idle")
+            except Exception:  # noqa: BLE001 - one hospital's Redis down: that row is unknown
+                state = "unknown"
+        out.append({"event_id": eid, "hospital": e.get("hospital"), "state": state})
+    return out
 
 
 def record(result: dict, path: str | Path = HISTORY) -> None:

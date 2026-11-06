@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-11-05 run-test";
+const APP_BUILD = "2026-11-06 sim-progress";
 
 const LK = window.LivekitClient;
 
@@ -927,21 +927,94 @@ async function runSimulation() {
   const samples = parseInt(document.getElementById("sim-n").value, 10);
   const fp = parseInt(document.getElementById("sim-fp").value, 10);
   btn.disabled = true;
-  status.textContent = "Classifying… (calls follow on the phone)";
+  clearTimeout(simPoll);
+  const bar = document.getElementById("sim-progress");
+  bar.removeAttribute("value");  // indeterminate while the run is classified and published
+  document.getElementById("sim-track").classList.remove("hidden");
+  document.getElementById("sim-calls").textContent = "";
+  const started = Date.now();
+  const secs = () => Math.round((Date.now() - started) / 1000);
+  const step = () => {
+    status.textContent = `Step 1 of 2: picking ${samples} held-out ecg_sigma samples (${fp}% normal) ` +
+      `and classifying them for each hospital… ${secs()} s`;
+  };
+  step();
+  const tick = setInterval(step, 1000);
   try {
     const res = await sessionPost("/simulate", { samples, fp_percent: fp });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { status.textContent = `Failed: ${data.detail || res.status}`; return; }
+    clearInterval(tick);
+    if (!res.ok) {
+      status.textContent = `Failed: ${data.detail || res.status}`;
+      document.getElementById("sim-track").classList.add("hidden");
+      return;
+    }
     const errs = Object.entries(data.errors || {}).map(([h, e]) => `${h}: ${e}`).join("; ");
-    status.textContent = errs ? `${runLabel(data.run)} published, but NOT for ${errs}`
-      : `${runLabel(data.run)} published`;
+    const per = Object.entries((data.events || []).reduce((m, e) => {
+      m[e.hospital || "-"] = (m[e.hospital || "-"] || 0) + 1; return m;
+    }, {})).map(([h, n]) => `${h} ${n}`).join(" · ");
+    const rings = (data.events || []).filter((e) => e.call).length;
+    status.textContent = `${runLabel(data.run)} published in ${secs()} s: ${(data.events || []).length} ` +
+      `events (${per}), ${rings} to ring` + (errs ? `. NOT published for ${errs}` : "");
     renderSimulation(data);
     loadSimHistory();
+    trackCalls(data);
   } catch (err) {
+    clearInterval(tick);
     status.textContent = `Failed: ${err}`;
+    document.getElementById("sim-track").classList.add("hidden");
   } finally {
     btn.disabled = false;
   }
+}
+
+// Step 2: follow each call in its hospital's queue until all are over (or 20 minutes pass).
+let simPoll = null;
+const CALL_LABEL = { queued: "waiting in queue", on_call: "📞 on the phone", answered: "answered ✓",
+  done: "ended, no “yes” (redial/SMS)", idle: "not queued yet", unknown: "?" };
+
+function trackCalls(data) {
+  const calls = (data.events || []).filter((e) => e.call && e.event_id);
+  const bar = document.getElementById("sim-progress");
+  const text = document.getElementById("sim-calls");
+  if (!calls.length) {
+    bar.max = 1; bar.value = 1;
+    text.textContent = "Step 2 of 2: nothing to ring for this run.";
+    return;
+  }
+  bar.max = calls.length; bar.value = 0;
+  const seen = new Set();
+  const started = Date.now();
+  const poll = async () => {
+    let rows = [];
+    try {
+      const res = await sessionPost("/simulate/progress",
+        { events: calls.map((e) => ({ event_id: e.event_id, hospital: e.hospital })) });
+      if (res.ok) rows = (await res.json()).calls || [];
+    } catch (err) { console.warn("[simulate] progress", err); }
+    const state = {};
+    rows.forEach((c) => {
+      if (c.state === "queued" || c.state === "on_call") seen.add(c.event_id);
+      state[c.event_id] = c.state === "idle" && seen.has(c.event_id) ? "done" : c.state;
+    });
+    const n = (s) => calls.filter((e) => state[e.event_id] === s).length;
+    const finished = n("answered") + n("done");
+    const onPhone = calls.filter((e) => state[e.event_id] === "on_call").map((e) => e.hospital);
+    bar.value = finished;
+    calls.forEach((e) => {
+      const cell = document.querySelector(`[data-call="${CSS.escape(e.event_id)}"]`);
+      if (cell) cell.textContent = CALL_LABEL[state[e.event_id] || "unknown"];
+    });
+    const busy = n("queued") + onPhone.length;
+    const waitedOut = !busy && Date.now() - started > 90000;  // never queued: skipped or acked
+    const over = finished === calls.length || waitedOut || Date.now() - started > 20 * 60000;
+    text.textContent = `Step 2 of 2: calls ${finished} of ${calls.length} over` +
+      (onPhone.length ? ` · on the phone now: ${onPhone.join(", ")}` : "") +
+      (n("queued") ? ` · ${n("queued")} waiting` : "") +
+      (n("answered") ? ` · ${n("answered")} answered` : "") + (over ? " · done" : "");
+    if (over) loadSimHistory(); else simPoll = setTimeout(poll, 3000);
+  };
+  poll();
 }
 
 function renderSimulation(data) {
@@ -950,7 +1023,8 @@ function renderSimulation(data) {
   document.getElementById("sim-events").classList.remove("hidden");
   document.querySelector("#sim-events tbody").innerHTML = (data.events || []).map((e) => `<tr>
     <td>${esc(e.hospital || "")}</td><td>${esc(e.patient)}</td><td>${esc(e.ground_truth)}</td><td>${esc(e.event_type)}</td>
-    <td>${pct(e.confidence)}</td><td>${esc(e.gate)}</td><td>${e.call ? "📞 call" : "no call"}</td></tr>`).join("");
+    <td>${pct(e.confidence)}</td><td>${esc(e.gate)}</td><td>${e.call ? "📞 call" : "no call"}</td>
+    <td data-call="${esc(e.event_id || "")}">${e.call ? "…" : ""}</td></tr>`).join("");
 }
 
 async function loadSimHistory() {
@@ -982,6 +1056,7 @@ function renderSimHistory(h) {
 
 console.log(`[app] build ${APP_BUILD}`);
 document.getElementById("sim-run").addEventListener("click", runSimulation);
+document.getElementById("sim-refresh").addEventListener("click", loadSimHistory);
 document.getElementById("login-btn").addEventListener("click", login);
 document.getElementById("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 // Event delegation for the per-row buttons + row selection (the table is re-rendered each message).

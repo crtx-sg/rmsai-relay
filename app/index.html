@@ -141,6 +141,8 @@
     #sim-form { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; margin-bottom: 1rem; }
     #sim-form label { display: flex; flex-direction: column; font-size: .85rem; gap: .2rem; }
     .sim-h { font-size: .9rem; margin: 1.25rem 0 .4rem; }
+    #sim-track { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .5rem 0; }
+    #sim-progress { width: min(20rem, 100%); }
     .sim-row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; margin: .5rem 0; }
     .sim-g { width: 8rem; font-weight: 600; font-size: .85rem; }
     .sim-row .t { background: var(--panel); border-radius: 6px; padding: .5rem .75rem; min-width: 8rem; }
@@ -247,20 +249,24 @@
        <label>Samples (1–10) <input id="sim-n" type="number" min="1" max="10" value="5" /></label>
        <label>False positives % <input id="sim-fp" type="number" min="0" max="100" step="10" value="20" /></label>
        <button id="sim-run">Run test</button>
-       <span id="sim-status" class="meta"></span>
+       <span id="sim-status" class="meta" role="status" aria-live="polite"></span>
      </div>
      <p class="meta">Each event the gate passes rings its hospital's on-call phone (a busy line or no
        answer is redialled, then texted). False positives should be filtered out and never ring.
        "Gate: call" is the decision before dialling; what was delivered is on the Events tab.</p>
      <div id="sim-summary"></div>
      <h2 class="sim-h">This run</h2>
+     <div id="sim-track" class="hidden">
+       <progress id="sim-progress" aria-label="Simulation progress"></progress>
+       <span id="sim-calls" class="meta" aria-live="polite"></span>
+     </div>
      <table id="sim-events" class="hidden">
-       <thead><tr><th>Hospital</th><th>Patient</th><th>Truth</th><th>Model said</th><th>Conf.</th><th>Gate</th><th title="The gate's decision before dialling; a busy line or no answer is redialled, then texted">Gate: call</th></tr></thead>
+       <thead><tr><th>Hospital</th><th>Patient</th><th>Truth</th><th>Model said</th><th>Conf.</th><th>Gate</th><th title="The gate's decision before dialling; a busy line or no answer is redialled, then texted">Gate: call</th><th title="Live, from the hospital's call queue">Call now</th></tr></thead>
        <tbody></tbody>
      </table>
      <!-- Every run published from this console (data/simulate/runs.jsonl), both hospitals. Gate
           decisions before dialling; what was delivered is on each hospital's Events tab. -->
-     <h2 class="sim-h">All runs</h2>
+     <h2 class="sim-h">All runs <button id="sim-refresh" type="button">Refresh</button></h2>
      <div id="sim-rates" class="meta"></div>
      <div id="sim-totals"></div>
      <table id="sim-history">

@@ -305,6 +305,15 @@ false positive). **Calls are real**: every event that passes the gate rings the 
 Worklist and Events rows are grouped per click under a `Run 3 · 14:02 · 10 samples · 20% FP`
 bar.
 
+While a run is going, a progress bar and status line show two steps: **1** picking and
+classifying the samples (seconds elapsed), then **2** the calls, read every 3 s from each
+hospital's call queue ("calls 1 of 3 over · on the phone now: h2 · 1 waiting"), with each
+event's **Call now** column: waiting in queue, on the phone, answered, or ended without a "yes"
+(redialled, then texted). **Refresh** next to *All runs* reloads the history. To follow the same
+run from a terminal: `make phone-transcript HOSPITAL=all` (both conversations), and
+`docker compose -f infra/docker-compose.yml -p infra logs -f --tail=0 consumer` (h1's gate,
+queue and dial lines; `-p infra-h2` for h2).
+
 **The same from the command line** (two ways):
 
 | | Command | What you get |
