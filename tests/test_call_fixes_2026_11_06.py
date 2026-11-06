@@ -81,6 +81,10 @@ def test_a_cut_off_alert_is_replayed_on_the_next_turn(tmp_path):
     assert h.respond("what were the vitals", session_id="room1") == "answer:what were the vitals"
     h.note_interrupted("room1", replay)  # cut again, but the clinician acknowledges
     assert h.respond("Acknowledge", session_id="room1", spoken=True).endswith("Goodbye.")
+    h2, _ = _handler(tmp_path, _FakeWorking(), _FakeOrch(), require_pin=False)
+    h2.note_interrupted("r2", h2.respond("Yes", session_id="r2"))
+    assert "recorded your acknowledgment" in h2.respond("I acknowledge. What is the BP?",
+                                                        session_id="r2")
 
 
 def test_an_ack_with_a_question_records_the_ack_and_answers(tmp_path):
@@ -177,6 +181,8 @@ def test_ward_questions_route_to_the_ward_not_this_patient():
               "What is the count of number of patients who are critical in this unit?"):
         assert route(q) == ("patients_by_criticality", {"count": True}), q
     assert route("what are the conditions of this patient")[0] == "patient_clinical_history"
+    assert route("How many patients have high blood pressure?") != (
+        "patients_by_criticality", {"count": True})
 
 
 def test_critical_count_counts_open_critical_and_high_alerts():
@@ -220,6 +226,7 @@ def test_only_auth_and_network_errors_count_as_never_rang():
 
     assert never_rang(_Http(401)) and never_rang(ConnectionError("dns")) and never_rang(OSError())
     assert not never_rang(_Http(408)) and not never_rang(RuntimeError("sip 486 busy"))
+    assert not never_rang(TimeoutError())  # timed out waiting for the pickup: it rang
 
 
 def test_a_call_that_never_rang_texts_could_not_call_not_missed_call(tmp_path):

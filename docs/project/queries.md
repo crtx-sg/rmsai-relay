@@ -32,7 +32,7 @@ or a PT number work anywhere. Text answers list rows; spoken answers are shorten
 | "don't acknowledge yet" · "not yet" · "No, that is not correct" | Nothing is acknowledged: "Okay, I have not acknowledged …; it stays open. What would you like to know?" |
 | "is bed two acknowledged?" · "who acknowledged bed seven?" · "Acknowledged?" | A question, answered from the event history; never acknowledges. |
 | "hey vios, …" | Wake word for follow-up questions when `AUDIO_WAKE_REQUIRED=true` (then 30 s awake window). Replies to the alert never need it. |
-| "repeat that" · "say that again" · "can you repeat?" | The previous answer again; right after the alert, the alert again. |
+| "repeat that" · "say that again" · "can you repeat?" · on a call also "Eh?" · "Sorry?" · "Pardon?" · "What?" · "Hello?" | The previous answer again (skipping "I don't have information…" and hints); right after the alert, the alert again. If talk cut the alert off, the next turn replays it. |
 | "thank you" · "goodbye" · "that's all, bye" | A short courtesy reply. |
 | "stop" · "wait" · "hold on" | Stops the agent speaking (barge-in). "yeah", "okay", "mm-hmm" while it talks are ignored, and so is speech with no Latin letter or digit (background talk in another language). |
 | (h2, `outbound.alert_language: ja`) | The greeting and the alert are spoken in Japanese and ask for "yes" / "acknowledge" in English. Every reply and question after that is in English. |

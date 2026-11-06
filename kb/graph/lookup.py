@@ -400,7 +400,8 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     if bed_label and _OCCUPANT.search(q) and not named:
         return "bed_last_event", {"bed": bed_label}
 
-    if _CRITICAL_COUNT.search(q) and not named and not bed_label:
+    # (not "how many patients have high blood pressure?": a vital, not criticality)
+    if _CRITICAL_COUNT.search(q) and not named and not bed_label and not _VITALS.search(q):
         return "patients_by_criticality", {"count": True}
     # The ward ranked sickest first (or walked in bed order when asked): rounds / triage lists.
     if _PATIENT_RANKING.search(q) and not named and not bed_label:

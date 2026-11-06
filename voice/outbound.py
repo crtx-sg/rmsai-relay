@@ -39,7 +39,9 @@ def never_rang(exc: Exception) -> bool:
     """An API/auth/network failure (the dial never reached the phone network), not a SIP ring
     outcome. Live 2026-11-06: LiveKit Cloud answered 401 for 8 minutes and every alert used up its
     three ring attempts in a minute without the phone ringing once."""
-    return getattr(exc, "status", None) in (401, 403) or isinstance(exc, OSError)
+    # TimeoutError is an OSError, but a timeout while waiting for the pickup means it rang.
+    return getattr(exc, "status", None) in (401, 403) or (
+        isinstance(exc, OSError) and not isinstance(exc, TimeoutError))
 
 
 class Caller(ABC):

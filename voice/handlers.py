@@ -356,7 +356,8 @@ class OutboundHandler(OrchestratorHandler):
         command = bool(_ACK_VERB.search(text)) and parse_ack(text) != "no" and not is_question(text)
         if session_id in self._alert_cut:
             self._alert_cut.discard(session_id)
-            if not (command or is_plain_no(text)):  # "acknowledge" / "no" mid-alert still count
+            # "acknowledge" / "no" / "I acknowledge. What's the BP?" mid-alert still count
+            if not (command or is_plain_no(text) or _split_ack(text)):
                 return self._again + self.alert.spoken_alert
         # "Acknowledge bed seven" on a call about bed 2: only the called event can be closed here.
         if command and self._names_other_event(text):
