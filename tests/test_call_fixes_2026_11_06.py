@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import time
 
 from common.schemas import ChatTurn
@@ -261,3 +263,34 @@ def test_similar_events_are_the_called_events_rhythm():
     assert resolve_like_event(_D(), {"status": "any", "like_event": "E1"}) == {
         "status": "any", "event_type": "SINUS_TACHYCARDIA"}
     assert resolve_like_event(_D(), {"status": "any", "like_event": "E9"}) == {"status": "any"}
+
+
+def test_elevenlabs_429_is_retried_then_a_4xx_is_not(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+
+    from voice import adapters
+
+    monkeypatch.setattr(adapters, "_ELEVENLABS_RETRY_S", (0, 0))
+    codes = [429, 503]
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _open(req, timeout):
+        if codes:
+            raise urllib.error.HTTPError("u", codes.pop(0), "busy", {}, io.BytesIO(b"{}"))
+        return _Resp(b"ok")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _open)
+    assert adapters._elevenlabs_request(object()) == b"ok"  # two transient errors, then success
+
+    codes[:] = [402]
+    with pytest.raises(RuntimeError, match="402"):
+        adapters._elevenlabs_request(object())
+    assert codes == []  # one try only

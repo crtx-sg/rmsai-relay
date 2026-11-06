@@ -146,27 +146,39 @@ def _multipart(fields: dict[str, str], file_field: str, filename: str,
     return b"".join(parts), f"multipart/form-data; boundary={_BOUNDARY}"
 
 
+_ELEVENLABS_RETRY_S = (0.5, 1.5)  # short: a caller is waiting on the line
+
+
 def _elevenlabs_request(req, *, timeout: int = 60) -> bytes:
     """Send an ElevenLabs request, raising a *legible* error (with the API's message) on failure.
 
     ElevenLabs returns the reason in a JSON body (e.g. 402 `paid_plan_required`: "Free users cannot
     use library voices…"); surfacing it beats a bare `HTTPError 402` traceback in the worker log.
+    A 429 ("heavy traffic") or 5xx is retried twice first: one transient error used to end the call
+    (2026-11-06, h2).
     """
     import json  # noqa: PLC0415
+    import time  # noqa: PLC0415
     import urllib.error  # noqa: PLC0415
     import urllib.request  # noqa: PLC0415
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            return resp.read()
-    except urllib.error.HTTPError as exc:
-        detail = ""
+    for attempt in range(len(_ELEVENLABS_RETRY_S) + 1):
         try:
-            payload = json.loads(exc.read()).get("detail", {})
-            detail = payload.get("message") or payload.get("code") or ""
-        except Exception:  # noqa: BLE001 - body may be empty/non-JSON
-            pass
-        raise RuntimeError(f"ElevenLabs API error {exc.code}: {detail or exc.reason}") from exc
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                return resp.read()
+        except urllib.error.HTTPError as exc:
+            if (exc.code == 429 or exc.code >= 500) and attempt < len(_ELEVENLABS_RETRY_S):
+                print(f"[worker] elevenlabs: {exc.code}, retrying", flush=True)
+                time.sleep(_ELEVENLABS_RETRY_S[attempt])
+                continue
+            detail = ""
+            try:
+                payload = json.loads(exc.read()).get("detail", {})
+                detail = payload.get("message") or payload.get("code") or ""
+            except Exception:  # noqa: BLE001 - body may be empty/non-JSON
+                pass
+            raise RuntimeError(f"ElevenLabs API error {exc.code}: {detail or exc.reason}") from exc
+    raise AssertionError("unreachable")
 
 
 class ElevenLabsTTS(TTSAdapter):
