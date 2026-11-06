@@ -112,3 +112,11 @@ def test_any_other_patients_with_a_rhythm_is_the_graph_list_not_the_llm():
             "patients_with_event_type", q
     assert match_intent("Does the patient have atrial fibrillation?", now=time.time(),
                         patient_ref="PT1", event_ref="E1") is None  # this patient: unchanged
+
+
+def test_pre_alert_speech_is_logged_without_digits_or_names_when_there_is_no_pin():
+    from voice.livekit_agent import pre_auth_heard
+
+    assert pre_auth_heard("one two 1234", require_pin=True) == "(12 chars, before the PIN)"
+    logged = pre_auth_heard("Hello, this is 1234", require_pin=False, deid_backend="regex")
+    assert "1234" not in logged and "####" in logged and logged.startswith("'Hello")

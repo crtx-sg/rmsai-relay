@@ -205,6 +205,22 @@ def is_barge_in(text: str) -> bool:
     return bool(_BARGE_IN_WORD.match(text or ""))
 
 
+def pre_auth_heard(text: str, *, require_pin: bool, deid_backend: str = "auto") -> str:
+    """What to log of a turn heard before the alert. With a PIN the turn may BE the PIN: length
+    only. Without one, the words (digits masked, names de-identified): h2's refused pickups showed
+    only "(18 chars, before the PIN)", so nobody could tell what the clinician had said (2026-11-06).
+    """
+    hidden = f"({len(text)} chars, before the PIN)"
+    if require_pin:
+        return hidden
+    from common.deid import deidentify, get_deidentifier  # noqa: PLC0415
+
+    try:
+        return repr(deidentify(get_deidentifier(deid_backend), re.sub(r"\d", "#", text)))
+    except Exception:  # noqa: BLE001 - de-id failed: log nothing of the words (rule 5)
+        return hidden
+
+
 def drop_and_redial(event_id: str, *, mark_dropped, delete_room, answered) -> None:
     """Hang up a broken event call; have the consumer ring it again if it had been answered."""
     if not answered():
@@ -603,7 +619,9 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             if (is_auth and is_auth(self._session_id)) or (confirm and confirm(text)):
                 print(f"[worker] heard: {text!r}", flush=True)
             else:
-                print(f"[worker] heard: ({len(text)} chars, before the PIN)", flush=True)
+                heard = pre_auth_heard(text, require_pin=getattr(self._handler, "require_pin", True),
+                                       deid_backend=DEFAULT.deid_backend)
+                print(f"[worker] heard: {heard}", flush=True)
             if carry_ok and is_dangling(text):
                 # Wait for the rest of the question rather than answer half of it.
                 self._carry = (text, time.monotonic())
