@@ -238,3 +238,26 @@ def test_a_call_that_never_rang_texts_could_not_call_not_missed_call(tmp_path):
     assert result.outcome == "dial_failed" and result.fallback == "sms_delivered"
     (_to, text), = sms.sent
     assert text.startswith("RMS relay could not call you.")
+
+
+def test_similar_events_are_the_called_events_rhythm():
+    from kb.graph.lookup import match_intent
+    from kb.graph.templates import resolve_like_event
+
+    def route(q):
+        return match_intent(q, now=time.time(), patient_ref="PT1", event_ref="E1")
+
+    for q in ("Are there any similar events for patients in this unit?",
+              "any other patients with the same rhythm?", "events like this on the ward",
+              "any similar unacknowledged alerts in the last 6 hours"):
+        assert route(q)[1].get("like_event") == "E1", q
+    assert route("similar events for this patient")[1]["patient_id"] == "PT1"
+    assert route("What rhythm was detected?")[0] == "event_summary"  # unchanged
+
+    class _D:
+        def run_read(self, _cypher, **kw):
+            return [{"t": "SINUS_TACHYCARDIA"}] if kw["uuid"] == "E1" else []
+
+    assert resolve_like_event(_D(), {"status": "any", "like_event": "E1"}) == {
+        "status": "any", "event_type": "SINUS_TACHYCARDIA"}
+    assert resolve_like_event(_D(), {"status": "any", "like_event": "E9"}) == {"status": "any"}

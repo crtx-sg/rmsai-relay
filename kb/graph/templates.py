@@ -498,10 +498,23 @@ def describe_event_history(params: dict) -> str:
     return text
 
 
+def resolve_like_event(driver: GraphDriver, params: dict) -> dict:
+    """Event-history params with `like_event` (an event uuid) replaced by that event's rhythm:
+    "similar events" means events of the called event's type. Unknown event: no type filter."""
+    params = dict(params)
+    uuid = params.pop("like_event", None)
+    if uuid:
+        rows = driver.run_read("MATCH (e:MonitoredEvent {uuid: $uuid}) RETURN e.event_type AS t",
+                               uuid=uuid)
+        if rows and rows[0].get("t"):
+            params["event_type"] = rows[0]["t"]
+    return params
+
+
 def run_template(driver: GraphDriver, name: str, **params) -> list[dict]:
     """Run a named operational template with parameters (read-only)."""
     if name == EVENT_HISTORY:
-        return event_history_rows(driver, **params)
+        return event_history_rows(driver, **resolve_like_event(driver, params))
     if name not in TEMPLATES:
         raise KeyError(f"unknown template: {name!r}")
     return driver.run_read(TEMPLATES[name], **{**TEMPLATE_DEFAULTS.get(name, {}), **params})

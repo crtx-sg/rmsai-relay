@@ -33,7 +33,12 @@ from kb.graph.lookup import (
     names_protocol,
     names_bed_label, names_unresolved_bed,
 )
-from kb.graph.templates import EVENT_HISTORY, describe_event_history, run_template
+from kb.graph.templates import (
+    EVENT_HISTORY,
+    describe_event_history,
+    resolve_like_event,
+    run_template,
+)
 from kb.hybrid.answer import _MIN_OVERLAP, is_relevant
 from kb.hybrid.retriever import HybridRetriever
 from kb.vector.answer import _best_overlap
@@ -1292,6 +1297,8 @@ class Orchestrator:
                       "free generation", flush=True)
             if intent:
                 name, params = intent
+                if name == EVENT_HISTORY and params.get("like_event"):
+                    params = resolve_like_event(self.driver, params)  # so the answer names it
                 operational_rows = run_template(self.driver, name, **params)
                 shown = {k: v for k, v in params.items() if k != "since"}
                 print(f"[orchestrator] graph query {name} {shown} -> {len(operational_rows)} row(s)",

@@ -97,6 +97,7 @@ or a PT number work anywhere. Text answers list rows; spoken answers are shorten
 | "Show critical events in the last 24 hours" | High/Critical events in the window; spoken bed by bed, worst bed first ("5 high or critical events in the last 24 hours, on 2 beds. Bed 2: critical ventricular tachycardia twice. …") |
 | "Show positive events in the last 30 minutes" | Non-false-positive events in the window |
 | "List all events" · "show the alarms from the last 6 hours" · "events of other patients in this unit" | Event list (optionally windowed), ward-wide |
+| "Any similar events for patients in this unit?" · "other patients with the same rhythm?" (on a call) | Events of the called event's rhythm, ward-wide ("similar events for this patient": just this patient's) |
 | "How many patients are critical?" · "count of patients who are critical" | A count of patients with open critical or high alerts, with their beds |
 | "Which events were withheld?" · "which events have been acknowledged?" | By status |
 | "List all atrial fibrillation events" · "how many AFib episodes on bed 2?" | By rhythm (optionally a bed or patient) |

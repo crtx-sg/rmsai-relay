@@ -222,6 +222,11 @@ _OCCUPANT = re.compile(r"\b(?:assigned|occup\w*|admitted|lying)\b|\bwho(?:'s|\s+
 # LLM router listed the called patient's own events).
 _WARD_SCOPE = re.compile(r"\b(?:other|all)\s+patients\b|\b(?:in|on|across)\s+(?:this|the|my)\s+"
                          r"(?:unit|ward)\b", re.IGNORECASE)
+# "Any similar events for patients in this unit?": the called event's rhythm, ward-wide (live
+# 2026-11-06: all 51 events of every rhythm were read out).
+_SIMILAR = re.compile(r"\b(?:similar|same|such)\s+(?:\w+\s+){0,2}(?:events?|alerts?|"
+                      r"alarms?|episodes?|rhythms?|arrhythmias?)\b|\b(?:events?|alerts?|alarms?)\s+"
+                      r"like\s+(?:this|it)\b", re.IGNORECASE)
 # "How many patients are critical?": a count, not the 23-line ranking (live 2026-11-06).
 _CRITICAL_COUNT = re.compile(r"\b(?:how\s+many|count|number\s+of)\b.*\bpatients?\b.*"
                              r"\b(?:critical|high|serious|unstable|sick)\b", re.IGNORECASE)
@@ -401,6 +406,11 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         return "bed_last_event", {"bed": bed_label}
 
     # (not "how many patients have high blood pressure?": a vital, not criticality)
+    if event_ref and _SIMILAR.search(q) and not etype and not bed_label and not named:
+        name, params = _history(now=now, status=history_status(q),
+                                patient=patient_ref if _THIS_PATIENT.search(q) else None,
+                                hours=int(m.group(1)) if (m := _HOURS.search(q)) else None)
+        return name, {**params, "like_event": event_ref}
     if _CRITICAL_COUNT.search(q) and not named and not bed_label and not _VITALS.search(q):
         return "patients_by_criticality", {"count": True}
     # The ward ranked sickest first (or walked in bed order when asked): rounds / triage lists.
