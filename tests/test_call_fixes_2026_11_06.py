@@ -190,3 +190,44 @@ def test_critical_count_counts_open_critical_and_high_alerts():
         "Of 4 patients, 3 have open critical or high alerts: 1 critical (bed 2), "
         "2 high (bed 19, bed 13).")
     assert "none has" in _answer_criticality_count(rows[3:])
+
+
+def test_a_dial_that_never_rang_does_not_use_up_the_ring_attempts():
+    from dataclasses import replace
+
+    from common.config import DEFAULT
+    from voice.outbound import CallOutcome, SimulatedCaller, place_with_retries
+
+    cfg = replace(DEFAULT, outbound_max_retries=2, outbound_retry_delay_s=30)
+    outage_then_rings = [CallOutcome.DIAL_FAILED] * 5 + [CallOutcome.NO_ANSWER] * 2 + [
+        CallOutcome.ANSWERED]
+    caller = SimulatedCaller(outage_then_rings)
+    assert place_with_retries(caller, "+15551234567", cfg, sleep_fn=lambda _s: None) == (
+        CallOutcome.ANSWERED, 8)  # 5 failed dials, then still 3 ring attempts
+    waits = []
+    caller = SimulatedCaller([CallOutcome.DIAL_FAILED] * 20)
+    assert place_with_retries(caller, "+15551234567", cfg, sleep_fn=waits.append) == (
+        CallOutcome.DIAL_FAILED, 10)  # gives up after ~5 minutes of outage
+    assert waits == [30] * 9
+
+
+def test_only_auth_and_network_errors_count_as_never_rang():
+    from voice.outbound import never_rang
+
+    class _Http(Exception):
+        def __init__(self, status):
+            self.status = status
+
+    assert never_rang(_Http(401)) and never_rang(ConnectionError("dns")) and never_rang(OSError())
+    assert not never_rang(_Http(408)) and not never_rang(RuntimeError("sip 486 busy"))
+
+
+def test_a_call_that_never_rang_texts_could_not_call_not_missed_call(tmp_path):
+    from tests.test_sms_fallback import _RealSms, _run
+    from voice.outbound import CallOutcome
+
+    sms = _RealSms()
+    result, _status, _ = _run([CallOutcome.DIAL_FAILED] * 10, sms, tmp_path)
+    assert result.outcome == "dial_failed" and result.fallback == "sms_delivered"
+    (_to, text), = sms.sent
+    assert text.startswith("RMS relay could not call you.")

@@ -292,7 +292,7 @@ def set_event_delivery(driver: GraphDriver, uuid: str, **delivery) -> None:
     """Record what actually reached the clinician, after dispatch (None values are skipped).
 
     Keys used: `delivered_app` (worklist push succeeded), `delivered_call` (call outcome:
-    answered / no_answer / invalid), `delivered_sms` (SMS fallback: sms_delivered / sms_failed).
+    answered / no_answer / dial_failed / invalid), `delivered_sms` (SMS fallback: sms_delivered / sms_failed).
     The gate decision (`alert_gate`) says whether an alert was *due*; these say whether it *landed*.
     """
     props = {k: v for k, v in delivery.items() if v is not None}

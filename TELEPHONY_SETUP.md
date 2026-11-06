@@ -227,6 +227,7 @@ every attempt, or pick up and hang up without saying "yes".
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| `SIP dial failed: ContentTypeError: 401 …` on every dial and agent dispatch, then `-> dial_failed` and a "could not call you" text | LiveKit Cloud refused the API key (seen on both stacks for 8 minutes on 2026-11-06, recovered by itself): a key or secret change, or the host clock off | check `LIVEKIT_SIP_API_KEY`/`SECRET` and `date -u`; these dials never rang, so they don't use up the 3 ring attempts: each alert keeps retrying every 30 s for 5 minutes before texting |
 | `SIP dial failed … sip status: 603: Decline`, and **no call in SignalWire's voice log** | SignalWire refused the INVITE before running the script: `SIGNALWIRE_SIP_USER` unset (LiveKit dialled `sip:<number>@domain`), trial mode (Domain App traffic blocked), wrong SIP credentials, or a blocked destination country | 0) Set `SIGNALWIRE_SIP_USER` (step 4) and re-paste `--swml`'s outbound script. 1) Dashboard: no trial banner; add a card + fund. 2) Re-set the SIP address password, update `SIGNALWIRE_SIP_PASSWORD`, re-run `cli.sip_setup`. 3) Permit the destination country (international) |
 | A call **in** SignalWire's log that failed after starting | the script ran but `connect` failed (destination, caller ID, balance) | read the log entry's error in the SignalWire dashboard |
 | `registered worker … "url": "ws://localhost:7880"` for `rmsai-agent-phone` | phone worker on the wrong server | update past `fe89028`, `make phone-down phone-up` |

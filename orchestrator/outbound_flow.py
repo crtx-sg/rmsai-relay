@@ -155,8 +155,11 @@ def run_outbound(
                   flush=True)
             closed = False
         if fallback_notifier is not None and outcome != CallOutcome.INVALID and not closed:
-            missed = ("RMSリレーからの不在着信です。" if config.outbound_alert_language == "ja"
-                      else "Missed call from RMS relay. ")
+            ja = config.outbound_alert_language == "ja"
+            if outcome == CallOutcome.DIAL_FAILED:  # the phone never rang: not a "missed call"
+                missed = "RMSリレーから電話できませんでした。" if ja else "RMS relay could not call you. "
+            else:
+                missed = "RMSリレーからの不在着信です。" if ja else "Missed call from RMS relay. "
             text = missed + spoken_report(event, bed=bed, config=config)
             delivered = fallback_notifier.send(config.outbound_call_number, text)
             if delivered and getattr(fallback_notifier, "simulated", False):

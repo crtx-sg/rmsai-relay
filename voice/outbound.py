@@ -32,6 +32,14 @@ class CallOutcome(str, Enum):
     BUSY = "busy"
     INVALID = "invalid"
     DROPPED = "dropped"  # mid-call (not a ring outcome)
+    DIAL_FAILED = "dial_failed"  # the call never left (auth/network error): the phone never rang
+
+
+def never_rang(exc: Exception) -> bool:
+    """An API/auth/network failure (the dial never reached the phone network), not a SIP ring
+    outcome. Live 2026-11-06: LiveKit Cloud answered 401 for 8 minutes and every alert used up its
+    three ring attempts in a minute without the phone ringing once."""
+    return getattr(exc, "status", None) in (401, 403) or isinstance(exc, OSError)
 
 
 class Caller(ABC):
@@ -82,7 +90,7 @@ class LiveKitCaller(Caller):
             return CallOutcome.ANSWERED
         except Exception as exc:  # noqa: BLE001 - SIP/trunk error -> no-answer (retry policy applies)
             print(f"[outbound] SIP dial failed: {type(exc).__name__}: {exc}", flush=True)
-            return CallOutcome.NO_ANSWER
+            return CallOutcome.DIAL_FAILED if never_rang(exc) else CallOutcome.NO_ANSWER
 
 
 def call_room_name(call_id: str, config: Config = DEFAULT) -> str:
@@ -194,24 +202,34 @@ def place_with_retries(
     if not is_valid_number(number):
         return CallOutcome.INVALID, 0  # fail fast, no retry
 
-    attempts = 0
-    for attempt in range(config.outbound_max_retries + 1):
+    attempts = failed = rings = 0
+    while True:
         attempts += 1
         outcome = caller.place_call(number)
-        if outcome == CallOutcome.ANSWERED:
+        if outcome in (CallOutcome.ANSWERED, CallOutcome.INVALID):
             return outcome, attempts
-        if outcome == CallOutcome.INVALID:
-            return outcome, attempts
-        # NO_ANSWER / BUSY -> retry after the delay (unless this was the last attempt)
-        if attempt < config.outbound_max_retries:
-            sleep_fn(config.outbound_retry_delay_s)
-            if before_retry is not None:
-                try:
-                    before_retry()
-                except Exception as exc:  # noqa: BLE001 - the re-dial still goes ahead
-                    print(f"[outbound] before-retry hook failed: {type(exc).__name__}: {exc}",
-                          flush=True)
+        if outcome == CallOutcome.DIAL_FAILED:
+            # Never rang: not a ring attempt. Keep trying through an outage, then give up.
+            failed += 1
+            if failed >= _MAX_DIAL_FAILURES:
+                return outcome, attempts
+        else:
+            rings += 1  # NO_ANSWER / BUSY
+            if rings > config.outbound_max_retries:
+                break
+        sleep_fn(config.outbound_retry_delay_s)
+        if before_retry is not None:
+            try:
+                before_retry()
+            except Exception as exc:  # noqa: BLE001 - the re-dial still goes ahead
+                print(f"[outbound] before-retry hook failed: {type(exc).__name__}: {exc}",
+                      flush=True)
     return CallOutcome.NO_ANSWER, attempts  # exhausted -> notify_failed
+
+
+# Dials that never rang before giving up: 10 x outbound_retry_delay_s (30 s) = 5 minutes.
+# shortcut: one queued call blocks the queue while it waits out an outage; fine for one ward.
+_MAX_DIAL_FAILURES = 10
 
 
 _ACK_YES = {"yes", "yeah", "yep", "acknowledge", "acknowledges", "acknowledged", "acknowledging", "confirm",
