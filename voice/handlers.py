@@ -58,11 +58,40 @@ def is_filler(text: str) -> bool:
     return bool(_FILLER.match(text)) or bool(text) and not re.search(r"[A-Za-z0-9]", text)
 _AUTH_OK = "Thank you, you are authenticated. How can I help?"
 _PROMPT_CONFIRM = "Please say yes to hear the alert."
-# The whole utterance must be a "yes" (optionally "hello, yes" / "yes, go ahead"): a voicemail
-# greeting split at a pause ("…[pause] Yeah, leave a message") must never trigger the alert.
-_CONFIRM_YES = re.compile(
-    r"^\W*(?:(?:hello|hi|hey|ok|okay)\W+)?(?:yes|yeah|yep|yup)"
-    r"(?:\W+(?:please|go ahead|speaking|i'?m here|i am here))?\W*$", re.IGNORECASE)
+# A pickup reply that starts the alert: a short one (<= 6 words) with a "yes" word ("yes, tell
+# me", "okay go ahead"), a questioning "Hello?" or "moshi moshi". Live 2026-11-06: "Hello?" and
+# natural replies were refused for 80 s. A voicemail greeting split at a pause ("…[pause] Yeah,
+# leave a message") must never trigger it: its words veto, and a flat "Hello." does not count.
+_PICKUP_YES = {"yes", "yeah", "yep", "yup", "ok", "okay", "sure", "hai", "speaking"}
+_PICKUP_PHRASES = ("go ahead", "tell me")
+_PICKUP_VETO = {"no", "not", "nope", "wrong", "leave", "message", "reached", "unavailable",
+                "voicemail", "mailbox", "record", "recording", "tone", "beep", "back", "later",
+                "cant", "cannot"}
+_PICKUP_HELLO = re.compile(r"^\W*(?:(?:hello|hi|hey)\W*)+\?\W*$|^\W*moshi\W+moshi\b",
+                           re.IGNORECASE)
+_PICKUP_MAX_WORDS = 6
+# After the alert, these alone are a "yes" to the pickup prompt, not an acknowledgment.
+_BARE_YES = _PICKUP_YES | {"please"}
+
+
+def _words(text: str) -> list[str]:
+    return [w.replace("'", "") for w in re.findall(r"[a-z']+", (text or "").lower())]
+
+
+def is_pickup_reply(text: str) -> bool:
+    """True if a reply to "please say yes to hear the alert" confirms a live listener."""
+    if any(ch.isdigit() for ch in text or ""):
+        return False  # never a PIN
+    words = _words(text)
+    if not words or len(words) > _PICKUP_MAX_WORDS or set(words) & _PICKUP_VETO:
+        return False
+    if _PICKUP_HELLO.search(text):
+        return True
+    if "?" in text:
+        return False  # "yes, what is this?" asks rather than confirms: the prompt again
+    joined = " ".join(words)
+    return bool(set(words) & _PICKUP_YES) or (
+        len(words) <= 3 and any(p in joined for p in _PICKUP_PHRASES))
 _LOCKED = "I could not verify your PIN. Ending the call for safety."
 
 
@@ -229,7 +258,7 @@ class OutboundHandler(OrchestratorHandler):
 
     def is_confirmation(self, text: str) -> bool:
         """The spoken "yes" that replaces the PIN (never digits, so never a PIN)."""
-        return not self.require_pin and bool(_CONFIRM_YES.match(text or ""))
+        return not self.require_pin and is_pickup_reply(text)
 
     def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
         if self.require_pin or self.working.get_or_create(session_id).authenticated:
@@ -298,6 +327,14 @@ class OutboundHandler(OrchestratorHandler):
         if command and self._names_other_event(text):
             return (f"On this call I can only acknowledge {self._this_event()}. Please "
                     f"acknowledge other events in the app.")
+        # Without a PIN "yes" is the pickup word, so a bare "yes" after the alert is not an
+        # acknowledgment: on h2 a second "yes" in the silence before the alert closed it unheard
+        # (live 2026-11-06). The clinician says "acknowledge".
+        words = set(_words(text))
+        if not self.require_pin and words and words <= _BARE_YES and words & _PICKUP_YES:
+            if spoken and is_filler(text):
+                return ""  # a backchannel "yeah"/"okay" over the alert stays silent
+            return f"To close {self._this_event()}, say acknowledge."
         beds, patients = _named_targets(text)
         names_this = command and bool(beds or patients)  # "acknowledge bed two"
         # A backchannel "yeah"/"okay" over the alert is not an acknowledgment ("yes" still is).
