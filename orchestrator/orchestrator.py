@@ -131,6 +131,8 @@ _REPEAT = re.compile(
     re.IGNORECASE,
 )
 _NOTHING_TO_REPEAT = "There is nothing to repeat yet."
+# On a call, "eh?" / "sorry?" / "hello?" means the caller didn't catch the last answer.
+_PARDON = re.compile(r"^\W*(?:eh|huh|sorry|pardon(?: me)?|what|hello)\W*$", re.IGNORECASE)
 # Closing pleasantries: answered directly, never searched in the KB (which declined "thank you").
 # A whole utterance made only of courtesy phrases ("okay, thank you", "that's all, bye").
 _COURTESY = re.compile(
@@ -1132,9 +1134,14 @@ class Orchestrator:
                               trace=tracer.as_dicts())
 
         # --- "repeat that" -> re-voice the last answer from working memory (no KB/LLM) ---
-        if _REPEAT.search(user_text):
+        if _REPEAT.search(user_text) or (spoken and _PARDON.match(user_text)):
             with tracer.span("repeat"):
-                last = next((t.text for t in reversed(state.turns) if t.role == "assistant"), None)
+                # Skip declines, hints and courtesies: "repeat" after "eh?" said "I don't have
+                # information on that" four times instead of the alert (live 2026-11-06).
+                skip = {_DECLINE, _PATIENT_HINT, UNGROUNDED_ANSWER, _NOTHING_TO_REPEAT,
+                        _YOU_ARE_WELCOME, _GOODBYE_REPLY, ""}
+                last = next((t.text for t in reversed(state.turns)
+                             if t.role == "assistant" and t.text not in skip), None)
                 answer_text = last or _NOTHING_TO_REPEAT
                 self.working.append_turn(
                     session_id, ChatTurn(role="assistant", text=answer_text, timestamp=now + 0.001)
