@@ -463,6 +463,46 @@ def _answer_vital_readings(row: dict, focus: str | None, n: int) -> str:
     return f"{head}, last {n} readings before the event, oldest first: {'; '.join(parts)}."
 
 
+def _spoken_span(seconds: float) -> str:
+    m = max(1, round(seconds / 60))
+    if m < 60:
+        return f"{m} minute{'s' if m != 1 else ''}"
+    h, r = divmod(m, 60)
+    return f"{h} hour{'s' if h != 1 else ''}" + (f" {r} minute{'s' if r != 1 else ''}" if r else "")
+
+
+def _answer_vital_past(row: dict, focus: str | None, ago_s: int | None) -> str:
+    """A vital at a past time ("two hours ago": the reading nearest it) or, without `ago_s`, its
+    course before the event (first to last, with the range), from the stored readings."""
+    head = f"Patient {row['patient']}" if row.get("patient") else "This patient"
+    if row.get("bed"):
+        head += f" on {spoken_bed(row['bed'])}"
+    ts = row.get("ts")
+    parts = []
+    for key in ({"bp": ("sbp", "dbp")}.get(focus, (focus,)) if focus else _VITAL_KEYS):
+        label, hist, times = _READING_LABEL[key], row.get(key) or [], row.get(f"{key}_ts") or []
+        if not hist:
+            parts.append(f"{label} not recorded")
+        elif ts is None or len(times) != len(hist):  # older events stored no reading times
+            parts.append(f"{label} {', '.join(_fmt_value(key, v) for v in hist[-3:])} "
+                         f"(last readings; their times were not recorded)")
+        elif ago_s:
+            target = ts - ago_s
+            if target < times[0] - 300:  # further back than the record reaches
+                parts.append(f"{label} readings go back only {_spoken_span(ts - times[0])}; the "
+                             f"earliest was {_fmt_value(key, hist[0])} {_spoken_time(times[0])}")
+            else:
+                i = min(range(len(times)), key=lambda j: abs(times[j] - target))
+                parts.append(f"{label} {_fmt_value(key, hist[i])} {_spoken_time(times[i])}, "
+                             f"{_spoken_span(ts - times[i])} before the event")
+        else:
+            parts.append(f"{label} went from {_fmt_value(key, hist[0])} to "
+                         f"{_fmt_value(key, hist[-1])} over the {_spoken_span(ts - times[0])} "
+                         f"before the event (lowest {_fmt_value(key, min(hist))}, highest "
+                         f"{_fmt_value(key, max(hist))}, {len(hist)} readings)")
+    return f"{head}: {'; '.join(parts)}."
+
+
 def _spoken_time(ts) -> str:
     from datetime import datetime, timezone  # noqa: PLC0415
 
@@ -1312,8 +1352,11 @@ class Orchestrator:
                 answer_text = _answer_patient_ranking(operational_rows, order=params.get("order"),
                                                       spoken=spoken)
             elif name == "vital_readings_for_event":
-                answer_text = (_answer_vital_readings(operational_rows[0], focus, params.get("n", 3))
-                               if operational_rows else "I couldn't find that event.")
+                row = operational_rows[0] if operational_rows else None
+                answer_text = ("I couldn't find that event." if row is None
+                               else _answer_vital_past(row, focus, params.get("ago_s"))
+                               if params.get("ago_s") or params.get("course")
+                               else _answer_vital_readings(row, focus, params.get("n", 3)))
             elif name == "event_count_since":
                 answer_text = _answer_event_count(operational_rows, params.get("window"))
             elif name == "worklist" and params.get("most_severe"):

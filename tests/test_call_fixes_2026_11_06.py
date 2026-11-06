@@ -120,3 +120,46 @@ def test_pre_alert_speech_is_logged_without_digits_or_names_when_there_is_no_pin
     assert pre_auth_heard("one two 1234", require_pin=True) == "(12 chars, before the PIN)"
     logged = pre_auth_heard("Hello, this is 1234", require_pin=False, deid_backend="regex")
     assert "1234" not in logged and "####" in logged and logged.startswith("'Hello")
+
+
+def _hist_row(ts=10_000.0):
+    # heart rate every 10 minutes for the hour before the event; BP every hour for 3 hours
+    return {"patient": "PT950445", "bed": "Unit2/Unit2-Bed16", "ts": ts,
+            "hr": [100, 110, 120, 130, 140, 150, 152], "hr_ts": [ts - 3600 + 600 * i for i in range(7)],
+            "sbp": [130, 128, 124], "sbp_ts": [ts - 7200, ts - 3600, ts],
+            "dbp": [70, 68, 66], "dbp_ts": [ts - 7200, ts - 3600, ts]}
+
+
+def test_a_vital_two_hours_ago_is_the_reading_nearest_then():
+    from orchestrator.orchestrator import _answer_vital_past
+
+    bp = _answer_vital_past(_hist_row(), "bp", 7200)
+    assert "systolic blood pressure 130" in bp and "2 hours before the event" in bp
+    hr = _answer_vital_past(_hist_row(), "hr", 7200)  # HR is only kept for the last hour
+    assert "readings go back only 1 hour" in hr and "the earliest was 100" in hr
+    assert "heart rate 130" in _answer_vital_past(_hist_row(), "hr", 1800)
+
+
+def test_has_the_bp_been_stable_gives_its_course():
+    from orchestrator.orchestrator import _answer_vital_past
+
+    out = _answer_vital_past(_hist_row(), "bp", None)
+    assert "systolic blood pressure went from 130 to 124 over the 2 hours" in out
+    assert "lowest 124, highest 130, 3 readings" in out
+    # an old event without reading times still answers from the values
+    old = {k: v for k, v in _hist_row().items() if not k.endswith("_ts")}
+    assert "their times were not recorded" in _answer_vital_past(old, "hr", 7200)
+
+
+def test_past_and_course_questions_route_to_the_stored_readings():
+    from kb.graph.lookup import match_intent
+
+    def route(q):
+        return match_intent(q, now=time.time(), patient_ref="PT1", event_ref="E1")
+
+    assert route("What was the heart rate two hours ago?")[1] == {
+        "event_uuid": "E1", "ago_s": 7200, "focus": "hr"}
+    assert route("Has the blood pressure been stable?")[1]["course"] is True
+    assert route("What was the blood pressure some time ago?")[1]["focus"] == "bp"
+    assert route("What was the heart rate?")[0] == "vitals_at_selected_event"  # unchanged
+    assert route("Is the patient deteriorating?")[0] == "event_summary"  # unchanged

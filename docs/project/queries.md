@@ -53,6 +53,8 @@ or a PT number work anywhere. Text answers list rows; spoken answers are shorten
 | "Why was I alerted?" | The stored reason (rhythm and confidence, abnormal vitals, trends) |
 | "Show me the ECG strip for this event" | The strip (shown in the app; on a call, said to be available there) |
 | "How was the heart rate trending?" | Direction, start/end and peak over the readings before the event |
+| "What was the heart rate two hours ago?" · "BP half an hour ago" · "oxygen 30 minutes before" | The stored reading nearest that time, with its time; if the record doesn't reach back that far, how far it goes and the earliest reading |
+| "Has the blood pressure been stable?" · "is the oxygen changing?" · "what was the BP earlier?" | That vital's course before the event: first to last value, over how long, lowest and highest |
 | "Which vitals are deteriorating?" · "what are the trends for this patient?" | Each deteriorating vital, from the event's stored verdicts: "Patient PT1: deteriorating: heart rate rising 35 beats per minute over 65 minutes, now 194; …", or "no vital is deteriorating." |
 | "What should I do now?" · "what are the action items for this event?" | This event's recorded actions ("escalate care", "initiate ACLS protocol", …) |
 | "What is the protocol for this event?" · "how do I treat this patient?" · "what is the treatment for this rhythm?" | The protocol for this event's rhythm, as in section 6 (no LLM) |
@@ -141,7 +143,5 @@ New SOPs and guidelines become answerable once uploaded (`cli.kb_upload`).
 
 ## Not supported yet
 
-Lab results (e.g. potassium), orders and medication changes, allergies, and the readings behind a
-trend of vitals other than heart rate for this event (whether each vital is deteriorating is
-answered, section 2; a blood-pressure trend exists only as "HR and BP trend for the last <rhythm>
-event"). These get the patient hint (section 7) or a documents decline.
+Lab results (e.g. potassium), orders and medication changes, and allergies. These get the patient
+hint (section 7) or a documents decline.

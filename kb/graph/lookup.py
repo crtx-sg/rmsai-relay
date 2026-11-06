@@ -22,6 +22,24 @@ _BED_LABEL = re.compile(r"\bUnit\d+-Bed\d+\b", re.IGNORECASE)
 _READINGS = re.compile(r"\b(?:readings?|measurements?)\b", re.IGNORECASE)
 _LAST_N = re.compile(r"\b(?:last|previous|past|recent)\s+(\d+|" + "|".join(_ONES) + r")\b",
                      re.IGNORECASE)
+# A past reading ("heart rate two hours ago") or a vital's course ("has the BP been stable?"), read
+# from the event's stored histories. Live 2026-11-06: both got the value at the event.
+_AGO = re.compile(r"\b(\d+|an?|half an?|" + "|".join(_ONES) + r")\s+(hours?|hrs?|minutes?|mins?)\s+"
+                  r"(?:ago|before|earlier|back)\b", re.IGNORECASE)
+_COURSE = re.compile(r"\b(?:stable|steady|chang(?:ing|ed)|trend(?:ing)?|going (?:up|down)|rising|"
+                     r"falling|over time|earlier|some ?time ago|a while ago)\b", re.IGNORECASE)
+
+
+def _ago_seconds(q: str) -> int | None:
+    """'two hours ago' -> 7200, 'half an hour ago' -> 1800; None if no offset is said."""
+    if not (m := _AGO.search(q)):
+        return None
+    word = m.group(1).lower()
+    n = 0.5 if word.startswith("half") else 1 if word in ("a", "an") else \
+        int(word) if word.isdigit() else _ONES.get(word)
+    return int(n * (3600 if m.group(2).lower().startswith("h") else 60)) if n else None
+
+
 _HOURS = re.compile(r"\b(\d+)\s*h(?:ours?)?\b", re.IGNORECASE)
 _MINUTES = re.compile(r"\b(\d+)\s*m(?:in(?:utes?)?)?\b", re.IGNORECASE)
 # Vitals question: any vital-sign term.
@@ -342,6 +360,15 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     if event_ref and _TRENDS.search(q) and not bed and not named and not etype \
             and not _focus(q, _VITAL_FOCUS) and not re.search(r"\bpatients\b", q):
         return "event_summary", {"event_uuid": event_ref, "focus": "trends"}
+
+    # A vital at a past time, or its course before the event (stored readings, not the snapshot).
+    if event_ref and not bed and not named and _VITALS.search(q):
+        ago = _ago_seconds(q)
+        if ago or _COURSE.search(q):
+            focus = _focus(q, _VITAL_FOCUS)
+            return "vital_readings_for_event", {"event_uuid": event_ref,
+                                                **({"ago_s": ago} if ago else {"course": True}),
+                                                **({"focus": focus} if focus else {})}
 
     # The last N recorded readings of a vital (or every vital) before the called/selected event.
     if event_ref and _READINGS.search(q) and not bed and not named:

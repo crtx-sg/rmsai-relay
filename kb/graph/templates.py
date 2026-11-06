@@ -239,7 +239,9 @@ TEMPLATES: dict[str, str] = {
         OPTIONAL MATCH (e)-[:AT_BED]->(b:Bed)
         RETURN p.pseudonym AS patient, b.label AS bed, e.event_type AS event_type, e.timestamp AS ts,
                e.hr_history AS hr, e.sbp_history AS sbp, e.dbp_history AS dbp,
-               e.spo2_history AS spo2, e.rr_history AS rr, e.temp_history AS temp
+               e.spo2_history AS spo2, e.rr_history AS rr, e.temp_history AS temp,
+               e.hr_history_ts AS hr_ts, e.sbp_history_ts AS sbp_ts, e.dbp_history_ts AS dbp_ts,
+               e.spo2_history_ts AS spo2_ts, e.rr_history_ts AS rr_ts, e.temp_history_ts AS temp_ts
     """,
     # How many events since a time ("how many events today?"): total, alerted and still pending.
     "event_count_since": """
