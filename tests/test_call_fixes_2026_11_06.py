@@ -81,3 +81,23 @@ def test_a_cut_off_alert_is_replayed_on_the_next_turn(tmp_path):
     assert h.respond("what were the vitals", session_id="room1") == "answer:what were the vitals"
     h.note_interrupted("room1", replay)  # cut again, but the clinician acknowledges
     assert h.respond("Acknowledge", session_id="room1", spoken=True).endswith("Goodbye.")
+
+
+def test_an_ack_with_a_question_records_the_ack_and_answers(tmp_path):
+    from tests.test_outbound_voice import _FakeOrch, _FakeWorking, _handler
+
+    orch = _FakeOrch()
+    h, _ = _handler(tmp_path, _FakeWorking(), orch, require_pin=False)
+    h.respond("Yes", session_id="room1")
+    said = "I acknowledge. Um, can you qu- tell me what the patient's blood pressure is?"
+    reply = h.respond(said, session_id="room1")
+    assert reply.startswith("answer:Um, can you qu- tell me what the patient")
+    assert reply.endswith("I've recorded your acknowledgment of the alert for patient PT1155 on bed ICU/1.")
+    assert not h.is_ended("room1")  # the call stays up: the question was answered, not cut off
+    audit = (tmp_path / "a.jsonl").read_text()
+    assert '"action":"acknowledgment"' in audit
+    # a question about acknowledging is still only a question
+    h2, _ = _handler(tmp_path, _FakeWorking(), _FakeOrch(), require_pin=False)
+    h2.respond("Yes", session_id="r2")
+    assert "recorded your acknowledgment" not in h2.respond("Is it acknowledged? What is the BP?",
+                                                             session_id="r2")

@@ -78,6 +78,16 @@ def _words(text: str) -> list[str]:
     return [w.replace("'", "") for w in re.findall(r"[a-z']+", (text or "").lower())]
 
 
+def _split_ack(text: str) -> tuple[str, str] | None:
+    """("I acknowledge.", "Can you tell me the BP?") when a turn holds a clean acknowledgment
+    sentence plus something else; None otherwise."""
+    parts = [p for p in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if p]
+    acks = [p for p in parts
+            if _ACK_VERB.search(p) and parse_ack(p) == "yes" and not is_question(p)]
+    rest = " ".join(p for p in parts if p not in acks)
+    return (" ".join(acks), rest) if acks and rest else None
+
+
 def is_pickup_reply(text: str) -> bool:
     """True if a reply to "please say yes to hear the alert" confirms a live listener."""
     if any(ch.isdigit() for ch in text or ""):
@@ -303,6 +313,16 @@ class OutboundHandler(OrchestratorHandler):
                                                       timestamp=time.time(), mode="alert"))
         return self.alert.spoken_alert
 
+    def _record_ack(self, session_id: str) -> None:
+        if self.driver is not None:
+            from kb.graph.events import set_event_status  # noqa: PLC0415
+
+            set_event_status(self.driver, self.alert.event_id, "acknowledged")
+        self.audit.write(actor=f"caller:{session_id}", action="acknowledgment",
+                         subject=self.alert.patient_ref, outcome="acknowledged")
+        print(f"[voice] acknowledgment received -> MonitoredEvent {self.alert.event_id} "
+              f"status=acknowledged (Neo4j updated)", flush=True)
+
     def note_interrupted(self, session_id: str, reply: str) -> None:
         """The worker's speech of `reply` was cut off. If it was the alert, the next turn replays it:
         room talk stopped h2's alert 2 s in and got "I don't have information on that" (2026-11-06)."""
@@ -352,16 +372,17 @@ class OutboundHandler(OrchestratorHandler):
         names_this = command and bool(beds or patients)  # "acknowledge bed two"
         # A backchannel "yeah"/"okay" over the alert is not an acknowledgment ("yes" still is).
         if names_this or (not (spoken and is_filler(text)) and parse_ack(text) == "yes"):
-            if self.driver is not None:
-                from kb.graph.events import set_event_status  # noqa: PLC0415
-
-                set_event_status(self.driver, self.alert.event_id, "acknowledged")
-            self.audit.write(actor=f"caller:{session_id}", action="acknowledgment",
-                             subject=self.alert.patient_ref, outcome="acknowledged")
-            print(f"[voice] acknowledgment received -> MonitoredEvent {self.alert.event_id} "
-                  f"status=acknowledged (Neo4j updated)", flush=True)
+            self._record_ack(session_id)
             self._ended.add(session_id)
             return f"Thank you, I've recorded your acknowledgment of {self._this_event()}. Goodbye."
+        # "I acknowledge. Um, can you tell me the BP?": the BP was answered and the alert stayed
+        # open, though the clinician had acknowledged it (live 2026-11-06). Record the ack, answer
+        # the rest, and keep the call up for it.
+        split = _split_ack(text)
+        if split is not None and not self._names_other_event(split[0]):
+            self._record_ack(session_id)
+            answer = super()._authenticated_turn(session_id, split[1], spoken=spoken)
+            return f"{answer} I've recorded your acknowledgment of {self._this_event()}."
         # The ack verb, but not a clean ack ("acknowledge this statement": STT misheard "event"):
         # confirm back. It went to Q&A, which answered with a ward-wide list (live 2026-11-04).
         if command:
