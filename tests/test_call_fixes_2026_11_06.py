@@ -101,3 +101,14 @@ def test_an_ack_with_a_question_records_the_ack_and_answers(tmp_path):
     h2.respond("Yes", session_id="r2")
     assert "recorded your acknowledgment" not in h2.respond("Is it acknowledged? What is the BP?",
                                                              session_id="r2")
+
+
+def test_any_other_patients_with_a_rhythm_is_the_graph_list_not_the_llm():
+    from kb.graph.lookup import match_intent
+
+    for q in ("Could you tell me if there are any other patients in the ward with atrial fibrillation?",
+              "Does any other patient have atrial fibrillation?", "any patients in the ward with VT"):
+        assert match_intent(q, now=time.time(), patient_ref="PT1", event_ref="E1")[0] == \
+            "patients_with_event_type", q
+    assert match_intent("Does the patient have atrial fibrillation?", now=time.time(),
+                        patient_ref="PT1", event_ref="E1") is None  # this patient: unchanged

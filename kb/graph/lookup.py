@@ -138,7 +138,10 @@ _VITALS = re.compile(
 # "all/which patients with <event>" — list-by-event-type phrasing.
 _ALL_PATIENTS = re.compile(
     r"\ball patients\b|\bwhich patients\b|\bpatients who\b|\bwho (?:has|have|had)\b|"
-    r"\bshow (?:me )?all\b|\blist (?:all )?patients\b",
+    r"\bshow (?:me )?all\b|\blist (?:all )?patients\b|"
+    # "any other patients in the ward with AFib?" went to the LLM, which said there were none
+    # (live 2026-11-06): it is this same list.
+    r"\b(?:any|other) (?:other )?patients?\b",
     re.IGNORECASE,
 )
 # The *analysis report* intent (T4). Word-boundary so "reported"/"reports" (the verb in

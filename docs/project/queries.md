@@ -97,7 +97,7 @@ or a PT number work anywhere. Text answers list rows; spoken answers are shorten
 | "List all events" · "show the alarms from the last 6 hours" | Event list (optionally windowed) |
 | "Which events were withheld?" · "which events have been acknowledged?" | By status |
 | "List all atrial fibrillation events" · "how many AFib episodes on bed 2?" | By rhythm (optionally a bed or patient) |
-| "Which patients have reported ventricular tachycardia?" | Patients and beds with that rhythm |
+| "Which patients have reported ventricular tachycardia?" · "any other patients in the ward with atrial fibrillation?" | Patients and beds with that rhythm |
 | "How many events were there today?" · "…in the last 30 minutes / 6 hours / 2 days / this week" | Count, patients, alerted, still pending |
 | "Which patient has the most alarms?" · "how many alarms per bed?" | Alarm counts per bed |
 | "Are there any outstanding action items?" | Count, high-priority count, the top three |
