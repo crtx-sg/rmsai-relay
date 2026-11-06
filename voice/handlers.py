@@ -242,10 +242,13 @@ class OutboundHandler(OrchestratorHandler):
         # "ja": greeting + "say yes" prompt in Japanese (the alert text is already in its language).
         self._prompt = _PROMPT_CONFIRM
         self._intro = "Remote clinical line with a patient alert. "
+        self._again = "Here is the alert again. "
+        self._alert_cut: set[str] = set()  # sessions whose alert was cut off before it finished
         if language == "ja":
             from orchestrator.report import JA_GREETING, JA_PROMPT_CONFIRM  # noqa: PLC0415
 
             self._prompt, self._intro = JA_PROMPT_CONFIRM, JA_GREETING
+            self._again = "アラートをもう一度お伝えします。"
         self.driver = driver
         # Called with the event id once the PIN passes, so a consumer crash doesn't re-ring
         # (`CallQueue.mark_answered`).
@@ -300,6 +303,12 @@ class OutboundHandler(OrchestratorHandler):
                                                       timestamp=time.time(), mode="alert"))
         return self.alert.spoken_alert
 
+    def note_interrupted(self, session_id: str, reply: str) -> None:
+        """The worker's speech of `reply` was cut off. If it was the alert, the next turn replays it:
+        room talk stopped h2's alert 2 s in and got "I don't have information on that" (2026-11-06)."""
+        if reply and self.alert.spoken_alert in reply:
+            self._alert_cut.add(session_id)
+
     def _this_event(self) -> str:
         """The called event in words: 'the ventricular fibrillation alert for patient PT998224 on
         bed 2'. Said back on every acknowledgment, so the clinician hears WHICH event was closed
@@ -323,6 +332,10 @@ class OutboundHandler(OrchestratorHandler):
         # An acknowledgment COMMAND: the verb, no negation, not a question. "Don't acknowledge bed
         # two yet" and "is bed two acknowledged" closed the alert before this guard.
         command = bool(_ACK_VERB.search(text)) and parse_ack(text) != "no" and not is_question(text)
+        if session_id in self._alert_cut:
+            self._alert_cut.discard(session_id)
+            if not (command or is_plain_no(text)):  # "acknowledge" / "no" mid-alert still count
+                return self._again + self.alert.spoken_alert
         # "Acknowledge bed seven" on a call about bed 2: only the called event can be closed here.
         if command and self._names_other_event(text):
             return (f"On this call I can only acknowledge {self._this_event()}. Please "

@@ -66,3 +66,18 @@ def test_with_a_pin_yes_still_acknowledges(tmp_path):
     h, _ = _handler(tmp_path, working, _FakeOrch(), require_pin=True)
     working.set_authenticated("room1", patient_ref="PT1155")
     assert h.respond("Yes", session_id="room1", spoken=True).endswith("Goodbye.")
+
+
+def test_a_cut_off_alert_is_replayed_on_the_next_turn(tmp_path):
+    from tests.test_outbound_voice import _FakeOrch, _FakeWorking, _handler
+
+    orch = _FakeOrch()
+    h, alert = _handler(tmp_path, _FakeWorking(), orch, require_pin=False)
+    played = h.respond("Yes", session_id="room1")
+    h.note_interrupted("room1", "I don't have information on that.")  # not the alert: ignored
+    h.note_interrupted("room1", played)  # room talk cut the alert off
+    replay = h.respond("Orientation module", session_id="room1", spoken=True)
+    assert replay == "Here is the alert again. " + alert.spoken_alert and orch.calls == []
+    assert h.respond("what were the vitals", session_id="room1") == "answer:what were the vitals"
+    h.note_interrupted("room1", replay)  # cut again, but the clinician acknowledges
+    assert h.respond("Acknowledge", session_id="room1", spoken=True).endswith("Goodbye.")

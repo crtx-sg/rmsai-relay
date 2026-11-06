@@ -634,6 +634,10 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
             # The answer was ready but cut off before any of it was heard (the case on the
             # 2026-10-14 call): no CancelledError reaches this node then, so watch the speech.
             speech = self.session.current_speech
+            note = getattr(self._handler, "note_interrupted", None)
+            if speech is not None and note is not None:  # a cut-off alert is replayed (handler)
+                speech.add_done_callback(
+                    lambda handle, said=reply: handle.interrupted and note(self._session_id, said))
             if speech is not None and carry_ok:
                 def _on_done(handle) -> None:
                     heard = any(getattr(item, "role", None) == "assistant"
