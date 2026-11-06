@@ -35,11 +35,11 @@ def test_pardon_on_a_call_is_a_repeat():
 def test_natural_pickup_replies_start_the_alert():
     from voice.handlers import is_pickup_reply
 
-    for said in ("Hello?", "Hello? Hello?", "Hi?", "Moshi moshi.", "Yes, tell me", "Okay, go ahead",
+    for said in ("Hello?", "Hello? Hello?", "Hi?", "Hello.", "hello", "Moshi moshi.", "Yes, tell me", "Okay, go ahead",
                  "Go ahead", "Yes I am listening", "Yeah, speaking", "Sure."):
         assert is_pickup_reply(said), said
-    # a flat "Hello." can be the first piece of a voicemail greeting; vetoes and long turns refuse
-    for said in ("Hello.", "Hello, you have reached the on-call phone", "Yes, call me back later",
+    # voicemail words and long turns refuse
+    for said in ("Hello, you have reached the on-call phone", "Yes, call me back later",
                  "Hi, it's me, leave a message", "No", "Tell me about the patient", "1234",
                  "Yes, what is this?"):
         assert not is_pickup_reply(said), said

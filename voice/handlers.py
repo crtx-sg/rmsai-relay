@@ -59,15 +59,17 @@ def is_filler(text: str) -> bool:
 _AUTH_OK = "Thank you, you are authenticated. How can I help?"
 _PROMPT_CONFIRM = "Please say yes to hear the alert."
 # A pickup reply that starts the alert: a short one (<= 6 words) with a "yes" word ("yes, tell
-# me", "okay go ahead"), a questioning "Hello?" or "moshi moshi". Live 2026-11-06: "Hello?" and
-# natural replies were refused for 80 s. A voicemail greeting split at a pause ("…[pause] Yeah,
-# leave a message") must never trigger it: its words veto, and a flat "Hello." does not count.
+# me", "okay go ahead"), a bare "hello" / "hi" (any punctuation) or "moshi moshi". Live
+# 2026-11-06: "Hello?" and natural replies were refused for 80 s. A voicemail greeting split at a
+# pause ("…[pause] Yeah, leave a message") must not trigger it: its words veto.
+# shortcut: a voicemail whose first piece is a bare "Hello." [pause] still hears the alert (user
+# decision 2026-11-06); revisit before real PHI.
 _PICKUP_YES = {"yes", "yeah", "yep", "yup", "ok", "okay", "sure", "hai", "speaking"}
 _PICKUP_PHRASES = ("go ahead", "tell me")
 _PICKUP_VETO = {"no", "not", "nope", "wrong", "leave", "message", "reached", "unavailable",
                 "voicemail", "mailbox", "record", "recording", "tone", "beep", "back", "later",
                 "cant", "cannot"}
-_PICKUP_HELLO = re.compile(r"^\W*(?:(?:hello|hi|hey)\W*)+\?\W*$|^\W*moshi\W+moshi\b",
+_PICKUP_HELLO = re.compile(r"^\W*(?:(?:hello|hi|hey)\W*)+$|^\W*moshi\W+moshi\b",
                            re.IGNORECASE)
 _PICKUP_MAX_WORDS = 6
 # After the alert, these alone are a "yes" to the pickup prompt, not an acknowledgment.
