@@ -14,6 +14,80 @@ This is the demo path. Background: [Setup](INSTALL.md#setup),
 > export RMSAI="docker compose -f infra/docker-compose.yml run --rm tools python -m"
 > ```
 
+## Key features (for presentations)
+
+rmsai-relay watches bedside-monitor data, uses AI to detect dangerous heart rhythms, phones the
+on-call clinician with a spoken alert, and answers their follow-up questions from hospital
+protocols and the patient's record.
+
+**1. Detection: from signal to event**
+- An AI model reads all 7 ECG leads and recognises 13–16 rhythm types (AF, flutter, SVT, VT, VF,
+  heart blocks and others), trained and validated on real ECG data and scored on held-out samples.
+- A false-alarm filter stops normal rhythms from triggering a call.
+- Vital-sign analysis gives a MEWS early-warning score and spots trends such as "heart rate
+  rising, oxygen falling".
+- Every event is ranked Critical, High or Low; only the urgent ones ring a phone.
+
+**2. Alerting: the clinician is phoned automatically**
+- Real outbound calls over the public phone network.
+- The clinician says "yes" or "hello" to hear the alert; an answering machine never hears it.
+- A spoken summary: patient, bed, rhythm, severity and key vitals.
+- Calls queue by severity, most urgent first; an event already acknowledged is skipped.
+- Unanswered calls are retried, then an SMS goes out; dropped calls are redialled.
+- Saying "acknowledge" closes the alert, and that is recorded.
+
+**3. Conversation: questions by voice or chat**
+- Answers grounded in hospital protocols and the patient's own record, for example "What are the
+  vitals now / 2 hours ago?", "Is this patient deteriorating?", "Any similar events in this
+  unit?", "What's the protocol for AF with RVR?", "Who is on bed 5?", "How many critical
+  patients?" (full list: [queries.md](docs/project/queries.md)).
+- Answers cite their sources; if the system doesn't know, it says so instead of guessing.
+- The caller can interrupt; noise is ignored; it repeats on request ("sorry?", "pardon?") and
+  replays the alert if it was cut off.
+- Works from a phone call, a call-in line or text chat in the app.
+
+**4. Knowledge base**
+- Graph database (patient ↔ events ↔ conditions ↔ guidelines) for exact, checkable answers.
+- Document search over clinical protocols and event reports for guidance answers.
+- Both sources are combined and cited separately.
+
+**5. Companion web app**
+- Worklist: every event arrives at once, with an AI-generated report and an ECG strip.
+- Events tab: a verifiable event history with filters.
+- Model performance: true and false positives, accuracy, and "why am I seeing this?" per event.
+- Simulate tab: a one-click test with real ECG samples, live call progress, and run statistics
+  with confidence intervals.
+- Chat and acknowledgement from the app as well as the phone.
+
+**6. Multi-site and multilingual**
+- Each hospital runs as its own stack, with its own data, phone number and language.
+- Calls to different hospitals go out at the same time.
+- The second hospital (h2, a Japanese site) speaks its alert in Japanese.
+
+**7. Privacy, safety and compliance by design**
+- Self-hosted by default: patient data is processed on local models.
+- Swappable AI provider (local Llama, Claude, Gemini, OpenAI) behind one interface; cloud models
+  only on synthetic data.
+- No patient names in logs, only pseudonyms; if de-identification fails, the turn stops.
+- The database is queried only through fixed, read-only templates; the AI can't run arbitrary
+  queries.
+- An append-only audit log records every data access, call, login and query.
+- On failure the system stops the turn rather than expose data or give an unchecked answer, and
+  the pipeline never crashes.
+
+**8. Engineering quality**
+- Over 1,300 automated tests; each module can be tested on its own from the command line.
+- Docker deployment, one command per hospital; restarts wait for any live call to finish.
+- Hospital interfaces: FHIR (EMR), HDF5 and MQTT monitor feeds.
+- Fixes driven by real phone dry-runs: each transcript issue is fixed with a test.
+
+**Status and roadmap**
+- Working today: everything above, proven in live phone tests with two hospitals.
+- Planned: live ECG and vitals streaming to the app; full Japanese conversation, not just the
+  alert; calibrated model confidence; testing with medical LLMs; false alarms from simulated noise.
+- POC limits: synthetic and anonymised data only; not a certified medical device; confidence
+  thresholds not yet tuned.
+
 ## Local-only mode (no LiveKit Cloud, no phone carrier)
 
 The default. Everything below (§0–§5B) runs on your machine: the local LiveKit, the app, WebRTC calls,
