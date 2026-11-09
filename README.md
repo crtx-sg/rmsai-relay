@@ -203,6 +203,61 @@ over SignalWire work end to end, and phone call-in was verified live on 2026-10-
 
 ---
 
+### How a question is answered (query routing)
+
+After speech-to-text, a question goes down one of three paths
+(`orchestrator/orchestrator.py`):
+
+1. **Regex intent rules** (`kb/graph/lookup.py`, `match_intent`): ordered rules, first match wins.
+   Each picks a fixed, read-only graph template and its parameters. **Code** writes the answer
+   from the rows; no LLM is involved.
+2. **LLM router fallback** (`kb/graph/llm_router.py`, on with `KB_LLM_ROUTER=true`): only when no
+   rule matched and the question sounds operational. The model picks a template **name** from a
+   fixed list (`CATALOGUE`); code validates the choice and fills the identities.
+3. **Document answer** (hybrid retrieval): protocol and guidance questions. Here the LLM writes the
+   answer from the cited passages, or declines.
+
+**Do**
+- Fix a wrong answer with a regex rule and a test. Most wrong answers on calls were *wrong
+  matches* (a rule fired for the wrong template), and the LLM fallback never sees those.
+- Add a router entry (`CATALOGUE`, plus `_TARGET` if it maps onto an existing template) whenever a
+  new template or intent is added, so paraphrases the rules miss still reach it.
+- Take identities and anything the clinician must say from the session or the question, never the
+  model: the patient, event and bed come from the call; a time offset ("2 hours ago") comes from
+  the question's own words. When no time was said, the router answers the trend before the event
+  rather than accept the model's number.
+- Keep the pre-check (`_OPERATIONAL`) broad, including plurals. A question it rejects never
+  reaches the router.
+- Measure after any routing change. `uv run python -m cli.kb_route --eval
+  kb/eval/router_questions.tsv` shows which path each question took, whether it was right, and
+  the router's latency. Add every misrouted question from a call transcript to that file or to a
+  test.
+- Treat a general guidance question that names a vital or the ECG ("target oxygen in COPD?") as a
+  document question, even on a call (`_GUIDANCE`).
+
+**Don't**
+- Don't let the LLM write Cypher, choose a patient/event/bed, or invent a parameter the clinician
+  didn't say.
+- Don't run the LLM on every turn to double-check the regex match. It adds seconds of silence to
+  every answer on a call, and the same question would no longer always get the same answer.
+- Don't widen a rule without running the `cli.kb_route` eval and `tests/test_query_coverage.py`.
+  A broader rule can take over other questions; for example, "vitals" rules once took over
+  guidance questions.
+- Don't guess when the question is ambiguous ("protocol for VS?", where VS could be VF or VT).
+  Decline or ask instead.
+- Don't use a cloud LLM for routing real patient data. Cloud models (Claude/Gemini) are for
+  synthetic data only.
+
+On the 2026-11-09 eval of 21 questions, with the local `llama3.2:3b`:
+- the rules answered 11 and got all 11 right;
+- the router handled the other 10 and got 9 right, taking about 1–2 s each (about 10 s on the
+  first call while the model loads).
+
+The router's results vary a little between runs:
+- "numbers please" is too vague to route, so the clinician is asked to rephrase;
+- "how many … in a bad way?" sometimes gets the ranked list instead of a count, which still
+  contains the answer.
+
 ### Safety & PHI guarantees
 
 - No PHI in logs (redacting logger; patients referenced by pseudonym only).

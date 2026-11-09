@@ -1,0 +1,25 @@
+# LLM-router eval: questions the regexes in kb/graph/lookup.py may miss, with the template they mean.
+# Format: expected<TAB>question. expected = template[ key=value ...], or "none" (document question /
+# no graph query). Run: uv run python -m cli.kb_route --eval kb/eval/router_questions.tsv
+# Scope as on a call: patient PT1, selected event E1.
+vital_readings_for_event ago_s=5400	how was the pulse an hour and a half before the alarm?
+vital_readings_for_event ago_s=1800	what did the oxygen look like thirty minutes prior?
+vital_readings_for_event course=True	has the pressure held steady?
+vital_readings_for_event course=True	were the sats dropping before this?
+event_summary focus=why	what set this off?
+event_summary focus=confidence	how sure is the algorithm?
+event_summary focus=false_positive	could this be artifact?
+event_summary focus=trends	is anything getting worse?
+event_history like_event=E1	has anyone else had this rhythm?
+event_history like_event=E1	other cases like this one on the floor?
+patients_by_criticality count=True	how many of my patients are in a bad way?
+event_history status=any	what's been happening with everybody on the floor?
+patients_by_criticality	who should I see first?
+vitals_at_selected_event	numbers please
+mews_at_selected_event	what's the early warning score?
+none	what is the first-line drug for atrial fibrillation?
+none	what does MEWS stand for?
+none	what is the target oxygen saturation in COPD?
+none	how should patients with low blood pressure be managed?
+none	how do I reduce motion artifact on the ECG?
+none	when should a patient with AF be anticoagulated?

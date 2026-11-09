@@ -126,9 +126,47 @@ def test_scoped_options_are_hidden_when_there_is_no_scope():
 
 
 def test_every_catalogue_entry_is_a_real_template():
-    from kb.graph.templates import TEMPLATES
+    from kb.graph.llm_router import _TARGET
+    from kb.graph.templates import EVENT_HISTORY, TEMPLATES
 
-    assert set(CATALOGUE) <= set(TEMPLATES)
+    runnable = set(TEMPLATES) | {EVENT_HISTORY}
+    assert {_TARGET[n][0] if n in _TARGET else n for n in CATALOGUE} <= runnable
+
+
+def test_the_2026_11_router_names_map_onto_their_templates():
+    from kb.graph.llm_router import resolve
+
+    def r(name, params=None, event="E1"):
+        return resolve((name, params or {}), patient_ref="PT1", event_ref=event, now=1000.0)
+
+    assert r("vitals_time_ago", {"hours": 2, "vital": "hr"}) == (
+        "vital_readings_for_event", {"event_uuid": "E1", "ago_s": 7200, "focus": "hr"})
+    assert r("vitals_time_ago", {"minutes": "30", "vital": "pulse"}) == (  # unknown vital: all
+        "vital_readings_for_event", {"event_uuid": "E1", "ago_s": 1800})
+    assert r("vitals_time_ago", {"vital": "bp"}) is None  # how long ago is never guessed
+
+    def rq(query, params):
+        return resolve(("vitals_time_ago", params), patient_ref="PT1", event_ref="E1", now=1000.0,
+                       query=query)
+
+    # no time said: the model's invented offset is dropped for the course before the event
+    assert rq("were the sats dropping before this?", {"hours": 15, "vital": "spo2"}) == (
+        "vital_readings_for_event", {"course": True, "event_uuid": "E1", "focus": "spo2"})
+    # said: the clinician's words win over the model's rounding
+    assert rq("how was the pulse an hour and a half before the alarm?", {"hours": 1, "vital": "hr"}) \
+        == ("vital_readings_for_event", {"event_uuid": "E1", "ago_s": 5400, "focus": "hr"})
+    assert r("vitals_time_ago", {"hours": 999}) is None
+    assert r("vitals_course", {"vital": "bp"}) == (
+        "vital_readings_for_event", {"course": True, "event_uuid": "E1", "focus": "bp"})
+    assert r("event_details", {"focus": "why"}) == ("event_summary", {"event_uuid": "E1", "focus": "why"})
+    assert r("event_details", {"focus": "dosage"}) == ("event_summary", {"event_uuid": "E1"})
+    assert r("similar_events") == ("event_history", {"status": "any", "like_event": "E1"})
+    assert r("critical_patient_count") == ("patients_by_criticality", {"count": True})
+    assert r("unit_events") == ("event_history", {"status": "any"})
+    for name in ("vitals_time_ago", "vitals_course", "event_details", "similar_events"):
+        assert r(name, {"hours": 1}, event=None) is None  # no event in scope: nothing to answer from
+    prompt = build_prompt("q", has_patient=True, has_event=False)
+    assert "vitals_course" not in prompt and "critical_patient_count" in prompt
 
 
 # --- end to end, with the model faked ------------------------------------------------------------
@@ -141,3 +179,14 @@ def test_a_missed_phrasing_routes_to_its_template():
 
 def test_a_dead_llm_costs_the_turn_nothing_but_time():
     assert route("any critical events in the last 6 hours?", _Fake(boom=True), now=NOW) is None
+
+
+def test_general_guidance_never_reaches_the_model():
+    from kb.graph.llm_router import route
+
+    class _Boom:
+        def generate(self, prompt):
+            raise AssertionError("the model was asked")
+
+    assert route("what is the target oxygen saturation in COPD?", _Boom(), event_ref="E1",
+                 now=0.0) is None

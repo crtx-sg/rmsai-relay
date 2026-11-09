@@ -138,6 +138,10 @@ def _time_sub(m: re.Match) -> str:
     return f"{val} {m.group(2)}" if val is not None else m.group(0)
 
 
+# STT hears "MEWS" as "Muse"/"Mews"/"News" (live 2026-11-06: "what are the Muse score?").
+_MEWS_SPOKEN = re.compile(r"\b(?:muse|mews|news|mus)(?=\s+scores?\b)", re.IGNORECASE)
+
+
 def normalize_spoken_query(query: str) -> str:
     """Collapse spelled acronyms + rebuild bed labels / numbers from a spoken (STT) query."""
     q = _collapse_acronyms(query)
@@ -146,4 +150,4 @@ def normalize_spoken_query(query: str) -> str:
     q = _TIME_SPOKEN.sub(_time_sub, q)
     q = _PT_SPOKEN.sub(lambda m: "PT" + _digits(m.group(1)), q)
     q = _PT_SPACED.sub(lambda m: "PT" + m.group(1), q)
-    return q
+    return _MEWS_SPOKEN.sub("MEWS", q)

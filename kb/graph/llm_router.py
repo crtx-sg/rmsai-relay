@@ -24,7 +24,7 @@ import json
 import re
 
 from common.event_types import CLASS_NAMES
-from kb.graph.lookup import _DEFINITIONAL
+from kb.graph.lookup import _DEFINITIONAL, _GUIDANCE, _ago_seconds
 from kb.graph.spoken import normalize_spoken_query
 
 #: Routable templates: name -> (what it answers, the parameter the model must supply or None).
@@ -58,19 +58,46 @@ CATALOGUE: dict[str, tuple[str, str | None]] = {
     "alarm_counts": ("alarm counts per patient and bed, most first (who has the most alarms)",
                      None),
     "cohort_patterns": ("demographic / co-morbidity patterns vs event type", None),
+    # Router names for the 2026-11 regex intents; `_TARGET` maps each onto its template.
+    "event_details": ("about the selected event itself: why it alerted, its rhythm, how confident "
+                      "the model is, false positive or not, which vitals are deteriorating",
+                      "event_focus"),
+    "vitals_time_ago": ("a vital's value some hours/minutes BEFORE the selected event (a past "
+                        "reading, not the one at the event)", "event_ago"),
+    "vitals_course": ("whether a vital was stable or changing over time before the selected event",
+                      "event_vital"),
+    "similar_events": ("events with the same rhythm as the selected event, across the whole unit",
+                       "session_event"),
+    "critical_patient_count": ("HOW MANY patients are critical: a number, not a list", None),
+    "unit_events": ("every event in the unit/ward across ALL patients, not only this patient", None),
 }
+
+#: Router name -> (template, fixed params, the key the session event id goes in).
+_TARGET: dict[str, tuple[str, dict, str]] = {
+    "event_details": ("event_summary", {}, "event_uuid"),
+    "vitals_time_ago": ("vital_readings_for_event", {}, "event_uuid"),
+    "vitals_course": ("vital_readings_for_event", {"course": True}, "event_uuid"),
+    "similar_events": ("event_history", {"status": "any"}, "like_event"),
+    "critical_patient_count": ("patients_by_criticality", {"count": True}, "event_uuid"),
+    "unit_events": ("event_history", {"status": "any"}, "event_uuid"),
+}
+_EVENT_SCOPED = {"session_event", "event_focus", "event_ago", "event_vital"}
+_VITALS = ("hr", "bp", "spo2", "rr", "temp")
+_EVENT_FOCI = ("why", "rhythm", "confidence", "false_positive", "criticality", "trends")
 
 #: A loose, high-recall gate: does this question sound like it is about *patients and monitoring*
 #: rather than about clinical literature? Deliberately imprecise — precision is the model's job.
 #: This exists purely to keep the router (and its seconds of latency) off the document path.
 _OPERATIONAL = re.compile(
-    r"\b(bed|patient|ward|unit|event|events|vitals?|readings?|vital signs|heart rate|hr|bp|blood pressure|"
-    r"spo2|sats|mews|trend|trending|ecg|strip|rhythm|episode|alert|alarm|acknowledg\w*|status|"
+    r"\b(beds?|patients?|ward|unit|floor|every(?:one|body)|any(?:one|body)|events?|vitals?|"
+    r"readings?|vital signs|heart rate|pulse|hr|bp|blood pressure|pressure|oxygen|spo2|sats|mews|"
+    r"trend|trending|ecg|strip|rhythm|episodes?|alerts?|alarms?|acknowledg\w*|status|"
     r"reported|outstanding|action items?|protocol for|last (hour|24|day)|today|tonight|"
     r"overnight|so far|right now|currently)\b",
     re.IGNORECASE,
 )
 
+_TIME_SAID = re.compile(r"\b(?:hours?|hrs?|minutes?|mins?)\b", re.IGNORECASE)
 _BED = re.compile(r"\b([A-Za-z][\w]*-Bed\d+|Bed\s*\d+)\b", re.IGNORECASE)
 
 
@@ -115,13 +142,18 @@ def build_prompt(query: str, *, has_patient: bool, has_event: bool) -> str:
     for name, (what, param) in CATALOGUE.items():
         if param == "session_patient" and not has_patient:
             continue  # no patient in scope: offering it invites a hallucinated id
-        if param == "session_event" and not has_event:
+        if param in _EVENT_SCOPED and not has_event:
             continue
+        vital = f'; optional "vital" (one of: {", ".join(_VITALS)})'
         need = {
             "bed": ' needs "bed" (e.g. "Unit1-Bed01")',
             "hours": ' needs "hours" (integer)',
             "minutes": ' needs "minutes" (integer)',
             "event_type": f' needs "event_type" (one of: {", ".join(sorted(CLASS_NAMES))})',
+            "event_focus": f'; optional "focus" (one of: {", ".join(_EVENT_FOCI)})',
+            "event_ago": ' needs "hours" or "minutes" (a whole number; 1.5 hours = 90 minutes)'
+                         + vital,
+            "event_vital": vital,
         }.get(param, "")
         lines.append(f"- {name}: {what}{need}")
     menu = "\n".join(lines)
@@ -168,12 +200,48 @@ def resolve(choice: tuple[str, dict] | None, *, patient_ref: str | None = None,
     """
     if choice is None:
         return None
+    resolved = _resolve(choice, patient_ref=patient_ref, event_ref=event_ref, now=now, query=query)
+    if resolved is None or resolved[0] not in _TARGET:
+        return resolved
+    template, fixed, key = _TARGET[resolved[0]]
+    params = dict(resolved[1])
+    if "event_uuid" in params and key != "event_uuid":
+        params[key] = params.pop("event_uuid")
+    return template, {**fixed, **params}
+
+
+def _resolve(choice: tuple[str, dict], *, patient_ref, event_ref, now, query):
     name, params = choice
     entry = CATALOGUE.get(name)
     if entry is None:
         return None
     _, needs = entry
+    vital = str(params.get("vital", "")).strip().lower()
+    focus = {"focus": vital} if vital in _VITALS else {}  # an unknown vital: all of them
 
+    if needs in ("event_focus", "event_ago", "event_vital"):
+        if not event_ref:
+            return None
+        base = {"event_uuid": event_ref}
+        if needs == "event_focus":
+            f = str(params.get("focus", "")).strip().lower()
+            return name, {**base, **({"focus": f} if f in _EVENT_FOCI else {})}
+        if needs == "event_vital":
+            return name, {**base, **focus}
+        # How long ago is the clinician's to say, not the model's (seen: "were the sats dropping
+        # before this?" -> 15 hours). Said and parseable: the words win; not said: the course.
+        if query is not None and not _TIME_SAID.search(query):
+            return "vitals_course", {**base, **focus}
+        if query is not None and (ago := _ago_seconds(normalize_spoken_query(query))):
+            return name, {**base, "ago_s": ago, **focus}
+        for unit, secs in (("hours", 3600), ("minutes", 60)):
+            try:
+                amount = int(params.get(unit))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= amount * secs <= 7 * 86400:  # the stored histories don't go back further
+                return name, {**base, "ago_s": amount * secs, **focus}
+        return None
     if needs is None:
         return name, {}
     if needs == "session_patient":
@@ -213,8 +281,9 @@ def route(query: str, llm, *, patient_ref: str | None = None, event_ref: str | N
     """
     if not looks_operational(query):
         return None
-    if _DEFINITIONAL.search(query) and not _BED.search(normalize_spoken_query(query)):
-        return None  # "what is the protocol for treating VF?" is a document question
+    if (_DEFINITIONAL.search(query) or _GUIDANCE.search(query)) \
+            and not _BED.search(normalize_spoken_query(query)):
+        return None  # "protocol for treating VF?", "target oxygen in COPD?": document questions
     try:
         raw = llm.generate(build_prompt(query, has_patient=bool(patient_ref),
                                         has_event=bool(event_ref)))

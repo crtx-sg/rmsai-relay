@@ -5,8 +5,15 @@ answers it, and where the answer comes from. Each example below is checked again
 (`kb/graph/lookup.py` `match_intent`) and pinned in `tests/test_query_coverage.py`,
 `tests/test_call_2026_10_14.py`, `tests/test_review_2026_10_14.py`, `tests/test_patient_ranking.py`,
 `tests/test_call_fixes_2026_10_28.py`, `tests/test_call_fixes_2026_10_29.py`,
-`tests/test_call_fixes_2026_11_04.py`, `tests/test_outbound_voice.py` and `tests/test_protocol_answer.py`.
+`tests/test_call_fixes_2026_11_04.py`, `tests/test_call_fixes_2026_11_06.py`, `tests/test_outbound_voice.py`
+and `tests/test_protocol_answer.py`.
 `cli.events --ask "<question>"` shows what any question resolves to, its rows and the answer.
+
+**Phrasings the rules miss.** If no rule matches and the question is about patients or monitoring,
+the local LLM picks one template from a fixed list (`kb/graph/llm_router.py`); the patient, event,
+bed and any time offset still come from the call or the question's own words, never from the model.
+`uv run python -m cli.kb_route --eval kb/eval/router_questions.tsv` scores both paths on paraphrases
+like the ones below (README, "How a question is answered").
 
 **Where answers come from.** *Graph* answers are read straight from Neo4j by a fixed template: no
 model is involved, so they cannot be paraphrased or invented. *Documents* answers are retrieved from
@@ -43,18 +50,18 @@ or a PT number work anywhere. Text answers list rows; spoken answers are shorten
 | Ask | Answer |
 |---|---|
 | "What are the vitals at the time of this event?" · "give me the vitals" | Rhythm, time, criticality, MEWS score, heart rate, blood pressure, oxygen saturation, respiratory rate, temperature |
-| "What was the heart rate / blood pressure / oxygen saturation / respiratory rate / temperature?" · "give the last updated blood pressure" | Just that vital |
-| "What was the MEWS score?" · "news score for this event" | MEWS score and band, and the vitals that scored ("heart rate 195 scores 3, …") |
+| "What was the heart rate / blood pressure / oxygen saturation / respiratory (or respiration) rate / temperature?" · "give the last updated blood pressure" | Just that vital |
+| "What was the MEWS score?" · "news score for this event" · "Muse score?" (speech-to-text for MEWS) | MEWS score and band, and the vitals that scored ("heart rate 195 scores 3, …") |
 | "What is the criticality of this event?" · "how bad is it?" | Criticality and MEWS |
 | "What rhythm was detected?" | The model's rhythm, time and confidence |
 | "How confident is the model about this rhythm?" | Confidence in the detected rhythm |
 | "When did this event happen?" | Time detected, and how long ago |
-| "Is this a false positive?" | Yes/no, with the rhythm and confidence behind it |
-| "Why was I alerted?" | The stored reason (rhythm and confidence, abnormal vitals, trends) |
+| "Is this a false positive?" · "could this be artifact?" | Yes/no, with the rhythm and confidence behind it |
+| "Why was I alerted?" · "What caused the alert?" · "what set this off?" | The stored reason (rhythm and confidence, abnormal vitals, trends) |
 | "Show me the ECG strip for this event" | The strip (shown in the app; on a call, said to be available there) |
 | "How was the heart rate trending?" | Direction, start/end and peak over the readings before the event |
-| "What was the heart rate two hours ago?" · "BP half an hour ago" · "oxygen 30 minutes before" | The stored reading nearest that time, with its time; if the record doesn't reach back that far, how far it goes and the earliest reading |
-| "Has the blood pressure been stable?" · "is the oxygen changing?" · "what was the BP earlier?" | That vital's course before the event: first to last value, over how long, lowest and highest |
+| "What was the heart rate two hours ago?" · "BP half an hour ago" · "oxygen 30 minutes before" · "oxygen thirty minutes prior" · "heart rate an hour and a half before" | The stored reading nearest that time, with its time; if the record doesn't reach back that far, how far it goes and the earliest reading |
+| "Has the blood pressure been stable?" · "is the oxygen changing?" · "what was the BP earlier?" · "has the pressure held steady?" · "were the sats dropping before this?" · "is the heart rate reducing?" | That vital's course before the event: first to last value, over how long, lowest and highest |
 | "Which vitals are deteriorating?" · "what are the trends for this patient?" | Each deteriorating vital, from the event's stored verdicts: "Patient PT1: deteriorating: heart rate rising 35 beats per minute over 65 minutes, now 194; …", or "no vital is deteriorating." |
 | "What should I do now?" · "what are the action items for this event?" | This event's recorded actions ("escalate care", "initiate ACLS protocol", …) |
 | "What is the protocol for this event?" · "how do I treat this patient?" · "what is the treatment for this rhythm?" | The protocol for this event's rhythm, as in section 6 (no LLM) |
@@ -97,7 +104,7 @@ or a PT number work anywhere. Text answers list rows; spoken answers are shorten
 | "Show critical events in the last 24 hours" | High/Critical events in the window; spoken bed by bed, worst bed first ("5 high or critical events in the last 24 hours, on 2 beds. Bed 2: critical ventricular tachycardia twice. …") |
 | "Show positive events in the last 30 minutes" | Non-false-positive events in the window |
 | "List all events" · "show the alarms from the last 6 hours" · "events of other patients in this unit" | Event list (optionally windowed), ward-wide |
-| "Any similar events for patients in this unit?" · "other patients with the same rhythm?" (on a call) | Events of the called event's rhythm, ward-wide ("similar events for this patient": just this patient's) |
+| "Any similar events for patients in this unit?" · "other patients with the same rhythm?" · "has anyone else had this rhythm?" · "other cases like this one?" (on a call) | Events of the called event's rhythm, ward-wide ("similar events for this patient": just this patient's) |
 | "How many patients are critical?" · "count of patients who are critical" | A count of patients with open critical or high alerts, with their beds |
 | "Which events were withheld?" · "which events have been acknowledged?" | By status |
 | "List all atrial fibrillation events" · "how many AFib episodes on bed 2?" | By rhythm (optionally a bed or patient) |
@@ -121,6 +128,7 @@ a button opens the Events tab with the same rows. A listing with a target that c
 | "what is the rate control for AFib?" · "what does the critical alarm SOP say?" · "how is hyperkalaemia escalated?" | Cited answer from the documents |
 | "When should I escalate a MEWS score?" | Escalation rules from the MEWS document |
 | "What does a MEWS of 5 mean?" | Band from the same scorer that rates alerts ("high risk") + the document's escalation rule. No LLM. |
+| A general question that names a vital or the ECG ("what is the target oxygen saturation in COPD?" · "how should patients with low blood pressure be managed?" · "how do I reduce motion artifact on the ECG?") | A documents answer, even on a call, never this patient's numbers |
 | A topic no document covers ("how do you treat sepsis?", "capital of France") | "I don't have information on that in the knowledge base." |
 
 New SOPs and guidelines become answerable once uploaded (`cli.kb_upload`).
@@ -147,3 +155,6 @@ New SOPs and guidelines become answerable once uploaded (`cli.kb_upload`).
 
 Lab results (e.g. potassium), orders and medication changes, and allergies. These get the patient
 hint (section 7) or a documents decline.
+
+Too vague or ambiguous to route, so never guessed: "numbers please" (the agent says what it can
+answer), "protocol for VS?" (VS is VF or VT; not resolved).

@@ -294,3 +294,37 @@ def test_elevenlabs_429_is_retried_then_a_4xx_is_not(monkeypatch):
     with pytest.raises(RuntimeError, match="402"):
         adapters._elevenlabs_request(object())
     assert codes == []  # one try only
+
+
+@pytest.mark.parametrize("q, want", [
+    # heard on 2026-11-06 calls
+    ("What caused the alert?", ("event_summary", {"event_uuid": "E1", "focus": "why"})),
+    ("Okay, what is the respiration rate?",
+     ("vitals_at_selected_event", {"event_uuid": "E1", "focus": "rr"})),
+    ("Muse, what are the Muse score?", ("mews_at_selected_event", {"event_uuid": "E1"})),
+    # router-eval phrasings the regexes got wrong or missed
+    ("what did the oxygen look like thirty minutes prior?",
+     ("vital_readings_for_event", {"event_uuid": "E1", "ago_s": 1800, "focus": "spo2"})),
+    ("how was the heart rate an hour and a half before?",
+     ("vital_readings_for_event", {"event_uuid": "E1", "ago_s": 5400, "focus": "hr"})),
+    ("has the pressure held steady?",
+     ("vital_readings_for_event", {"event_uuid": "E1", "course": True, "focus": "bp"})),
+    ("what set this off?", ("event_summary", {"event_uuid": "E1", "focus": "why"})),
+    ("could this be artifact?", ("event_summary", {"event_uuid": "E1", "focus": "false_positive"})),
+    ("has anyone else had this rhythm?", ("event_history", {"status": "any", "like_event": "E1"})),
+    ("other cases like this one on the floor?",
+     ("event_history", {"status": "any", "like_event": "E1"})),
+    # general guidance naming a vital / the ECG is a document question, not this patient's numbers
+    ("what is the target oxygen saturation in COPD?", None),
+    ("how should patients with low blood pressure be managed?", None),
+    ("how do I reduce motion artifact on the ECG?", None),
+    ("how is the blood pressure?", ("vitals_at_selected_event", {"event_uuid": "E1", "focus": "bp"})),
+    ("is the heart rate reducing?",
+     ("vital_readings_for_event", {"event_uuid": "E1", "course": True, "focus": "hr"})),
+    ("were the sats dropping before this?",
+     ("vital_readings_for_event", {"event_uuid": "E1", "course": True, "focus": "spo2"})),
+])
+def test_router_review_2026_11_09(q, want):
+    from kb.graph.lookup import match_intent
+
+    assert match_intent(q, now=0.0, patient_ref="PT1", event_ref="E1") == want

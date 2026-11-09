@@ -24,10 +24,12 @@ _LAST_N = re.compile(r"\b(?:last|previous|past|recent)\s+(\d+|" + "|".join(_ONES
                      re.IGNORECASE)
 # A past reading ("heart rate two hours ago") or a vital's course ("has the BP been stable?"), read
 # from the event's stored histories. Live 2026-11-06: both got the value at the event.
-_AGO = re.compile(r"\b(\d+|an?|half an?|" + "|".join(_ONES) + r")\s+(hours?|hrs?|minutes?|mins?)\s+"
-                  r"(?:ago|before|earlier|back)\b", re.IGNORECASE)
+_AGO = re.compile(r"\b(\d+|an?|half an?|" + "|".join(_ONES) + r")\s+(and\s+a\s+half\s+)?"
+                  r"(hours?|hrs?|minutes?|mins?)\s+(and\s+a\s+half\s+)?(?:ago|before|earlier|back|"
+                  r"prior)\b", re.IGNORECASE)
 _COURSE = re.compile(r"\b(?:stable|steady|chang(?:ing|ed)|trend(?:ing)?|going (?:up|down)|rising|"
-                     r"falling|over time|earlier|some ?time ago|a while ago)\b", re.IGNORECASE)
+                     r"falling|dropping|climbing|increasing|decreasing|reducing|improving|worsening|"
+                     r"over time|earlier|some ?time ago|a while ago)\b", re.IGNORECASE)
 
 
 def _ago_seconds(q: str) -> int | None:
@@ -37,7 +39,9 @@ def _ago_seconds(q: str) -> int | None:
     word = m.group(1).lower()
     n = 0.5 if word.startswith("half") else 1 if word in ("a", "an") else \
         int(word) if word.isdigit() else _ONES.get(word)
-    return int(n * (3600 if m.group(2).lower().startswith("h") else 60)) if n else None
+    if n and (m.group(2) or m.group(4)):
+        n += 0.5  # "an hour and a half", "one and a half hours"
+    return int(n * (3600 if m.group(3).lower().startswith("h") else 60)) if n else None
 
 
 _HOURS = re.compile(r"\b(\d+)\s*h(?:ours?)?\b", re.IGNORECASE)
@@ -47,7 +51,8 @@ _MINUTES = re.compile(r"\b(\d+)\s*m(?:in(?:utes?)?)?\b", re.IGNORECASE)
 # that one, not all six. Checked in order; "vitals" alone matches none of these.
 _VITAL_FOCUS = (
     ("hr", re.compile(r"\b(heart\s+rate|hr|pulse)\b", re.IGNORECASE)),
-    ("bp", re.compile(r"\b(blood\s+pressure|bp|systolic|diastolic)\b", re.IGNORECASE)),
+    ("bp", re.compile(r"\b(blood\s+pressure|bp|systolic|diastolic|pressure(?!\s+(?:ulcer|sore|"
+                      r"injur)))\b", re.IGNORECASE)),
     ("spo2", re.compile(r"\b(spo2|oxygen|saturation|sats)\b", re.IGNORECASE)),
     ("rr", re.compile(r"\b(respirat\w*|resp\s+rate|breathing|rr)\b", re.IGNORECASE)),
     ("temp", re.compile(r"\b(temperature|temp|fever)\b", re.IGNORECASE)),
@@ -73,10 +78,14 @@ _HISTORY_FOCUS = (
 # the part of `event_summary` the answer leads with.
 _EVENT_FOCUS = (
     ("false_positive", re.compile(r"\bfalse[\s-]+(?:positive|alarm)\b|"
+                                  r"\b(?:be|is|it'?s|just)\s+(?:an?\s+)?(?:artifact|artefact)\b|"
                                   r"\b(?:real|genuine|true)\s+(?:event|alarm|alert|arrhythmia)\b",
                                   re.IGNORECASE)),
     ("why", re.compile(r"\bwhy\b.*\b(?:alert\w*|call\w*|flag\w*|shown|notif\w*|paged|rang|ring\w*|"
-                       r"contacted)\b|\breason\s+for\s+(?:the\s+)?(?:alert|call|alarm)\b",
+                       r"contacted)\b|\breason\s+for\s+(?:the\s+)?(?:alert|call|alarm)\b|"
+                       # live 2026-11-06: "What caused the alert?" went to the LLM router (MEWS)
+                       r"\bwhat\s+(?:caused|triggered|set\s+off)\b.*\b(?:alert|alarm|call)\w*|"
+                       r"\bwhat\s+(?:set|triggered|caused)\s+(?:this|it|that)(?:\s+off)?\s*\W*$",
                        re.IGNORECASE)),
     ("confidence", re.compile(r"\b(?:confiden\w*|how\s+sure|certain\w*)\b", re.IGNORECASE)),
     # The event's time needs the event as its subject: "when is the next dose", "what time is it"
@@ -150,7 +159,8 @@ def _focus(q: str, table) -> str | None:
 
 _VITALS = re.compile(
     r"\b(vitals?|vital\s+signs?|heart\s+rate|blood\s+pressure|"
-    r"spo2|oxygen|saturation|respiratory\s+rate|resp\s+rate|temperature|hr|bp|rr)\b",
+    r"spo2|oxygen|saturation|sats|respirat(?:ory|ion)\s+rate|breathing\s+rate|resp\s+rate|temperature|"
+    r"pressure(?!\s+(?:ulcer|sore|injur))|hr|bp|rr)\b",
     re.IGNORECASE,
 )
 # "all/which patients with <event>" — list-by-event-type phrasing.
@@ -173,6 +183,13 @@ _MEWS = re.compile(
 _DEFINITIONAL = re.compile(
     r"\b(how (?:is|are|do|does|to)|what does|means?|meaning|explain|definition|define|calculat\w*|"
     r"formula|criteria|protocol|guideline|escalat\w*|threshold|when should)\b",
+    re.IGNORECASE,
+)
+# General guidance that names a vital or the ECG: a document question even on a call ("what is the
+# target oxygen saturation in COPD?" read the called patient's SpO2). "how is the BP?" is not this.
+_GUIDANCE = re.compile(
+    r"\b(?:target|normal\s+(?:range|values?)|how\s+should|how\s+do\s+(?:i|we|you)|manag(?:e|ed|ement)|"
+    r"patients\s+with|in\s+(?:copd|general|adults|children))\b",
     re.IGNORECASE,
 )
 # The worklist: every pending (unacknowledged) event. "work list" is how STT splits it.
@@ -225,8 +242,10 @@ _WARD_SCOPE = re.compile(r"\b(?:other|all)\s+patients\b|\b(?:in|on|across)\s+(?:
 # "Any similar events for patients in this unit?": the called event's rhythm, ward-wide (live
 # 2026-11-06: all 51 events of every rhythm were read out).
 _SIMILAR = re.compile(r"\b(?:similar|same|such)\s+(?:\w+\s+){0,2}(?:events?|alerts?|"
-                      r"alarms?|episodes?|rhythms?|arrhythmias?)\b|\b(?:events?|alerts?|alarms?)\s+"
-                      r"like\s+(?:this|it)\b", re.IGNORECASE)
+                      r"alarms?|episodes?|rhythms?|arrhythmias?)\b|\b(?:events?|alerts?|alarms?|cases?)"
+                      r"\s+like\s+(?:this|it)\b|\b(?:any(?:one|body)|someone|somebody)\s+else\b.*"
+                      r"\b(?:this|that|the\s+same)\s+(?:rhythm|arrhythmia|event|alert|alarm)\b",
+                      re.IGNORECASE)
 # "How many patients are critical?": a count, not the 23-line ranking (live 2026-11-06).
 _CRITICAL_COUNT = re.compile(r"\b(?:how\s+many|count|number\s+of)\b.*\bpatients?\b.*"
                              r"\b(?:critical|high|serious|unstable|sick)\b", re.IGNORECASE)
@@ -344,7 +363,7 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         return "patient_bed", {"patient_id": patient_ref}  # "which bed is this patient on?"
 
     # T9 — ECG strips. Typed ("last AFib event"), else this patient's latest, else the global latest.
-    if "ecg" in q or "strip" in q:
+    if ("ecg" in q or "strip" in q) and not _GUIDANCE.search(q):
         if etype:
             return "ecg_strips_last_event_of_type", {"event_type": etype}
         if event_ref and not bed and not named:  # "the ECG strip for this event" on a call
@@ -461,7 +480,7 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
     # T5 — vitals at the event: a named bed wins (an explicit target beats the session's), then a
     # named rhythm for the session patient, then the selected/called event, then the patient's
     # latest.
-    if _VITALS.search(q) and "trend" not in q:
+    if _VITALS.search(q) and "trend" not in q and not (_GUIDANCE.search(q) and not bed):
         focus = {"focus": f} if (f := _focus(q, _VITAL_FOCUS)) else {}
         if bed:
             return "vitals_for_bed_last_event", {"bed": bed, **focus}
