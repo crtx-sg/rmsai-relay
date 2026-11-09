@@ -1,3 +1,64 @@
+Quick Notes - Refer README for more details
+==============================================
+make demo-down
+make demo-up
+export RMSAI='docker compose -f infra/docker-compose.yml run --rm tools python -m'
+$RMSAI cli.kb_dump --list
+docker compose -f infra/docker-compose.yml run --rm real-samples list
+uv run python -m cli.real_samples pick     --pick VENTRICULAR_TACHYCARDIA:3,VENTRICULAR_FIBRILLATION:2,ATRIAL_FIBRILLATION:3,PVC:2,LBBB:1,PAC:2,NORMAL_SINUS:2
+uv run python -m cli.real_samples --package ../ecg_sigma/packages/vios_pkg_v1 pick --pick SINUS_BRADYCARDIA:3,SINUS_TACHYCARDIA:3 --allow-mismatch
+  uv run python -m cli.ingest --dir data/real --emit bus
+
+$RMSAI cli.ingest --dir data/real --emit bus
+
+logs:
+docker compose -f infra/docker-compose.yml logs -f consumer
+docker compose -f infra/docker-compose.yml logs -f --timestamps --tail=0 consumer     | grep --line-buffered -E '\[(event|skip|consume|outbound|call|webrtc)\]|->|poison|Error'
+docker compose -f infra/docker-compose.yml --profile telephony logs -f --timestamps --tail=0 voice-worker-phone     | grep --line-buffered -E 'received job|joined room|caller answered|caller heard|greeting|stt transcript|PIN|speaking event alert|reply:|acknowledg|barge-in|ignoring filler|\[latency\]|blocked|gate timed out|Error'
+
+docker compose -f infra/docker-compose.yml logs -f --timestamps --tail=0 voice-worker     | grep --line-buffered -E 'stt transcript|text chat|ptt|reply|\[latency\]|barge-in|Error'
+
+# to see the speech to text and text to speech transcibe..
+docker logs -f --tail 0 infra-voice-worker-phone-1 2>&1 \
+    | grep --line-buffered -E "stt: ->|\[worker\] (heard|reply|speaking)|\[voice\]"
+
+  That shows:
+  - stt: -> '…': the raw transcript.
+  - heard: '…': what was passed to the handler.
+  - reply: '…': the KB-grounded answer, before TTS.
+  - speaking greeting.
+  - [voice] PIN accepted and speaking event alert for PT….
+
+--
+  To monitor from the command line after Run test:
+
+  # The conversations on both phones, each line tagged [h1] / [h2]
+  make phone-transcript HOSPITAL=all
+
+  # Gate, queue, dial and retry/SMS lines: h1, then h2 (one terminal each)
+  docker compose -f infra/docker-compose.yml -p infra    logs -f --tail=0 consumer
+  docker compose -f infra/docker-compose.yml -p infra-h2 logs -f --tail=0 consumer
+--
+
+knowledge base:
+---------
+$RMSAI cli.graph migrate                     # constraints + indexes   -> {"migrated": true}
+$RMSAI cli.graph protocols                   # care protocols          -> {"protocols_loaded": 2}
+$RMSAI cli.graph extract --dir docs          # doc entities onto shared nodes
+#   -> {"chunks": 13, "guidelines": 13, "conditions": 5, "treatments": 9}
+$RMSAI cli.kb_vector --embedder bge index --dir docs    # clinical corpus -> Qdrant
+
+$RMSAI cli.kb_dump --list
+$RMSAI cli.kb_dump <event_id>
+$RMSAI cli.kb_dump <event_id> --json
+
+
+debug/dump
+
+Neo4j Browser at http://localhost:7474 (user neo4j, password rmsai_dev_pw):
+
+
+=================
 Demo POC Setup:
 Date: 19, Aug 2026
 Date: 29, June 2026
