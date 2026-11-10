@@ -104,6 +104,18 @@ def is_pickup_reply(text: str) -> bool:
     joined = " ".join(words)
     return bool(set(words) & _PICKUP_YES) or (
         len(words) <= 3 and any(p in joined for p in _PICKUP_PHRASES))
+
+
+def is_second_pickup_reply(text: str) -> bool:
+    """After one "say yes" re-prompt: any short reply (<= 6 words, no digits, no voicemail words,
+    not a question, not filler) confirms a live listener. Live 2026-11-09 (h2): "yes" came back
+    from STT as "It's", then "If", and the caller heard the Japanese prompt until they hung up.
+    A voicemail greeting doesn't answer a re-prompt with a word or two."""
+    if is_pickup_reply(text):
+        return True
+    words = _words(text)
+    return bool(words) and len(words) <= _PICKUP_MAX_WORDS and not set(words) & _PICKUP_VETO \
+        and "?" not in text and not any(ch.isdigit() for ch in text) and not is_filler(text)
 _LOCKED = "I could not verify your PIN. Ending the call for safety."
 
 
@@ -252,7 +264,8 @@ class OutboundHandler(OrchestratorHandler):
         # about the patient is voiced before it, and "answered" (no redial) means confirmed.
         self.require_pin = require_pin
         # "ja": greeting + "say yes" prompt in Japanese (the alert text is already in its language).
-        self._prompt = _PROMPT_CONFIRM
+        self._prompt = self._reprompt = _PROMPT_CONFIRM
+        self._reprompted: set[str] = set()  # sessions already asked again (see is_second_pickup_reply)
         self._intro = "Remote clinical line with a patient alert. "
         self._again = "Here is the alert again. "
         self._alert_cut: set[str] = set()  # sessions whose alert was cut off before it finished
@@ -260,6 +273,9 @@ class OutboundHandler(OrchestratorHandler):
             from orchestrator.report import JA_GREETING, JA_PROMPT_CONFIRM  # noqa: PLC0415
 
             self._prompt, self._intro = JA_PROMPT_CONFIRM, JA_GREETING
+            # The re-prompt adds English: on 2026-11-09 a caller who had said yes heard only the
+            # Japanese sentence again and took it for no response.
+            self._reprompt = f"{JA_PROMPT_CONFIRM} {_PROMPT_CONFIRM}"
             self._again = "アラートをもう一度お伝えします。"
         self.driver = driver
         # Called with the event id once the PIN passes, so a consumer crash doesn't re-ring
@@ -271,20 +287,26 @@ class OutboundHandler(OrchestratorHandler):
     def greeting(self) -> str:
         return super().greeting() if self.require_pin else self._intro + self._prompt
 
-    def is_confirmation(self, text: str) -> bool:
+    def is_confirmation(self, text: str, session_id: str | None = None) -> bool:
         """The spoken "yes" that replaces the PIN (never digits, so never a PIN)."""
-        return not self.require_pin and is_pickup_reply(text)
+        if self.require_pin:
+            return False
+        return is_second_pickup_reply(text) if session_id in self._reprompted \
+            else is_pickup_reply(text)
 
     def respond(self, text: str, *, session_id: str, spoken: bool = False) -> str:
         if self.require_pin or self.working.get_or_create(session_id).authenticated:
             return super().respond(text, session_id=session_id, spoken=spoken)
         # Checked before the filler rule, which would swallow "yeah".
-        if self.is_confirmation(text):
+        if self.is_confirmation(text, session_id):
             self.audit.write(actor=f"caller:{session_id}", action="outbound_confirm",
                              subject=session_id, outcome="success")
             print(f"[voice] spoken confirmation accepted for session {session_id}", flush=True)
             return self._on_authenticated(session_id)
-        return "" if spoken and is_filler(text) else self._prompt
+        if spoken and is_filler(text):
+            return ""
+        self._reprompted.add(session_id)
+        return self._reprompt
 
     def _on_locked(self, session_id: str) -> None:
         if self._on_locked_cb is not None:

@@ -328,3 +328,31 @@ def test_router_review_2026_11_09(q, want):
     from kb.graph.lookup import match_intent
 
     assert match_intent(q, now=0.0, patient_ref="PT1", event_ref="E1") == want
+
+
+def test_after_a_reprompt_a_misheard_yes_starts_the_alert(tmp_path):
+    # Live 2026-11-09 (h2): "yes" came back as "It's", then "If"; the caller never heard the alert.
+    from tests.test_outbound_voice import _FakeOrch, _FakeWorking, _handler
+
+    h, alert = _handler(tmp_path, _FakeWorking(), _FakeOrch(), require_pin=False, language="ja")
+    assert not h.is_confirmation("It's", "room1")  # the first reply still needs a yes-word
+    reprompt = h.respond("It's", session_id="room1")
+    assert reprompt.endswith("Please say yes to hear the alert.") and "「yes」" in reprompt
+    assert h.respond("If", session_id="room1", spoken=True) == alert.spoken_alert
+
+
+@pytest.mark.parametrize("reply", [
+    "Hi, you've reached Sam, please leave a message",  # voicemail words
+    "Can you call back later",
+    "What is this?",  # a question
+    "1234",
+    "um",  # filler
+    "The person you are speaking with has put your call on hold. Please stay on the line.",
+])
+def test_after_a_reprompt_voicemail_and_noise_still_do_not(tmp_path, reply):
+    from tests.test_outbound_voice import _FakeOrch, _FakeWorking, _handler
+
+    h, alert = _handler(tmp_path, _FakeWorking(), _FakeOrch(), require_pin=False)
+    h.respond("hmm what", session_id="room1")  # re-prompted once
+    assert h.respond(reply, session_id="room1", spoken=True) != alert.spoken_alert
+    assert not h.is_authenticated("room1")

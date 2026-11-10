@@ -138,8 +138,9 @@ def test_without_pin_a_spoken_yes_plays_the_alert_and_marks_answered(tmp_path):
         "Please leave a message right after the tone yes", session_id="room1")
     assert h.respond("yes what is this?", session_id="room1").startswith("Please say yes")
     # a voicemail greeting split at a pause, or a "yes" inside a longer turn, never confirms
-    for vm in ("Yeah, leave a message.", "Yes, leave a message", "No. Yes.", "Ya.", "1234"):
+    for vm in ("Yeah, leave a message.", "Yes, leave a message", "No. Yes.", "1234"):
         assert h.respond(vm, session_id="room1").startswith("Please say yes"), vm
+    assert not h.is_confirmation("Ya.")  # before any re-prompt only a yes-word counts
     assert h.is_confirmation("Hello, yes.") and h.is_confirmation("Yes, go ahead")
     assert h.respond("um", session_id="room1", spoken=True) == ""
     assert answered == [] and not h.is_authenticated("room1")
@@ -173,7 +174,9 @@ def test_japanese_prompt_still_confirms_on_an_english_yes(tmp_path):
     working, orch = _FakeWorking(), _FakeOrch()
     h, alert = _handler(tmp_path, working, orch, require_pin=False, language="ja")
     assert h.greeting().startswith("患者アラート") and "「yes」" in h.greeting()
-    assert h.respond("who is this", session_id="room1") == h.greeting().split("。", 1)[1]
+    # the re-prompt repeats the Japanese sentence and adds English (live 2026-11-09)
+    assert h.respond("who is this", session_id="room1") == (
+        h.greeting().split("。", 1)[1] + " Please say yes to hear the alert.")
     assert h.respond("yes", session_id="room1") == alert.spoken_alert
 
 
