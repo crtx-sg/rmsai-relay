@@ -89,6 +89,18 @@ def test_a_cut_off_alert_is_replayed_on_the_next_turn(tmp_path):
                                                         session_id="r2")
 
 
+def test_a_cut_off_alert_is_replayed_only_once(tmp_path):
+    from tests.test_outbound_voice import _FakeOrch, _FakeWorking, _handler
+
+    orch = _FakeOrch()
+    h, alert = _handler(tmp_path, _FakeWorking(), orch, require_pin=False)
+    h.note_interrupted("room1", h.respond("Yes", session_id="room1"))
+    replay = h.respond("I hear you", session_id="room1", spoken=True)
+    assert replay.endswith(alert.spoken_alert)
+    h.note_interrupted("room1", replay)  # caller talks over the replay too (h2, 2026-11-13)
+    assert h.respond("Thank you very much", session_id="room1") == "answer:Thank you very much"
+
+
 def test_an_ack_with_a_question_records_the_ack_and_answers(tmp_path):
     from tests.test_outbound_voice import _FakeOrch, _FakeWorking, _handler
 

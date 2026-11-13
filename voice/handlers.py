@@ -269,6 +269,7 @@ class OutboundHandler(OrchestratorHandler):
         self._intro = "Remote clinical line with a patient alert. "
         self._again = "Here is the alert again. "
         self._alert_cut: set[str] = set()  # sessions whose alert was cut off before it finished
+        self._alert_replayed: set[str] = set()  # sessions already given their one replay
         if language == "ja":
             from orchestrator.report import JA_GREETING, JA_PROMPT_CONFIRM  # noqa: PLC0415
 
@@ -349,8 +350,9 @@ class OutboundHandler(OrchestratorHandler):
 
     def note_interrupted(self, session_id: str, reply: str) -> None:
         """The worker's speech of `reply` was cut off. If it was the alert, the next turn replays it:
-        room talk stopped h2's alert 2 s in and got "I don't have information on that" (2026-11-06)."""
-        if reply and self.alert.spoken_alert in reply:
+        room talk stopped h2's alert 2 s in and got "I don't have information on that" (2026-11-06).
+        Once per call: a caller talking over every replay heard the alert 6 times (2026-11-13)."""
+        if reply and self.alert.spoken_alert in reply and session_id not in self._alert_replayed:
             self._alert_cut.add(session_id)
 
     def _this_event(self) -> str:
@@ -380,6 +382,7 @@ class OutboundHandler(OrchestratorHandler):
             self._alert_cut.discard(session_id)
             # "acknowledge" / "no" / "I acknowledge. What's the BP?" mid-alert still count
             if not (command or is_plain_no(text) or _split_ack(text)):
+                self._alert_replayed.add(session_id)
                 return self._again + self.alert.spoken_alert
         # "Acknowledge bed seven" on a call about bed 2: only the called event can be closed here.
         if command and self._names_other_event(text):
