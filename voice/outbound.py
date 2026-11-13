@@ -191,15 +191,20 @@ def get_caller(name: str = "simulated", config: Config = DEFAULT, **kwargs) -> C
     return SimulatedCaller(**kwargs)
 
 
+class CallPreempted(Exception):
+    """Raised between attempts when `preempt()` says a higher-priority call is waiting."""
+
+
 def place_with_retries(
     caller: Caller, number: str, config: Config = DEFAULT, *, sleep_fn=time.sleep,
-    before_retry=None,
+    before_retry=None, preempt=None,
 ) -> tuple[CallOutcome, int]:
     """Place the call with the §6.1 retry policy. Returns (final_outcome, attempts).
 
     `before_retry()` runs before every re-dial. The live path uses it to re-dispatch the agent: after
     an unanswered attempt the room closes and the agent leaves, so a retry answered without it is
     silence (seen 2026-10-09: the Critical VF alert's retry). Best-effort; errors are logged.
+    `preempt()` is checked before every re-dial; True raises `CallPreempted`.
     """
     if not is_valid_number(number):
         return CallOutcome.INVALID, 0  # fail fast, no retry
@@ -219,6 +224,8 @@ def place_with_retries(
             rings += 1  # NO_ANSWER / BUSY
             if rings > config.outbound_max_retries:
                 break
+        if preempt is not None and preempt():
+            raise CallPreempted
         sleep_fn(config.outbound_retry_delay_s)
         if before_retry is not None:
             try:

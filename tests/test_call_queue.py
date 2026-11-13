@@ -47,6 +47,14 @@ class _FakeRedis:
             del z[member]
         return out
 
+    def zscore(self, key, member):
+        return self.z.get(key, {}).get(member)
+
+    def zrangebyscore(self, key, lo, hi, start=0, num=None):
+        top = float(hi[1:]) if str(hi).startswith("(") else float(hi)
+        hits = [m for m, sc in sorted(self.z.get(key, {}).items(), key=lambda kv: kv[1]) if sc < top]
+        return hits[start:start + num] if num is not None else hits
+
     def zcard(self, key):
         return len(self.z.get(key, {}))
 
@@ -271,3 +279,96 @@ def test_status_lookup_failure_still_calls(patched, monkeypatch):  # noqa: F811
         alert_store=store)
     assert res.called and store.staged  # staged at dial time
     assert patched["voice"] == ["ICU/3"]
+
+
+# --- 2026-11-13 (h2): a Critical VT waited 10+ min behind a High call's redials --------------------
+
+
+def test_only_a_job_ahead_of_the_original_place_outranks():
+    q = CallQueue(_FakeRedis())
+    high = _job("high", "High", 1000)
+    crit = _job("crit", "Critical", 1000)
+    q.push(_job("crit-later", "Critical", 5000))
+    assert q.outranked(high)  # higher criticality, even though it arrived later
+    assert not q.outranked(crit)  # same level, later: FIFO, no jumping
+
+
+def test_requeued_job_keeps_its_place_and_frees_the_slot():
+    q = CallQueue(_FakeRedis())
+    q.push(_job("high-1", "High", 1000))
+    q.push(_job("high-2", "High", 2000))
+    job = q.claim()
+    q.push(_job("crit", "Critical", 3000))
+    q.requeue(job)
+    q.done(job.event_id)  # what the dispatcher does after handle() returns
+    assert q.redis.get("rmsai:calls:active") is None
+    assert q.claim().event_id == "crit"
+    q.done("crit")
+    assert q.claim().event_id == "high-1"  # ahead of high-2: original place kept
+
+
+def test_retries_stop_for_a_higher_priority_call():
+    import pytest  # noqa: PLC0415
+
+    from common.config import DEFAULT  # noqa: PLC0415
+    from voice.outbound import CallOutcome, CallPreempted, place_with_retries  # noqa: PLC0415
+
+    caller = SimulatedCaller([CallOutcome.NO_ANSWER, CallOutcome.NO_ANSWER])
+    with pytest.raises(CallPreempted):
+        place_with_retries(caller, "+15551234567", DEFAULT, sleep_fn=lambda s: None,
+                           preempt=lambda: True)
+    assert caller.calls == 1  # no re-dial, no SMS fallback for the yielded call
+
+
+def test_preempted_queued_call_goes_back_to_the_queue(patched, monkeypatch):  # noqa: F811
+    from voice.outbound import CallPreempted  # noqa: PLC0415
+
+    redis = _FakeRedis()
+    q = CallQueue(redis)
+    q.push(CallJob(event_id="ns", patient_ref="PT1", event_type="NORMAL_SINUS", bed="ICU/3",
+                   criticality="High", reason="vitals_alert",
+                   payload=event_to_dict(_event(_Afib())), enqueued_ms=1000))
+    job = q.claim()
+    q.push(_job("vt", "Critical", 2000))
+    monkeypatch.setattr(bus_consumer, "get_event_status", lambda d, uuid: "reported")
+
+    def _place(*a, preempt, **k):
+        assert preempt()  # the Critical is waiting
+        raise CallPreempted
+
+    monkeypatch.setattr(bus_consumer, "_place_live_call", _place)
+    store = _FakeAlertStore()
+    store.redis = redis
+    assert bus_consumer.run_queued_call(
+        job, driver=object(), orchestrator=object(), utterances=[], caller_factory=lambda r: object(),
+        alert_store=store) is None
+    q.done(job.event_id)
+    assert q.claim().event_id == "vt"
+    q.done("vt")
+    assert q.claim().event_id == "ns"
+
+
+def test_dropped_call_yields_without_a_stale_answer(patched, monkeypatch):  # noqa: F811
+    redis = _FakeRedis()
+    q = CallQueue(redis)
+    q.push(CallJob(event_id="ns", patient_ref="PT1", event_type="NORMAL_SINUS", bed="ICU/3",
+                   criticality="High", reason="vitals_alert",
+                   payload=event_to_dict(_event(_Afib())), enqueued_ms=1000))
+    job = q.claim()
+    monkeypatch.setattr(bus_consumer, "get_event_status", lambda d, uuid: "reported")
+
+    def _answered_then_dropped(*a, **k):  # PIN passed, then the line broke; a Critical arrives
+        q.mark_answered("ns")
+        q.mark_dropped("ns")
+        q.push(_job("vt", "Critical", 2000))
+        return bus_consumer.OutboundResult(called=True, decision_reason="ok", outcome="answered")
+
+    monkeypatch.setattr(bus_consumer, "_place_live_call", _answered_then_dropped)
+    store = _FakeAlertStore()
+    store.redis = redis
+    assert bus_consumer.run_queued_call(
+        job, driver=object(), orchestrator=object(), utterances=[], caller_factory=lambda r: object(),
+        alert_store=store) is None
+    assert not q.reached("ns")  # the redial must earn its own answer
+    q.done("ns")
+    assert q.claim().event_id == "vt"

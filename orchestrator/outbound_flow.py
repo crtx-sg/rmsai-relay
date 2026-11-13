@@ -113,6 +113,7 @@ def run_outbound(
     live_audio: bool = False,
     fallback_notifier=None,
     before_retry=None,
+    preempt=None,
 ) -> OutboundResult:
     """Run the outbound loop. `utterances` is the clinician's scripted side of the call.
 
@@ -138,7 +139,8 @@ def run_outbound(
         return OutboundResult(called=False, decision_reason=reason, status="reported")
 
     outcome, attempts = place_with_retries(
-        caller, config.outbound_call_number, config, sleep_fn=sleep_fn, before_retry=before_retry
+        caller, config.outbound_call_number, config, sleep_fn=sleep_fn, before_retry=before_retry,
+        preempt=preempt,
     )
     audit.write(actor="system", action="outbound_call", subject=event.window.patient_ref,
                 outcome=outcome.value, attempts=attempts)

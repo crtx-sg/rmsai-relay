@@ -337,8 +337,9 @@ meanwhile is not texted and stays `acknowledged`). With
 7. **Reconnect mid-call:** after a LiveKit signal reconnect our audio no longer reaches the phone, so
    the worker hangs up. If the PIN had been accepted it flags the event dropped and the consumer rings
    it again (at most 2 times, unless it was acknowledged meanwhile; log `dropped on a network
-   reconnect; ringing again`). A reconnect before the PIN only ends that attempt, and an unanswered
-   round never starts a new one after the SMS.
+   reconnect; ringing again`). A reconnect before the PIN only ends that
+   attempt, and an unanswered round never starts a new one after the SMS.
+   Between attempts, a waiting call of higher criticality goes first; this one returns to its place.
 
 **Inbound call-in:**
 1. The SignalWire number's SWML `connect`s to `sip:<number>@<LIVEKIT_SIP_URI>;transport=tcp`.

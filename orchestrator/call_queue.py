@@ -173,8 +173,19 @@ class CallQueue:
         return bool(self.redis.delete(_DROPPED.format(event_id=event_id)))
 
     def done(self, event_id: str) -> None:
-        self.redis.hdel(self.jobs_key, event_id)
+        if self.redis.zscore(self.queue_key, event_id) is None:  # requeue() keeps the job
+            self.redis.hdel(self.jobs_key, event_id)
         self.redis.eval(_RELEASE, 1, self.active_key, event_id)
+
+    def outranked(self, job: CallJob) -> bool:
+        """A waiting job sorts ahead of `job`'s original place: higher criticality, or (never, in
+        practice) an earlier one of the same level. Live 2026-11-13 (h2): a Critical VT waited 10+
+        minutes behind a High call's redials."""
+        return bool(self.redis.zrangebyscore(self.queue_key, "-inf", f"({job.score}", 0, 1))
+
+    def requeue(self, job: CallJob) -> None:
+        """Put the job being dialled back at its original place; `done()` then only frees the slot."""
+        self.redis.zadd(self.queue_key, {job.event_id: job.score})
 
     def pending(self) -> int:
         return int(self.redis.zcard(self.queue_key))

@@ -32,7 +32,7 @@ from orchestrator.outbound_flow import (
 )
 from orchestrator.patient_bootstrap import ensure_patient
 from orchestrator.report import JA_ACK_HINT, spoken_report
-from voice.outbound import CallOutcome
+from voice.outbound import CallOutcome, CallPreempted
 from voice.outbound_alert import OutboundAlert
 
 
@@ -281,7 +281,7 @@ def finish_call(driver, event_id: str, result: OutboundResult) -> None:
 
 def _place_live_call(
     event, *, bed_label, driver, orchestrator, utterances, config, notifier,
-    caller_factory, dispatch_fn, alert_store, call_end_waiter,
+    caller_factory, dispatch_fn, alert_store, call_end_waiter, preempt=None,
 ) -> OutboundResult:
     """Stage the alert, dispatch the agent, dial, and (if answered) wait for the hang-up.
 
@@ -342,6 +342,7 @@ def _place_live_call(
         # re-stage the redial's agent found no alert and greeted the clinician as an inbound KB
         # call, with no word about the event (observed 2026-10-13, after a 408 SIP timeout).
         before_retry=lambda: (_restage(), _dispatch("retry", alert.session_id)),
+        preempt=preempt,
     )
     dispatcher.join(timeout=10)
     return result
@@ -399,11 +400,20 @@ def _was_dropped(alert_store, event_id: str) -> bool:
         return False
 
 
+def _yield_slot(alert_store, job: CallJob) -> None:
+    """Back to its original place in the queue; the dispatcher's `done()` frees the slot.
+    shortcut: the requeued call starts its retries (and SMS fallback) afresh when popped again."""
+    CallQueue(alert_store.redis).requeue(job)
+    print(f"[calls] {job.patient_ref}/{job.event_type} @ {job.bed} ({job.criticality}) yields to a "
+          f"higher-priority call; back in the queue (event {job.event_id})", flush=True)
+
+
 def run_queued_call(
     job: CallJob, *, driver, orchestrator, utterances, config: Config = DEFAULT, notifier=None,
     caller_factory, dispatch_fn=None, alert_store, call_end_waiter=None,
 ) -> ConsumeResult | None:
-    """Place one queued call (the `CallDispatcher` handler). None if it was skipped.
+    """Place one queued call (the `CallDispatcher` handler). None if it was skipped, or put back
+    in the queue for a higher-priority call.
 
     Skipped when the event was acknowledged/resolved while it waited. A status lookup failure
     does not block the call (rule #8): ringing twice beats not ringing.
@@ -422,13 +432,23 @@ def run_queued_call(
           f"({job.criticality}, event {job.event_id})", flush=True)
     event = dict_to_event(job.payload)
     _was_dropped(alert_store, job.event_id)  # a stale flag from an earlier call of this event
+
+    def _preempt() -> bool:  # between attempts only: a call in progress is never cut off
+        try:
+            return CallQueue(alert_store.redis).outranked(job)
+        except Exception:  # noqa: BLE001 - queue unreadable: keep ringing this one (rule #8)
+            return False
+
     for redial in range(_DROPPED_REDIALS + 1):
-        result = _place_live_call(
-            event, bed_label=job.bed, driver=driver, orchestrator=orchestrator,
-            utterances=utterances, config=config, notifier=notifier,
-            caller_factory=caller_factory, dispatch_fn=dispatch_fn, alert_store=alert_store,
-            call_end_waiter=call_end_waiter,
-        )
+        try:
+            result = _place_live_call(
+                event, bed_label=job.bed, driver=driver, orchestrator=orchestrator,
+                utterances=utterances, config=config, notifier=notifier,
+                caller_factory=caller_factory, dispatch_fn=dispatch_fn, alert_store=alert_store,
+                call_end_waiter=call_end_waiter, preempt=_preempt,
+            )
+        except CallPreempted:
+            return _yield_slot(alert_store, job)
         dropped = _was_dropped(alert_store, job.event_id)
         if redial == _DROPPED_REDIALS or not dropped or result.outcome != "answered":
             break  # an unanswered round already ended in the SMS fallback: no new round
@@ -442,6 +462,8 @@ def run_queued_call(
             CallQueue(alert_store.redis).forget_answer(job.event_id)
         except Exception:  # noqa: BLE001 - the redial still rings; only the missed-call check is off
             pass
+        if _preempt():  # after forget_answer: a stale "answered" must not follow it back
+            return _yield_slot(alert_store, job)
         print(f"[calls] call for {job.patient_ref}/{job.event_type} @ {job.bed} dropped on a "
               f"network reconnect; ringing again (event {job.event_id})", flush=True)
     finish_call(driver, job.event_id, result)
