@@ -336,9 +336,10 @@ meanwhile is not texted and stays `acknowledged`). With
    no retry.
 7. **Reconnect mid-call:** after a LiveKit signal reconnect our audio no longer reaches the phone, so
    the worker hangs up. If the PIN had been accepted it flags the event dropped and the consumer rings
-   it again (at most 2 times, unless it was acknowledged meanwhile; log `dropped on a network
-   reconnect; ringing again`). A reconnect before the PIN only ends that
-   attempt, and an unanswered round never starts a new one after the SMS.
+   it again (at most 2 times, unless it was acknowledged meanwhile; log `broke (connection
+   lost or speech service failed); ringing again`). A reconnect before the PIN only ends that
+   attempt, and an unanswered round never starts a new one after the SMS. A speech-to-text failure
+   (e.g. an ElevenLabs 429) first gets "Sorry, I didn't catch that"; only 3 in a row end the call.
    Between attempts, a waiting call of higher criticality goes first; this one returns to its place.
 
 **Inbound call-in:**

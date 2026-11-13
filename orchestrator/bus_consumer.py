@@ -464,8 +464,8 @@ def run_queued_call(
             pass
         if _preempt():  # after forget_answer: a stale "answered" must not follow it back
             return _yield_slot(alert_store, job)
-        print(f"[calls] call for {job.patient_ref}/{job.event_type} @ {job.bed} dropped on a "
-              f"network reconnect; ringing again (event {job.event_id})", flush=True)
+        print(f"[calls] call for {job.patient_ref}/{job.event_type} @ {job.bed} broke (connection "
+              f"lost or speech service failed); ringing again (event {job.event_id})", flush=True)
     finish_call(driver, job.event_id, result)
     return ConsumeResult(
         event_uuid=job.event_id, patient_ref=job.patient_ref, event_type=job.event_type,

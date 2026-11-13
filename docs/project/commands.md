@@ -165,7 +165,7 @@ criticality first and first-come within a level. A queued call is skipped if the
 acknowledged (in the app) or resolved while it waited. Calls still waiting survive a consumer
 restart. Console lines: `[queued] … call N in queue`, `[calls] dialling …`/`skip …`,
 `[call] … -> answered`, `[consume] call in … ended with no PIN entered: counted as missed`,
-`[calls] call for … dropped on a network reconnect; ringing again`, `[calls] … yields to a higher-priority call; back in the queue`.
+`[calls] call for … broke (connection lost or speech service failed); ringing again`, `[calls] … yields to a higher-priority call; back in the queue`.
 
 ### `make phone-transcript`
 

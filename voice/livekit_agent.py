@@ -442,6 +442,10 @@ def resolve_handler(room_name: str, alert_store, *, mode: str = "orchestrator"):
     return build_handler(mode, embedder=embedder, llm=llm)
 
 
+STT_MAX_FAILURES = 3  # STT failures in a row before the call is ended and rung again
+STT_SORRY = "Sorry, I didn't catch that. Please say it again."
+
+
 def make_speech_bridges():
     """Define and return `(LocalSTT, LocalTTS)` bridging our adapters to LiveKit plugins.
 
@@ -466,6 +470,8 @@ def make_speech_bridges():
                 capabilities=lkstt.STTCapabilities(streaming=False, interim_results=False)
             )
             self._adapter = adapter
+            self.on_failure = None  # () -> None: tell the caller to repeat (set by the session)
+            self._failures = 0  # in a row
 
         async def _recognize_impl(self, buffer, *, language=NOT_GIVEN, conn_options=DEFAULT_API_CONNECT_OPTIONS):
             frame = rtc.combine_audio_frames(buffer)
@@ -476,7 +482,20 @@ def make_speech_bridges():
             # "backend returned nothing" (STT). Duration is the audio the segment actually carried.
             print(f"[worker] stt: transcribing {frame.duration:.2f}s of audio "
                   f"({self._adapter.__class__.__name__})", flush=True)
-            text = await loop.run_in_executor(None, self._adapter.transcribe, wav)
+            try:
+                text = await loop.run_in_executor(None, self._adapter.transcribe, wav)
+                self._failures = 0
+            except Exception as exc:
+                # One failed turn no longer ends the call: ElevenLabs "heavy traffic" 429s lasted
+                # ~3 min (2026-11-13) and every redial hit them too. After STT_MAX_FAILURES in a
+                # row, raise as before: the session closes and the call is rung again / texted.
+                self._failures += 1
+                if self.on_failure is None or self._failures >= STT_MAX_FAILURES:
+                    raise
+                print(f"[worker] stt failed ({type(exc).__name__}: {exc}); asking the caller to "
+                      f"repeat ({self._failures}/{STT_MAX_FAILURES})", flush=True)
+                self.on_failure()
+                text = ""  # LiveKit ignores an empty final transcript: no turn, no reply
             # Length only: the turn may be the PIN; `[worker] heard:` shows the text after it.
             print(f"[worker] stt: -> {len(text or '')} chars", flush=True)
             lang = language if isinstance(language, str) else "en"
@@ -920,8 +939,9 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
             return
         ctx.room.on("participant_connected", _yield_if_duplicate)
     vad = (ctx.proc.userdata or {}).get("vad") or silero.VAD.load()
+    stt = LocalSTT(stt_adapter)
     session = AgentSession(
-        stt=LocalSTT(stt_adapter),  # session + vad wrap the non-streaming STT for endpointing
+        stt=stt,  # session + vad wrap the non-streaming STT for endpointing
         tts=LocalTTS(tts_adapter, sample_rate),
         vad=vad,
         # Gate-filler only: livekit skips reply generation when llm is None, so without this the
@@ -951,6 +971,7 @@ async def _entrypoint(ctx) -> None:  # pragma: no cover - needs a live LiveKit r
         redial_on_session_error(session, handler, ctx.room.name,
                                 mark_dropped=CallQueue(alert_store.redis).mark_dropped,
                                 delete_room=ctx.delete_room)
+    stt.on_failure = lambda: session.say(STT_SORRY)
     latency = TurnLatency(emit=lambda line: print(line, flush=True))
     session.on("metrics_collected", lambda ev: latency.on_metrics(getattr(ev, "metrics", None)))
     # The caller speaking proves the call is answered (fallback for the greeting gate).

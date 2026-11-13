@@ -282,6 +282,40 @@ def test_local_stt_bridges_adapter():
     assert rec.received is not None and rec.received[:4] == b"RIFF"  # adapter got a WAV buffer
 
 
+def test_local_stt_failure_asks_to_repeat_then_gives_up():
+    """2026-11-13 (h2): one ElevenLabs 429 ended the call; now the caller is asked to repeat, and
+    only STT_MAX_FAILURES in a row end it (the redial / SMS path then applies, as before)."""
+    import pytest
+
+    from voice.livekit_agent import STT_MAX_FAILURES
+
+    class _Busy:
+        ok = False
+
+        def transcribe(self, audio: bytes) -> str:
+            if not self.ok:
+                raise RuntimeError("ElevenLabs API error 429: heavy traffic")
+            return "yes"
+
+    LocalSTT, _ = make_speech_bridges()
+    adapter = _Busy()
+    stt = LocalSTT(adapter)
+    asked = []
+    stt.on_failure = lambda: asked.append(1)
+    frame = rtc.AudioFrame(data=b"\x00\x00" * 160, sample_rate=16000, num_channels=1,
+                           samples_per_channel=160)
+    run = lambda: asyncio.run(stt._recognize_impl([frame]))  # noqa: E731
+
+    assert run().alternatives[0].text == ""  # empty: LiveKit makes no turn of it
+    adapter.ok = True
+    assert run().alternatives[0].text == "yes"  # a success resets the count
+    adapter.ok = False
+    for _ in range(STT_MAX_FAILURES - 1):
+        run()
+    assert len(asked) == STT_MAX_FAILURES
+    with pytest.raises(RuntimeError):
+        run()  # the STT_MAX_FAILURES-th in a row: the session fails as before
+
 # --- TTS bridge: adapter -> AudioEmitter ---
 
 
