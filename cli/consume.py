@@ -260,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
             job, driver=driver, orchestrator=orch, utterances=utterances, config=config,
             notifier=notifier, caller_factory=caller_factory, dispatch_fn=dispatch_fn,
             alert_store=alert_store, call_end_waiter=call_end_waiter,
-        )))
+        )), gap_s=10)
         dispatcher.start()
         print(f"[consume] call queue on (severity order, one call at a time); "
               f"{call_queue.pending()} waiting" + (f", {recovered} recovered from an earlier run"

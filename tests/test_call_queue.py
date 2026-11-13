@@ -203,6 +203,21 @@ def test_dispatcher_places_calls_one_at_a_time_and_survives_a_failing_one():
     assert q.recover() == 0  # the failed job was dropped, not left to redial forever
 
 
+def test_dispatcher_waits_gap_between_calls():
+    # Live 2026-11-13: the next call rang ~1 s after the clinician hung up.
+    q = CallQueue(_FakeRedis())
+    for i in range(2):
+        q.push(_job(f"e{i}", "High", 1000 + i))
+    starts = []
+    d = CallDispatcher(q, lambda job: starts.append(time.monotonic()), poll_s=0.01, gap_s=0.3)
+    d.start()
+    deadline = time.monotonic() + 5
+    while len(starts) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    d.stop()
+    assert len(starts) == 2 and starts[1] - starts[0] >= 0.3
+
+
 # --- bus consumer integration ----------------------------------------------------------------------
 
 def test_queued_call_returns_before_dialling(patched):  # noqa: F811

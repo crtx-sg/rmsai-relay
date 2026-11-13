@@ -229,8 +229,12 @@ class CallDispatcher:
     the job in the hash for `CallQueue.recover()`.
     """
 
-    def __init__(self, queue: CallQueue, handle, *, poll_s: float = 1.0) -> None:
+    def __init__(self, queue: CallQueue, handle, *, poll_s: float = 1.0,
+                 gap_s: float = 0.0) -> None:
         self.queue = queue
+        # Pause after each call before the next one (live 2026-11-13: the next call rang ~1 s after
+        # the clinician hung up). shortcut: also paid after a job skipped as already acknowledged.
+        self.gap_s = gap_s
         self.handle = handle
         self.poll_s = poll_s
         self._stop = threading.Event()
@@ -289,6 +293,7 @@ class CallDispatcher:
         while not self._stop.is_set():
             try:
                 if self.step():
+                    self._stop.wait(self.gap_s)
                     continue
             except Exception as exc:  # noqa: BLE001 - e.g. Redis blip: back off, keep the thread
                 print(f"[calls] queue read failed: {type(exc).__name__}: {exc}", flush=True)
