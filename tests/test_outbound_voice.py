@@ -134,12 +134,14 @@ def test_without_pin_a_spoken_yes_plays_the_alert_and_marks_answered(tmp_path):
 
     assert "say yes" in h.greeting().lower() and "PIN" not in h.greeting()
     # Nothing about the patient before the "yes"; voicemail-style speech and questions don't count.
-    assert h.respond("tell me about the patient", session_id="room1") == h.respond(
-        "Please leave a message right after the tone yes", session_id="room1")
+    assert h.respond("tell me about the patient", session_id="room1").startswith("Please say yes")
     assert h.respond("yes what is this?", session_id="room1").startswith("Please say yes")
-    # a voicemail greeting split at a pause, or a "yes" inside a longer turn, never confirms
-    for vm in ("Yeah, leave a message.", "Yes, leave a message", "No. Yes.", "1234"):
-        assert h.respond(vm, session_id="room1").startswith("Please say yes"), vm
+    # a voicemail greeting (even split at a pause, or with a "yes" in it) never confirms: hang up
+    for vm in ("Please leave a message right after the tone yes", "Yeah, leave a message.",
+               "Yes, leave a message"):
+        assert h.respond(vm, session_id=vm) == "" and h.is_ended(vm), vm
+    for vm in ("No. Yes.", "1234"):  # a "yes" inside a longer turn, or digits: asked again
+        assert h.respond(vm, session_id=vm).startswith("Please say yes"), vm
     assert not h.is_confirmation("Ya.")  # before any re-prompt only a yes-word counts
     assert h.is_confirmation("Hello, yes.") and h.is_confirmation("Yes, go ahead")
     assert h.respond("um", session_id="room1", spoken=True) == ""

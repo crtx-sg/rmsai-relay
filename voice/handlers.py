@@ -72,6 +72,12 @@ _PICKUP_VETO = {"no", "not", "nope", "wrong", "leave", "message", "reached", "un
 _PICKUP_HELLO = re.compile(r"^\W*(?:(?:hello|hi|hey)\W*)+$|^\W*moshi\W+moshi\b",
                            re.IGNORECASE)
 _PICKUP_MAX_WORDS = 6
+# A carrier's voicemail greeting (live 2026-11-13, h2: "Your call has been forwarded to voicemail…
+# At the tone, please record your message… [beep]"): hang up instead of re-prompting the recorder.
+_VOICEMAIL = {"voicemail", "mailbox", "message", "tone", "beep", "record", "recording",
+              "unavailable", "forwarded", "reached"}
+# Unconfirmed replies after which the call is treated as missed (noise, a foreign-language greeting).
+_MAX_REPROMPTS = 3
 # After the alert, these alone are a "yes" to the pickup prompt, not an acknowledgment.
 _BARE_YES = _PICKUP_YES | {"please"}
 
@@ -104,6 +110,11 @@ def is_pickup_reply(text: str) -> bool:
     joined = " ".join(words)
     return bool(set(words) & _PICKUP_YES) or (
         len(words) <= 3 and any(p in joined for p in _PICKUP_PHRASES))
+
+
+def is_voicemail(text: str) -> bool:
+    """A pre-confirmation turn that sounds like a voicemail greeting, not a person."""
+    return bool(set(_words(text)) & _VOICEMAIL)
 
 
 def is_second_pickup_reply(text: str) -> bool:
@@ -265,7 +276,7 @@ class OutboundHandler(OrchestratorHandler):
         self.require_pin = require_pin
         # "ja": greeting + "say yes" prompt in Japanese (the alert text is already in its language).
         self._prompt = self._reprompt = _PROMPT_CONFIRM
-        self._reprompted: set[str] = set()  # sessions already asked again (see is_second_pickup_reply)
+        self._reprompted: dict[str, int] = {}  # session -> re-prompts so far (is_second_pickup_reply)
         self._intro = "Remote clinical line with a patient alert. "
         self._again = "Here is the alert again. "
         self._alert_cut: set[str] = set()  # sessions whose alert was cut off before it finished
@@ -306,7 +317,15 @@ class OutboundHandler(OrchestratorHandler):
             return self._on_authenticated(session_id)
         if spoken and is_filler(text):
             return ""
-        self._reprompted.add(session_id)
+        n = self._reprompted.get(session_id, 0)
+        if is_voicemail(text) or n >= _MAX_REPROMPTS:
+            # Silent hang-up: nothing about the patient is left on a recorder. No confirm/PIN flag
+            # was set, so the consumer counts it missed (retry, then SMS fallback).
+            print(f"[voice] no live answer ({'voicemail' if n < _MAX_REPROMPTS else 'no yes'}); "
+                  f"hanging up session {session_id}", flush=True)
+            self._ended.add(session_id)
+            return ""
+        self._reprompted[session_id] = n + 1
         return self._reprompt
 
     def _on_locked(self, session_id: str) -> None:

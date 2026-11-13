@@ -368,3 +368,29 @@ def test_after_a_reprompt_voicemail_and_noise_still_do_not(tmp_path, reply):
     h.respond("hmm what", session_id="room1")  # re-prompted once
     assert h.respond(reply, session_id="room1", spoken=True) != alert.spoken_alert
     assert not h.is_authenticated("room1")
+
+
+# --- 2026-11-13: voicemail answered 3x and was re-prompted ~2 min each ------------------------------
+
+@pytest.mark.parametrize("greeting", [
+    "Your call has been forwarded to voicemail.",
+    "The person you're trying to reach is not available. At the tone, please record your message. "
+    "When you have finished recording, you may hang up. [beep]",
+])
+def test_voicemail_greeting_hangs_up_silently(tmp_path, greeting):
+    from tests.test_outbound_voice import _FakeOrch, _FakeWorking, _handler
+
+    h, _ = _handler(tmp_path, _FakeWorking(), _FakeOrch(), require_pin=False, language="ja")
+    assert h.respond(greeting, session_id="room1", spoken=True) == ""
+    assert h.is_ended("room1") and not h.is_authenticated("room1")
+
+
+def test_unconfirmed_call_hangs_up_after_three_reprompts(tmp_path):
+    from tests.test_outbound_voice import _FakeOrch, _FakeWorking, _handler
+
+    h, _ = _handler(tmp_path, _FakeWorking(), _FakeOrch(), require_pin=False)
+    for _ in range(3):
+        assert h.respond("what is this?", session_id="room1", spoken=True)  # re-prompted
+        assert not h.is_ended("room1")
+    assert h.respond("what is this?", session_id="room1", spoken=True) == ""
+    assert h.is_ended("room1") and not h.is_authenticated("room1")
