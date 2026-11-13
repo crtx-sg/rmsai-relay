@@ -144,6 +144,7 @@
     #sim-track { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .5rem 0; }
     #sim-track.hidden { display: none; }  /* the id rule above outranks .hidden */
     #sim-progress { width: min(20rem, 100%); }
+    #sim-log { white-space: pre-wrap; font-size: .8rem; background: #8881; padding: .75rem; border-radius: 4px; }
     .sim-row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; margin: .5rem 0; }
     .sim-g { width: 8rem; font-weight: 600; font-size: .85rem; }
     .sim-row .t { background: var(--panel); border-radius: 6px; padding: .5rem .75rem; min-width: 8rem; }
@@ -265,6 +266,8 @@
        <thead><tr><th>Hospital</th><th>Patient</th><th>Truth</th><th>Model said</th><th>Conf.</th><th>Gate</th><th title="The gate's decision before dialling; a busy line or no answer is redialled, then texted">Gate: call</th><th title="Live, from the hospital's call queue">Call now</th></tr></thead>
        <tbody></tbody>
      </table>
+     <details id="sim-log-box" class="hidden"><summary>What it did (step by step)</summary>
+       <pre id="sim-log"></pre></details>
      <!-- Every run published from this console (data/simulate/runs.jsonl), both hospitals. Gate
           decisions before dialling; what was delivered is on each hospital's Events tab. -->
      <h2 class="sim-h">All runs <button id="sim-refresh" type="button">Refresh</button></h2>

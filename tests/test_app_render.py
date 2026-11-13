@@ -147,6 +147,15 @@ def test_simulate_panel(rendered):
     assert "False alarms (normal rhythm)" in rendered["sim"] and "1 on worklist" in rendered["sim"] and "PT935761" in rendered["sim"]
 
 
+def test_simulate_log_explains_each_step(rendered):
+    log = rendered["simLog"]
+    assert "package v3, seed 42: NORMAL_SINUS ×1" in log and "wanted 2 LBBB, only 1 available" in log
+    assert "h2 FAILED: RuntimeError: boom" in log
+    assert ("[h1] PT935761 · label NORMAL_SINUS → model NORMAL_SINUS (85%) → TN · gate false_positive"
+            " → no call · event abcdef12") in log
+    assert "0 of 1 will ring" in log and "undefined" not in log
+
+
 def test_header_names_the_hospital_and_links_the_others(rendered):
     b = rendered["badge"]
     assert b.startswith("Hospital h1") and 'href="http://localhost:8090"' in b and "open h2" in b

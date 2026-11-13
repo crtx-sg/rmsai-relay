@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-11-06 sim-progress-fix";
+const APP_BUILD = "2026-11-13 sim-log";
 
 const LK = window.LivekitClient;
 
@@ -1025,6 +1025,29 @@ function renderSimulation(data) {
     <td>${esc(e.hospital || "")}</td><td>${esc(e.patient)}</td><td>${esc(e.ground_truth)}</td><td>${esc(e.event_type)}</td>
     <td>${pct(e.confidence)}</td><td>${esc(e.gate)}</td><td>${e.call ? "📞 call" : "no call"}</td>
     <td data-call="${esc(e.event_id || "")}">${e.call ? "…" : ""}</td></tr>`).join("");
+  document.getElementById("sim-log").textContent = simLog(data);
+  document.getElementById("sim-log-box").classList.remove("hidden");
+}
+
+// shortcut: a plain-text account of the finished run from the /simulate response, not a live
+// stream; stream ingest's per-event lines (Tier 1) if the wait before results proves too long.
+function simLog(data) {
+  const evs = data.events || [];
+  const pick = Object.entries(data.pick || {}).map(([k, n]) => `${k} ×${n}`).join(", ");
+  const per = evs.reduce((m, e) => { m[e.hospital || "-"] = (m[e.hospital || "-"] || 0) + 1; return m; }, {});
+  const out = [runLabel(data.run),
+    `1. Picked held-out (test-split) samples from ecg_sigma package ${data.package || "?"}, seed ${data.seed}: ${pick || "none"}`];
+  Object.entries(data.shortfall || {}).forEach(([k, [want, have]]) =>
+    out.push(`   short: wanted ${want} ${k}, only ${have} available`));
+  out.push(`2. Wrote one HDF5 file per sample, routed each to its patient's hospital: ` +
+    (Object.entries(per).map(([h, n]) => `${h} ${n}`).join(", ") || "none"));
+  Object.entries(data.errors || {}).forEach(([h, e]) => out.push(`   ${h} FAILED: ${e}`));
+  out.push(`3. Classified each ECG with the model, scored it against the label, applied the call gate:`);
+  evs.forEach((e) => out.push(`   [${e.hospital || "-"}] ${e.patient} · label ${e.ground_truth || "?"} → model ` +
+    `${e.event_type} (${pct(e.confidence)}) → ${e.outcome || "?"} · gate ${e.gate || "?"} → ` +
+    (e.call ? "WILL RING" : "no call") + ` · event ${String(e.event_id || "").slice(0, 8)}`));
+  out.push(`4. Published to the event bus: ${evs.filter((e) => e.call).length} of ${evs.length} will ring the on-call phone`);
+  return out.join("\n");
 }
 
 async function loadSimHistory() {
