@@ -194,7 +194,7 @@ Settings combine in this order, each overriding the one before:
 | `outbound` | `dispatch_mode`, `enabled`, `min_criticality`, `min_arrhythmia_confidence`, `call_vitals_alerts` | `DISPATCH_MODE`, `OUTBOUND_ENABLED`, `OUTBOUND_MIN_CRITICALITY`, `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE`, `OUTBOUND_CALL_VITALS_ALERTS` |
 | `outbound` | `call_number`, `from`, `inbound_allowed_numbers` | `OUTBOUND_CALL_NUMBER`, `OUTBOUND_FROM`, `SIP_INBOUND_ALLOWED_NUMBERS` |
 | `outbound` | `max_retries`, `retry_delay_s`, `require_pin`, `alert_language` | `OUTBOUND_MAX_RETRIES`, `OUTBOUND_RETRY_DELAY_S`, `OUTBOUND_REQUIRE_PIN`, `OUTBOUND_ALERT_LANGUAGE` |
-| `protocols` | `file` | `PROTOCOLS_FILE` — the hospital's structured care protocols; **replaces** the default set (see [OPERATIONS](OPERATIONS.md)). Reload with `cli.graph protocols`; no restart |
+| `protocols` | `file` | `PROTOCOLS_FILE` — the hospital's structured care protocols; **replaces** the default set (how-to: [OPERATIONS › Hospital-specific protocols](OPERATIONS.md#hospital-specific-protocols)). Reload with `cli.graph protocols`; no restart |
 | `vitals_trends` | `alpha`, `vitals.<name>.{min_change, normal, unit}` | — (see [Vital trends](#vital-trends-when-is-a-vital-deteriorating)) |
 
 **A new site:** `cp config/hospitals/h1.example.yaml config/hospitals/<id>.yaml`, edit it, set

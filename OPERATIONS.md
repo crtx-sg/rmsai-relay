@@ -337,6 +337,76 @@ Uploads are idempotent, copied into `KB_UPLOAD_DIR` so a rebuild re-indexes them
 cited individually. Full detail + verification commands:
 [§3a](TESTING.md#3a-upload-protocols--sops--checklists-to-the-kb).
 
+#### Hospital-specific protocols
+
+Each hospital has its own graph and Qdrant; the shared `docs/` go into both. A hospital adds its own
+protocols in either or both of two forms. No restart is needed for either: the voice worker reads the
+graph and Qdrant on every question.
+
+**A. A protocol document (PDF / markdown): the simplest.**
+
+1. Put the file inside the repo, so the containers see it, e.g. `data/hospital_docs/h2/vt_sop.pdf`
+   (gitignored).
+2. Upload it into that hospital's stack:
+   ```bash
+   make kb-upload H=h2 FILE=data/hospital_docs/h2/vt_sop.pdf     # or H=h1
+   ```
+3. Ask "what's the protocol for VT?" on that hospital: its document is read out instead of the
+   shared `docs/` one for every rhythm it covers.
+
+Writing the document:
+- **Each section heading must name the rhythm** (`## Stable ventricular tachycardia`): only sections
+  whose heading names the asked rhythm are read out.
+- **One point per bullet or paragraph**: each is read as one sentence. A call reads 3, then offers
+  "the rest".
+- Heading words *acute*, *emergency*, *stable*, *unstable*, *pulseless*, *long-term*, *chronic*,
+  *prevention*, *post-resuscitation* let the clinician ask for that section by name.
+- **Use a file name not already in `docs/`** (not `vt_vf.md`), or it overwrites the shared copy in
+  that hospital's Qdrant. Re-uploading the same name replaces the earlier version.
+- Uploads are kept per hospital (h1 `data/kb_uploads/`, h2 `data/kb_uploads-h2/`). h2 uses its own
+  folder only after its containers are recreated once: `make h2-up H2_PHONE=1`, with no call in
+  progress.
+
+**B. Structured steps (read out as "1. … 2. … 3. …").**
+
+1. Create `config/hospitals/<id>.protocols.yaml` (gitignored), starting from a copy of
+   `common/protocols/care_protocols.yaml`:
+   ```yaml
+   - id: vt_site
+     title: Ventricular tachycardia (site protocol)
+     version: "1"
+     source: Ward 5 SOP v2
+     match: { event_type: VENTRICULAR_TACHYCARDIA, min_severity: High }
+     steps:
+       - { order: 1, kind: test, name: "12-lead ECG", when: "immediately" }
+       - { order: 2, kind: escalation, trigger: "pulseless or SBP < 90", escalate_to: "rapid response team", within: "2 min" }
+       - { order: 3, kind: medication, drug: "amiodarone per local policy", route: IV }
+   ```
+   `kind` is one of `test`, `vitals_check`, `medication`, `escalation`, `monitoring`; `event_type`
+   is one of the 16 model classes, or `*` for the fallback.
+2. Point the hospital at it in `config/hospitals/<id>.yaml`:
+   ```yaml
+   protocols:
+     file: config/hospitals/h2.protocols.yaml
+   ```
+3. Load it into that hospital's graph:
+   ```bash
+   # h2
+   set -a; . infra/h2.env; set +a
+   docker compose -f infra/docker-compose.yml -p infra-h2 --profile tools run --rm --no-deps tools python -m cli.graph protocols
+   # h1
+   $RMSAI cli.graph protocols
+   # -> {"protocols_loaded": N, "file": "config/hospitals/h2.protocols.yaml"}
+   ```
+
+Before using B:
+- **The file replaces the default set.** Protocols not in it are deleted from that hospital's graph,
+  so copy over the defaults you want to keep (AFib with RVR, the `default` fallback). An empty file
+  is refused.
+- **Structured steps beat documents**: a rhythm with steps in the file never has its documents read.
+
+Use A for an existing SOP; B only for a short, fixed list of steps read in order.
+
 ### 6. Test the application
 
 ```bash
