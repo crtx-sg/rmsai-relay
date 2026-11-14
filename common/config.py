@@ -94,6 +94,9 @@ class Config:
     # overridden by `<dir>/<hospital_id>.yaml`; an env var overrides both. common/hospital_config.py
     hospital_config_dir: str = "config/hospitals"
     hospital_config_source: str = ""  # which files were loaded, e.g. "default.yaml + h1.yaml"
+    # The hospital's structured care protocols (`cli.graph protocols`); replaces, never merges with,
+    # the default set. Relative to the repo root.
+    protocols_file: str = "common/protocols/care_protocols.yaml"
 
     # Outbound calling (§6.1 / D16)
     outbound_enabled: bool = False
@@ -345,6 +348,7 @@ class Config:
                                                  H["criticality_fp_override_on_vitals"]),
             hospital_config_dir=hospital_dir,
             hospital_config_source=hospital_source,
+            protocols_file=os.environ.get("PROTOCOLS_FILE", H["protocols_file"]),
             outbound_enabled=_b("OUTBOUND_ENABLED", H["outbound_enabled"]),
             outbound_call_number=os.environ.get("OUTBOUND_CALL_NUMBER", H["outbound_call_number"] or ""),
             outbound_from=os.environ.get("OUTBOUND_FROM", H["outbound_from"] or ""),

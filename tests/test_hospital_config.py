@@ -108,3 +108,11 @@ def test_vitals_alerts_do_not_call_by_default(monkeypatch):
     assert Config.from_env().outbound_call_vitals_alerts is False
     monkeypatch.setenv("OUTBOUND_CALL_VITALS_ALERTS", "true")
     assert Config.from_env().outbound_call_vitals_alerts is True
+
+
+def test_protocols_file_is_per_hospital(hospitals, monkeypatch):
+    monkeypatch.setenv("HOSPITAL_ID", "h1")
+    assert Config.from_env().protocols_file == "common/protocols/care_protocols.yaml"
+    (hospitals / "h1.yaml").write_text(_SITE + "protocols:\n  file: config/hospitals/h1.protocols.yaml\n",
+                                       encoding="utf-8")
+    assert Config.from_env().protocols_file == "config/hospitals/h1.protocols.yaml"

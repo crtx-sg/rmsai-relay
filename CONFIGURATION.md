@@ -41,7 +41,7 @@ but only as a logged override.
 | `LIVEKIT_WORKER_HTTP_PORT` | `8081` | port for livekit-agents' health-check HTTP server. Only matters when two workers run side by side. The Docker `voice-worker` gets `8091` from Compose (*Compose*: set in the shell to change it), because host networking would otherwise collide with a worker run by hand (`[errno 98] address already in use`). The phone worker uses `LIVEKIT_SIP_WORKER_HTTP_PORT` (`8082`) |
 | `GATEWAY_PORT` | `8080` | *Compose*: host port for the containerized gateway. Move it (`GATEWAY_PORT=8090 make docker-up`) if `hapi-fhir` (`--profile emr`) or a hand-run gateway already holds 8080 |
 | `LLM_PROVIDER` / `LLM_MODEL` / `OLLAMA_URL` | `echo` / `llama3.2` / `http://localhost:11434` | `echo` is offline and deterministic; `ollama` for self-hosted answers (`LLM_MODEL` is the Ollama model); `anthropic` / `gemini` / `openai` for cloud models, see [Choosing the LLM](#choosing-the-llm). An unknown name is an error |
-| `EMBEDDER` / `KB_MIN_RELEVANCE` / `KB_LLM_ROUTER` / `KB_UPLOAD_DIR` | `hashing` / `0.60` / `false` / `data/kb_uploads` | KB embedder (must match the collection), relevance floor for grounded answers, LLM question router, managed upload folder |
+| `EMBEDDER` / `KB_MIN_RELEVANCE` / `KB_LLM_ROUTER` / `KB_UPLOAD_DIR` | `hashing` / `0.60` / `false` / `data/kb_uploads` (h2: `data/kb_uploads-h2`, in `infra/h2.env`) | KB embedder (must match the collection), relevance floor for grounded answers, LLM question router, managed upload folder |
 | `STT_BACKEND` / `TTS_BACKEND` | `stub` / `stub` | `whisper`/`piper` (self-hosted) or `elevenlabs` (cloud, synthetic data only) |
 | `LIVEKIT_AGENT_NAME` / `LIVEKIT_CALL_ROOM_PREFIX` | `rmsai-agent` / `rmsai-call-` | the app worker's dispatch name; prefix of on-demand and inbound phone-call rooms |
 | `SIP_RINGING_TIMEOUT_S` / `SIP_MAX_CALL_DURATION_S` | `30` / `600` | call safety rails (unanswered ring time; hard cap on a call) |
@@ -194,6 +194,7 @@ Settings combine in this order, each overriding the one before:
 | `outbound` | `dispatch_mode`, `enabled`, `min_criticality`, `min_arrhythmia_confidence`, `call_vitals_alerts` | `DISPATCH_MODE`, `OUTBOUND_ENABLED`, `OUTBOUND_MIN_CRITICALITY`, `OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE`, `OUTBOUND_CALL_VITALS_ALERTS` |
 | `outbound` | `call_number`, `from`, `inbound_allowed_numbers` | `OUTBOUND_CALL_NUMBER`, `OUTBOUND_FROM`, `SIP_INBOUND_ALLOWED_NUMBERS` |
 | `outbound` | `max_retries`, `retry_delay_s`, `require_pin`, `alert_language` | `OUTBOUND_MAX_RETRIES`, `OUTBOUND_RETRY_DELAY_S`, `OUTBOUND_REQUIRE_PIN`, `OUTBOUND_ALERT_LANGUAGE` |
+| `protocols` | `file` | `PROTOCOLS_FILE` — the hospital's structured care protocols; **replaces** the default set (see [OPERATIONS](OPERATIONS.md)). Reload with `cli.graph protocols`; no restart |
 | `vitals_trends` | `alpha`, `vitals.<name>.{min_change, normal, unit}` | — (see [Vital trends](#vital-trends-when-is-a-vital-deteriorating)) |
 
 **A new site:** `cp config/hospitals/h1.example.yaml config/hospitals/<id>.yaml`, edit it, set

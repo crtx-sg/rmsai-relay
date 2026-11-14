@@ -17,6 +17,7 @@ import time
 
 from cli.gen_synthetic import build_cohort
 from common.config import DEFAULT
+from common.hospital_config import resolve_dir
 from kb.graph.driver import GraphDriver
 from kb.graph.events import link_all_patient_events
 from kb.graph.extract import extract_dir
@@ -26,7 +27,6 @@ from kb.graph.protocols import load_protocol_file
 from kb.graph.schema import migrate
 from kb.graph.templates import TEMPLATES, run_template
 
-_PROTOCOLS = "common/protocols/care_protocols.yaml"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,7 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     p_ext = sub.add_parser("extract", help="extract document entities onto shared nodes")
     p_ext.add_argument("--dir", default="docs")
 
-    sub.add_parser("protocols", help="load care protocols into the graph")
+    sub.add_parser("protocols", help="load this hospital's care protocols (protocols.file) into the "
+                   "graph, replacing any earlier set")
     sub.add_parser("chain", help="rebuild every patient's FOLLOWED_BY event chain (backfill)")
 
     p_look = sub.add_parser("lookup", help="natural-language operational query")
@@ -66,7 +67,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "extract":
             print(json.dumps(extract_dir(driver, args.dir)))
         elif args.cmd == "protocols":
-            print(json.dumps({"protocols_loaded": load_protocol_file(driver, _PROTOCOLS)}))
+            path = resolve_dir(DEFAULT.protocols_file)  # the hospital's set (protocols.file)
+            print(json.dumps({"protocols_loaded": load_protocol_file(driver, path),
+                              "file": DEFAULT.protocols_file}))
         elif args.cmd == "chain":
             print(json.dumps({"patients_chained": link_all_patient_events(driver)}))
         elif args.cmd == "lookup":

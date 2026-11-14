@@ -2,8 +2,9 @@
 
 Parses the YAML/JSON protocol config (via `common.protocol_loader`) and MERGEs
 `CareProtocol`/`ProtocolStep` nodes, links `APPLIES_TO` the shared `Condition` node, `HAS_STEP`
-the ordered steps, and `RECOMMENDS` a `Treatment` for medication steps. T7 reads the structured
-steps from here; the rendered narrative is indexed into the vector store (Phase 2A/2C).
+the ordered steps, and `RECOMMENDS` a `Treatment` for medication steps. The graph is the only store:
+`orchestrator.protocol_answer` reads these steps verbatim; protocol *documents* (`docs/`, uploads)
+are what the vector store indexes.
 """
 
 from __future__ import annotations
@@ -60,8 +61,20 @@ def load_protocol(driver: GraphDriver, proto: CareProtocol) -> None:
 
 
 def load_protocol_file(driver: GraphDriver, path: str | Path) -> int:
-    """Load all protocols from a config file. Returns #protocols loaded."""
+    """Make the graph's protocols exactly the file's (the hospital's set replaces any earlier one):
+    MERGE each, then delete protocols and steps the file no longer has, so a removed protocol is
+    never read out. Shared Condition/Treatment nodes stay. Returns #protocols loaded."""
     protocols = load_protocols(path)
+    if not protocols:  # an empty/half-saved file must not wipe the hospital's protocols
+        raise ValueError(f"no protocols in {path}: refusing to replace the graph's set with nothing")
     for proto in protocols:
         load_protocol(driver, proto)
+    ids = [p.id for p in protocols]
+    step_ids = [f"{p.id}_step_{s.order}" for p in protocols for s in p.steps]
+    driver.run_write(
+        "MATCH (cp:CareProtocol) WHERE NOT cp.id IN $ids "
+        "OPTIONAL MATCH (cp)-[:HAS_STEP]->(s:ProtocolStep) DETACH DELETE s, cp", ids=ids)
+    driver.run_write(  # a kept protocol that lost steps
+        "MATCH (:CareProtocol)-[:HAS_STEP]->(s:ProtocolStep) WHERE NOT s.id IN $sids "
+        "DETACH DELETE s", sids=step_ids)
     return len(protocols)

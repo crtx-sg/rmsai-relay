@@ -1,5 +1,6 @@
 # Curated care protocols (D19 / §5.5). External config — revise or replace with AHA/society
-# guidelines without code changes. Loaded into the graph + indexed as narrative in Phase 2B.
+# guidelines without code changes. Loaded into the graph only (`cli.graph protocols`); this is the
+# default set: a hospital replaces it with protocols.file in config/hospitals/<id>.yaml.
 - id: afib_rvr
   title: Atrial fibrillation with rapid ventricular response
   version: "1"

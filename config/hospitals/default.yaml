@@ -38,6 +38,13 @@ outbound:
   alert_language: en                  # OUTBOUND_ALERT_LANGUAGE  en | ja: spoken alert + "say yes" prompt (replies stay English)
   inbound_allowed_numbers: []         # SIP_INBOUND_ALLOWED_NUMBERS  who may dial IN; empty = call_number only
 
+# ---- Care protocols: the structured steps read out for "what is the protocol for <rhythm>?" --------
+# A hospital file REPLACES this set (no merge); `cli.graph protocols` loads it into that hospital's
+# graph and deletes protocols not in it. Site files: config/hospitals/<id>.protocols.yaml (gitignored).
+# Protocol *documents* are separate: upload them with `make kb-upload H=<id> FILE=...`.
+protocols:
+  file: common/protocols/care_protocols.yaml   # PROTOCOLS_FILE  relative to the repo root
+
 # ---- Vital trends: when is a vital clinically *deteriorating*? -------------------------------------
 # A vital is deteriorating only when ALL of these hold over the event window's history:
 #   1. consistent:   Mann-Kendall p < alpha

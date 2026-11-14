@@ -46,6 +46,7 @@ SETTINGS: dict[str, tuple[str, str, str]] = {
     "outbound_alert_language": ("outbound", "alert_language", "OUTBOUND_ALERT_LANGUAGE"),
     "sip_inbound_allowed_numbers":
         ("outbound", "inbound_allowed_numbers", "SIP_INBOUND_ALLOWED_NUMBERS"),
+    "protocols_file": ("protocols", "file", "PROTOCOLS_FILE"),
 }
 
 _LEVELS = ("Low", "Medium", "High", "Critical")
@@ -96,7 +97,7 @@ def load_hospital_config(hospital_id: str = "",
 
 
 def hospital_settings(raw: dict) -> dict:
-    """The `escalation` / `outbound` values as `{Config field: value}`."""
+    """The `escalation` / `outbound` / `protocols` values as `{Config field: value}`."""
     out = {}
     for field_name, (section, key, _env) in SETTINGS.items():
         out[field_name] = (raw.get(section) or {}).get(key)
