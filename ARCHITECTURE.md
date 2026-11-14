@@ -891,9 +891,14 @@ WHERE NOT ()-[:FOLLOWED_BY]->(first)
 RETURN path
 ```
 
-**Care protocols** are curated external YAML (`common/protocols/care_protocols.yaml`), matched on
-`event_type` + vital conditions + min severity (most-specific-wins, with a default fallback), loaded
-into the graph **and** indexed as narrative into the vector store.
+**Care protocols** are curated external YAML, matched on `event_type` + vital conditions + min
+severity (most-specific-wins, with a default fallback) and loaded into the graph only — not the
+vector store. Each hospital has its own set: `protocols.file` in `config/hospitals/<id>.yaml`
+(default `common/protocols/care_protocols.yaml`), which **replaces** the default; `cli.graph
+protocols` deletes protocols not in the file. Protocol *documents* (`docs/` plus the hospital's
+`cli.kb_upload`s, kept per hospital in `KB_UPLOAD_DIR`) are what Qdrant indexes; for a rhythm both
+cover, the hospital's own upload is read out ahead of the shared `docs/` one. Either way the answer
+is read verbatim, never generated.
 
 **Waveforms & artifacts.** The raw multi-lead ECG lives only in the **HDF5** source (and, briefly, in
 `SignalWindow.signals` at the producer — the bus drops it to stay small). So the **producer renders

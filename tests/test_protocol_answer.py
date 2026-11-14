@@ -74,6 +74,25 @@ def test_no_section_for_the_rhythm_is_no_answer():
     assert pa.answer_from_sections(_HITS, "LBBB", spoken=True, question="LBBB protocol") is None
 
 
+def test_the_hospitals_own_document_beats_the_shared_one():
+    # p.md has more PVC sections, but other.md is this hospital's upload: it is read out.
+    a = pa.answer_from_sections(_HITS, "PVC", spoken=False, question="protocol for PVC",
+                                preferred=frozenset({"other.md"}))
+    assert a.text.startswith("From other.md:") and "Holter." in a.text and "Also covered in: p.md" in a.text
+    # preferred, but no PVC section in it: the shared document still answers
+    b = pa.answer_from_sections(_HITS, "PVC", spoken=False, question="protocol for PVC",
+                                preferred=frozenset({"af_sop.pdf"}))
+    assert b.text.startswith("From p.md:")
+
+
+def test_hospital_docs_lists_the_upload_folder(tmp_path):
+    (tmp_path / "vt_sop.pdf").write_bytes(b"x")
+    (tmp_path / "sub").mkdir()
+    assert pa.hospital_docs(str(tmp_path)) == frozenset({"vt_sop.pdf"})
+    assert pa.hospital_docs(str(tmp_path / "missing")) == frozenset()
+    assert pa.hospital_docs("") == frozenset()
+
+
 # --- orchestrator: no LLM call, follow-ups, other questions untouched ----------------------------
 
 class _NoLLM:

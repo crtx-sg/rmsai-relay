@@ -1155,7 +1155,9 @@ class Orchestrator:
                                              rerank=False)
         except Exception:  # noqa: BLE001 - no vector store: fall back to the normal path
             return None
-        answer = protocol_answer.answer_from_sections(hits, etype, spoken=spoken, question=q)
+        answer = protocol_answer.answer_from_sections(
+            hits, etype, spoken=spoken, question=q,
+            preferred=protocol_answer.hospital_docs(DEFAULT.kb_upload_dir))
         if answer is None:
             # Nothing documented: say so. Left to the LLM, "protocol for PAC" came back as a
             # "Pacemaker-Associated Complication" under a made-up "American Clinical Protocol"

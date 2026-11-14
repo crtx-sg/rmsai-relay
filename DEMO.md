@@ -209,6 +209,19 @@ $RMSAI cli.kb_upload --file docs/samples/critical_alarm_sop.md   # optional: a s
 
 With a second hospital, load **its** KB the same way once, before any h2 events: `make h2-kb`.
 
+**Hospital-specific protocols.** Each hospital has its own graph and Qdrant; the shared `docs/` go
+into both. On top of that:
+- *Structured steps* (read out step by step): point `protocols.file` in
+  `config/hospitals/<id>.yaml` at the hospital's own file, e.g. `config/hospitals/h2.protocols.yaml`
+  (same format as `common/protocols/care_protocols.yaml`, gitignored). It **replaces** the default set:
+  re-run `cli.graph protocols` for that hospital (`make h2-kb` for h2) and protocols not in the file
+  are deleted from its graph.
+- *Documents* (PDF/markdown, read out verbatim): `make kb-upload H=h2 FILE=<path in the repo>`. For a
+  rhythm the hospital's own document covers, it is read out instead of the shared `docs/` one.
+  Uploads are kept per hospital (h1 `data/kb_uploads`, h2 `data/kb_uploads-h2`) so a rebuild only
+  re-indexes that hospital's.
+No restart needed for either: the voice worker reads the graph and Qdrant on every question.
+
 Plain `index` adds to the collection, and re-indexing a document replaces its earlier chunks, so order
 doesn't matter. Only `cli.kb_vector index --reset` wipes the
 per-event report narratives: never run it after ingesting events.

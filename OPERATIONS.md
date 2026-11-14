@@ -233,7 +233,7 @@ itself on startup, so strictly only `protocols` and `extract` are manual:
 
 ```bash
 $RMSAI cli.graph migrate                     # constraints + indexes   -> {"migrated": true}
-$RMSAI cli.graph protocols                   # care protocols          -> {"protocols_loaded": 2}
+$RMSAI cli.graph protocols                   # this hospital's protocols.file -> {"protocols_loaded": 2, "file": ...}
 $RMSAI cli.graph extract --dir docs          # doc entities onto shared nodes
 #   -> {"chunks": 13, "guidelines": 13, "conditions": 5, "treatments": 9}
 $RMSAI cli.kb_vector --embedder bge index --dir docs    # clinical corpus -> Qdrant
@@ -658,15 +658,16 @@ recursively for `*.md`**, so every markdown file dropped there (except `README.m
 evidence — project/engineering docs belong in `docs/project/` and upload test fixtures in
 `docs/samples/`, both of which the glob excludes. Non-markdown files are never picked up by the
 glob: a PDF must go through `cli.kb_upload`. Documents added that way are copied to
-`KB_UPLOAD_DIR` (`data/kb_uploads/`, gitignored) and re-indexed by every rebuild, so they are part
-of the corpus rather than a one-off write. See [§3a](TESTING.md#3a-upload-protocols--sops--checklists-to-the-kb)
+`KB_UPLOAD_DIR` (h1 `data/kb_uploads/`, h2 `data/kb_uploads-h2/`, gitignored) and re-indexed by
+every rebuild of **that** hospital's collection, so they are part of its corpus rather than a one-off
+write. `make kb-upload H=h1|h2 FILE=<path in the repo>` uploads into one hospital's stack. See [§3a](TESTING.md#3a-upload-protocols--sops--checklists-to-the-kb)
 for the upload + verification commands.
 
 **How a question is answered** — three paths, in order:
 
 | path | when | answer |
 |---|---|---|
-| protocol | a protocol question naming a rhythm, "this event" or a bed | the rhythm's care-protocol steps (`care_protocols.yaml`) or its document sections, verbatim, no LLM; none documented → "No protocol for X is documented in the knowledge base, so its management is not known here." |
+| protocol | a protocol question naming a rhythm, "this event" or a bed | the rhythm's care-protocol steps (the hospital's `protocols.file`) or its document sections (the hospital's own upload ahead of `docs/`), verbatim, no LLM; none documented → "No protocol for X is documented in the knowledge base, so its management is not known here." |
 | graph template | `match_intent` regex hits | exact patient data from Cypher, no LLM |
 | LLM-routed template | regex misses, question looks operational, `KB_LLM_ROUTER=true` | same, template chosen by the model from a fixed menu |
 | hybrid retrieval | everything else | cited passages (vector) + relationships (graph), answered by the LLM |

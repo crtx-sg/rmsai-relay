@@ -9,7 +9,7 @@
 # ecgtranscnn working copy (ECGTRANSCNN_DIR). Without it the pipeline runs the deterministic stub.
 
 .DEFAULT_GOAL := setup
-.PHONY: setup setup-all external weights check-ecg test lint \
+.PHONY: setup setup-all external weights check-ecg test lint kb-upload \
         docker-build docker-up docker-down docker-restart docker-logs docker-ps docker-shell \
         stores-up stores-down stores-check phone-up phone-down phone-logs phone-transcript demo-up demo-phone-up demo-check demo-down
 
@@ -136,6 +136,15 @@ h2-kb:
 	$(H2_ENV) for c in "cli.graph migrate" "cli.graph protocols" "cli.graph extract --dir docs" \
 		"cli.kb_vector --embedder bge index --dir docs"; do \
 		$(DOCKER_USER) $(H2_COMPOSE) --profile tools run --rm --no-deps tools python -m $$c || exit 1; done
+
+# A hospital's own protocol document (PDF/markdown, a path inside the repo) into ITS Qdrant, kept in
+# its KB_UPLOAD_DIR. For that rhythm it is read out ahead of the shared docs/. Structured protocol
+# steps are separate: protocols.file in config/hospitals/<id>.yaml, then `cli.graph protocols`.
+H ?= h1
+kb-upload:
+	@[ -n "$(FILE)" ] || { echo "usage: make kb-upload H=h1|h2 FILE=<path in repo>"; exit 1; }
+	$(if $(filter h2,$(H)),$(H2_ENV)) $(DOCKER_USER) $(if $(filter h2,$(H)),$(H2_COMPOSE),$(COMPOSE)) \
+		--profile tools run --rm --no-deps tools python -m cli.kb_upload --embedder bge --file "$(FILE)"
 
 # Read-only: is the running demo healthy and started in the right order? Exit 0 = ready.
 demo-check:

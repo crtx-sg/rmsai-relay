@@ -117,8 +117,24 @@ def answer_from_steps(row: dict, etype: str, *, spoken: bool, question: str) -> 
     return ProtocolAnswer(text, [f"protocol:{row.get('protocol')}"])
 
 
-def answer_from_sections(hits, etype: str, *, spoken: bool, question: str) -> ProtocolAnswer | None:
-    """The protocol document that covers `etype` best, its matching sections in relevance order."""
+def hospital_docs(upload_dir: str | None) -> frozenset[str]:
+    """Names of this hospital's uploaded documents (the `cli.kb_upload` managed copies); their chunks
+    carry the file name as `doc_id`. Listed per question, so a new upload counts without a restart.
+    shortcut: an upload made with `--no-keep` has no copy here and is not preferred; fine while every
+    hospital document goes through `make kb-upload`."""
+    from common.hospital_config import resolve_dir  # noqa: PLC0415
+
+    try:
+        return frozenset(p.name for p in resolve_dir(upload_dir).iterdir() if p.is_file()) \
+            if upload_dir else frozenset()
+    except OSError:
+        return frozenset()
+
+
+def answer_from_sections(hits, etype: str, *, spoken: bool, question: str,
+                         preferred: frozenset[str] = frozenset()) -> ProtocolAnswer | None:
+    """The protocol document that covers `etype` best, its matching sections in relevance order.
+    A `preferred` document (the hospital's own) beats the shared `docs/` whenever it covers `etype`."""
     found = [h for h in hits if not str(h.source).startswith("report:")
              and event_type_from_text(_heading(h.source)) == etype and section_points(h.text)]
     wanted = [w for w in _SECTION_WORDS if w in _plain(question)]
@@ -131,7 +147,7 @@ def answer_from_sections(hits, etype: str, *, spoken: bool, question: str) -> Pr
     for h in found:  # hits arrive best first; keep that order within a document
         if all(h.source != o.source for o in by_doc.get(h.doc_id, [])):
             by_doc.setdefault(h.doc_id, []).append(h)
-    doc = max(by_doc, key=lambda d: (len(by_doc[d]), max(h.score for h in by_doc[d])))
+    doc = max(by_doc, key=lambda d: (d in preferred, len(by_doc[d]), max(h.score for h in by_doc[d])))
     # Document order (headings are numbered/titled), not relevance: "the rest" must follow on.
     sections = sorted(by_doc[doc], key=lambda h: _heading(h.source))
     points = [(_heading(h.source), p) for h in sections for p in section_points(h.text)]

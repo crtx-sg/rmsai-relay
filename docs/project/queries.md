@@ -124,14 +124,14 @@ a button opens the Events tab with the same rows. A listing with a target that c
 
 | Ask | Answer |
 |---|---|
-| "What is the protocol to handle ventricular tachycardia?" · "protocol for PVC" · "how do you manage AFib with RVR?" · "what about its long-term management?" · "go on" / "the full protocol" | No LLM. The rhythm's structured care-protocol steps (`common/protocols/care_protocols.yaml`; only AFib-RVR today, used only when the question says "RVR" or "rapid ventricular response"), else that rhythm's sections from one protocol document, read verbatim. Spoken: 3 points, then what is left; "the rest" continues, a section word ("long-term") picks the section. A rhythm with no structured steps and no document section (PAC, LBBB): "No protocol for PAC is documented in the knowledge base, so its management is not known here." No LLM. |
+| "What is the protocol to handle ventricular tachycardia?" · "protocol for PVC" · "how do you manage AFib with RVR?" · "what about its long-term management?" · "go on" / "the full protocol" | No LLM. The rhythm's structured care-protocol steps (the hospital's `protocols.file`, default `common/protocols/care_protocols.yaml`; only AFib-RVR today, used only when the question says "RVR" or "rapid ventricular response"), else that rhythm's sections from one protocol document (the hospital's own upload ahead of the shared `docs/`), read verbatim. Spoken: 3 points, then what is left; "the rest" continues, a section word ("long-term") picks the section. A rhythm with no structured steps and no document section (PAC, LBBB): "No protocol for PAC is documented in the knowledge base, so its management is not known here." No LLM. |
 | "what is the rate control for AFib?" · "what does the critical alarm SOP say?" · "how is hyperkalaemia escalated?" | Cited answer from the documents |
 | "When should I escalate a MEWS score?" | Escalation rules from the MEWS document |
 | "What does a MEWS of 5 mean?" | Band from the same scorer that rates alerts ("high risk") + the document's escalation rule. No LLM. |
 | A general question that names a vital or the ECG ("what is the target oxygen saturation in COPD?" · "how should patients with low blood pressure be managed?" · "how do I reduce motion artifact on the ECG?") | A documents answer, even on a call, never this patient's numbers |
 | A topic no document covers ("how do you treat sepsis?", "capital of France") | "I don't have information on that in the knowledge base." |
 
-New SOPs and guidelines become answerable once uploaded (`cli.kb_upload`).
+New SOPs and guidelines become answerable once uploaded (`make kb-upload H=h1|h2 FILE=...`), for that hospital only.
 
 ## 7. Safety
 
