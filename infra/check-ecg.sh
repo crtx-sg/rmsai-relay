@@ -62,14 +62,18 @@ else
   # Running app containers (any profile) keep the image they were created from until recreated.
   app_image=rmsai-relay/app:local
   want=$(docker image inspect -f '{{.Id}}' "$app_image" 2>/dev/null)
-  for id in $(docker ps -q --filter "label=com.docker.compose.project=infra"); do
-    [ "$(docker inspect -f '{{.Config.Image}}' "$id")" = "$app_image" ] || continue
-    svc=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$id")
-    if [ "$(docker inspect -f '{{.Image}}' "$id")" = "$want" ]; then
-      ok "$svc" "running the current image"
-    else
-      bad "$svc" "running an older image -> make demo-up (or demo-phone-up) to recreate it"
-    fi
+  # Both hospital stacks: h2 (infra-h2) kept an old image after a rebuild while h1 was recreated.
+  for proj in infra infra-h2; do
+    for id in $(docker ps -q --filter "label=com.docker.compose.project=$proj"); do
+      [ "$(docker inspect -f '{{.Config.Image}}' "$id")" = "$app_image" ] || continue
+      svc=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$id")
+      [ "$proj" = infra ] || svc="$proj/$svc"
+      if [ "$(docker inspect -f '{{.Image}}' "$id")" = "$want" ]; then
+        ok "$svc" "running the current image"
+      else
+        bad "$svc" "running an older image -> make demo-phone-up (recreates h1 and h2)"
+      fi
+    done
   done
 fi
 
