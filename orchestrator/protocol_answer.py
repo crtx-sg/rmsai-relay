@@ -131,12 +131,19 @@ def hospital_docs(upload_dir: str | None) -> frozenset[str]:
         return frozenset()
 
 
+def _rhythm(hit) -> str | None:
+    """The rhythm a section is about: its heading's, else its document's name. `afib_rvr.md`'s
+    "Rate control" and a PDF's "page 2" name no rhythm; the file name does."""
+    return (event_type_from_text(_heading(hit.source))
+            or event_type_from_text(re.sub(r"[_\-.]+", " ", str(hit.doc_id))))
+
+
 def answer_from_sections(hits, etype: str, *, spoken: bool, question: str,
                          preferred: frozenset[str] = frozenset()) -> ProtocolAnswer | None:
     """The protocol document that covers `etype` best, its matching sections in relevance order.
     A `preferred` document (the hospital's own) beats the shared `docs/` whenever it covers `etype`."""
     found = [h for h in hits if not str(h.source).startswith("report:")
-             and event_type_from_text(_heading(h.source)) == etype and section_points(h.text)]
+             and _rhythm(h) == etype and section_points(h.text)]
     wanted = [w for w in _SECTION_WORDS if w in _plain(question)]
     if wanted:
         found = [h for h in found

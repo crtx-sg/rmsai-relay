@@ -355,8 +355,10 @@ graph and Qdrant on every question.
    shared `docs/` one for every rhythm it covers.
 
 Writing the document:
-- **Each section heading must name the rhythm** (`## Stable ventricular tachycardia`): only sections
-  whose heading names the asked rhythm are read out.
+- **Say which rhythm each section is about.** A section counts for a rhythm when its heading names
+  it (`## Stable ventricular tachycardia`); a heading that names none (`## Rate control`, a PDF's
+  pages) takes the rhythm from the **file name**. So a one-rhythm document only needs the rhythm in
+  its file name (`vt_sop.pdf`, `afib_rvr.md`); a document covering several needs it in each heading.
 - **One point per bullet or paragraph**: each is read as one sentence. A call reads 3, then offers
   "the rest".
 - Heading words *acute*, *emergency*, *stable*, *unstable*, *pulseless*, *long-term*, *chronic*,

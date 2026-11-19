@@ -93,6 +93,23 @@ def test_hospital_docs_lists_the_upload_folder(tmp_path):
     assert pa.hospital_docs("") == frozenset()
 
 
+def test_a_section_naming_no_rhythm_takes_its_documents_name():
+    # afib_rvr.md's "Rate control" and a PDF's "page 2" name no rhythm; the file name does.
+    hits = [SearchHit(text="Rate control\n- Beta-blocker IV.", source="afib_rvr.md#Rate control",
+                      doc_id="afib_rvr.md", score=0.9),
+            SearchHit(text="page 2\n- Synchronized cardioversion if unstable.",
+                      source="vt_sop.pdf#page 2", doc_id="vt_sop.pdf", score=0.8),
+            SearchHit(text="Scoring\n- MEWS 5 or more: call.", source="mews_escalation.md#Scoring",
+                      doc_id="mews_escalation.md", score=0.95)]
+    af = pa.answer_from_sections(hits, "ATRIAL_FIBRILLATION", spoken=True, question="AFib protocol")
+    assert af and "Beta-blocker IV." in af.text and "MEWS" not in af.text
+    vt = pa.answer_from_sections(hits, "VENTRICULAR_TACHYCARDIA", spoken=True, question="VT protocol")
+    assert vt and "cardioversion" in vt.text and vt.citations == ["vt_sop.pdf#page 2"]
+    # a heading that names a rhythm still wins over the file name
+    assert pa.answer_from_sections(_HITS, "SVT", spoken=True, question="SVT protocol").citations == [
+        "p.md#2. Supraventricular Tachycardia (SVT) Protocol › Acute"]
+
+
 # --- orchestrator: no LLM call, follow-ups, other questions untouched ----------------------------
 
 class _NoLLM:
