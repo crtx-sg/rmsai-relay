@@ -72,5 +72,25 @@ def test_cli_connection_env_is_pinned_to_the_worker_server():
     env = {"LIVEKIT_URL": "ws://localhost:7880", "LIVEKIT_API_KEY": "devkey",
            "LIVEKIT_API_SECRET": "local-secret"}
     pin_cli_connection_env(worker_config("phone", _SPLIT), env)
-    assert env == {"LIVEKIT_URL": "wss://voiceapptest.livekit.cloud", "LIVEKIT_API_KEY": "APIcloud",
-                   "LIVEKIT_API_SECRET": "cloud-secret"}
+    assert {k: env[k] for k in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET")} == {
+        "LIVEKIT_URL": "wss://voiceapptest.livekit.cloud", "LIVEKIT_API_KEY": "APIcloud",
+        "LIVEKIT_API_SECRET": "cloud-secret"}
+
+
+def test_phone_ack_push_targets_the_app_server_not_cloud():
+    # live 2026-11-19: the call process inherits the pinned env, so its DEFAULT is Cloud and the
+    # ack push to rmsai-inbox-h1 failed with TwirpError (that room exists only on the app server)
+    from dataclasses import replace  # noqa: PLC0415
+
+    from voice.livekit_agent import app_server_config, pin_cli_connection_env
+
+    env = {"LIVEKIT_URL": "ws://localhost:7880", "LIVEKIT_API_KEY": "devkey",
+           "LIVEKIT_API_SECRET": "local-secret"}
+    pin_cli_connection_env(worker_config("phone", _SPLIT), env)
+    pin_cli_connection_env(worker_config("phone", _SPLIT), env)  # a second pin keeps the app values
+    polluted = replace(_SPLIT, livekit_url=env["LIVEKIT_URL"], livekit_api_key=env["LIVEKIT_API_KEY"],
+                       livekit_api_secret=env["LIVEKIT_API_SECRET"])
+    app = app_server_config(polluted, env)
+    assert (app.livekit_url, app.livekit_api_key, app.livekit_api_secret) == (
+        "ws://localhost:7880", "devkey", "local-secret")
+    assert app_server_config(_SPLIT, {}) == _SPLIT  # app worker / no pin: unchanged

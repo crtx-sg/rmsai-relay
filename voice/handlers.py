@@ -14,7 +14,7 @@ import time
 from abc import ABC, abstractmethod
 
 from common.audit import AuditLog
-from common.config import DEFAULT
+from common.config import DEFAULT, Config
 from common.schemas import ChatTurn
 from voice.auth import PinAuthGate, parse_pin
 from voice.outbound import is_plain_no, is_question, parse_ack
@@ -47,15 +47,16 @@ _FILLER = re.compile(
     r"\[[^\]]*\]|\([^)]*\))\W*)+$", re.IGNORECASE)
 
 
-def push_ack_to_app(event_id: str, publisher=None) -> bool:
+def push_ack_to_app(event_id: str, publisher=None, config: Config | None = None) -> bool:
     """Tell the open apps the event was acknowledged on the phone, as `/ack` does for an app ack:
     else they keep showing it as new with an Acknowledge button. The inbox room is on the app
-    LiveKit (`DEFAULT`), not the telephony one. Best effort: False if the push failed."""
+    LiveKit (`config`, from `voice.livekit_agent.app_server_config` in a phone worker), not the
+    telephony one. Best effort: False if the push failed."""
     try:
         if publisher is None:
             from live.inbox import InboxPublisher  # noqa: PLC0415
 
-            publisher = InboxPublisher.from_config(DEFAULT)
+            publisher = InboxPublisher.from_config(config or DEFAULT)
         publisher.publish_status(event_id, "acknowledged")
         return True
     except Exception as exc:  # noqa: BLE001 - the ack is recorded; only the app's view lags

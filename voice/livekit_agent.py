@@ -23,6 +23,7 @@ turn-taking logic is covered via stub adapters in `voice/session.py`, and the sp
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import logging
 import os
 import re
@@ -451,7 +452,8 @@ def resolve_handler(room_name: str, alert_store, *, mode: str = "orchestrator"):
         queue = CallQueue(alert_store.redis)
         handler, greeting, cleanup = build_outbound_handler(
             alert, embedder=embedder, llm=llm, on_answered=queue.mark_answered,
-            on_locked=queue.mark_locked, on_acked=push_ack_to_app)
+            on_locked=queue.mark_locked,
+            on_acked=partial(push_ack_to_app, config=app_server_config()))
         try:
             alert_store.delete(room_name)
         except Exception:  # noqa: BLE001
@@ -1272,9 +1274,25 @@ def pin_cli_connection_env(config: Config, environ=None) -> None:
     of the telephony one (its banner says Cloud; its "registered worker" line says localhost).
     """
     environ = os.environ if environ is None else environ
-    environ["LIVEKIT_URL"] = config.livekit_url
-    environ["LIVEKIT_API_KEY"] = config.livekit_api_key
-    environ["LIVEKIT_API_SECRET"] = config.livekit_api_secret
+    for key, value in (("LIVEKIT_URL", config.livekit_url), ("LIVEKIT_API_KEY", config.livekit_api_key),
+                       ("LIVEKIT_API_SECRET", config.livekit_api_secret)):
+        # call processes inherit this env, so keep the app server's value for `app_server_config`
+        environ.setdefault(_APP_ENV + key, environ.get(key, ""))
+        environ[key] = value
+
+
+_APP_ENV = "RMSAI_APP_"
+
+
+def app_server_config(config: Config = DEFAULT, environ=None) -> Config:
+    """`config` pointed at the app LiveKit (the inbox rooms), even in a phone worker's call process,
+    whose `DEFAULT` reads the Cloud values `pin_cli_connection_env` wrote: the phone ack push went to
+    Cloud and failed with TwirpError (live 2026-11-19)."""
+    environ = os.environ if environ is None else environ
+    saved = {field: environ.get(_APP_ENV + key) for field, key in (
+        ("livekit_url", "LIVEKIT_URL"), ("livekit_api_key", "LIVEKIT_API_KEY"),
+        ("livekit_api_secret", "LIVEKIT_API_SECRET"))}
+    return replace(config, **{f: v for f, v in saved.items() if v})
 
 
 def build_worker_options(config: Config | None = None):
