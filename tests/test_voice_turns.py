@@ -296,3 +296,36 @@ def test_bed_event_summary_lists_every_rhythm():
     assert _spoken_summary(rows, "event_status_on_bed") == (
         "Bed 2, patient PT998224: 4 events — ventricular tachycardia twice, ventricular "
         "fibrillation, atrial fibrillation. 2 unacknowledged.")
+
+
+# --- wait_until_call_ends: only a missing room means the call is over (2026-11-19 audit) ---------
+
+def test_a_livekit_blip_does_not_end_the_wait(monkeypatch):
+    import livekit.api as lkapi  # noqa: PLC0415
+    from livekit.api.twirp_client import TwirpError  # noqa: PLC0415
+    from livekit.protocol.models import ParticipantInfo as P  # noqa: PLC0415
+
+    from voice import livekit_cloud  # noqa: PLC0415
+
+    replies = [ConnectionError("blip"), TwirpError("unavailable", "5xx", status=503),
+               [P.Kind.SIP, P.Kind.AGENT], TwirpError("not_found", "no room", status=404)]
+    polls = []
+
+    class _Room:
+        async def list_participants(self, _req):
+            polls.append(1)
+            r = replies.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return type("R", (), {"participants": [type("p", (), {"kind": k}) for k in r]})
+
+    class _API:
+        def __init__(self, **_k):
+            self.room = _Room()
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(lkapi, "LiveKitAPI", _API)
+    livekit_cloud.wait_until_call_ends("rmsai-outbound-x", max_s=30, poll_s=0)
+    assert len(polls) == 4 and not replies  # kept polling through both errors; ended on not_found

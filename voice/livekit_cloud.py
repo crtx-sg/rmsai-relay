@@ -99,6 +99,14 @@ def call_still_up(participant_kinds) -> bool:
     return ParticipantInfo.Kind.SIP in set(participant_kinds)
 
 
+def room_is_gone(exc: Exception) -> bool:
+    """True only when LiveKit says the room no longer exists. Any other error (a network blip, a
+    5xx from LiveKit Cloud) says nothing about the call, which may still be live."""
+    from livekit.api.twirp_client import TwirpError, TwirpErrorCode  # noqa: PLC0415
+
+    return isinstance(exc, TwirpError) and exc.code == TwirpErrorCode.NOT_FOUND
+
+
 def wait_until_call_ends(
     room: str, *, config: Config = DEFAULT, max_s: float | None = None, poll_s: float = 2.0,
 ) -> float:  # pragma: no cover - needs a live LiveKit server
@@ -119,13 +127,21 @@ def wait_until_call_ends(
         lk = api.LiveKitAPI(url=_http_url(config.livekit_url), api_key=config.livekit_api_key,
                             api_secret=config.livekit_api_secret)
         try:
+            warned = False
             while time.monotonic() - started < cap:
                 try:
                     res = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
-                except Exception:  # noqa: BLE001 - room closed/not found: the call is over
-                    return
-                if not call_still_up(p.kind for p in res.participants):
-                    return
+                except Exception as exc:  # noqa: BLE001 - classified below
+                    if room_is_gone(exc):
+                        return
+                    # Not "over": ending the wait here would dial the next call onto a live line.
+                    if not warned:
+                        print(f"[calls] LiveKit error while waiting for {room} to end "
+                              f"({type(exc).__name__}); still waiting", flush=True)
+                        warned = True
+                else:
+                    if not call_still_up(p.kind for p in res.participants):
+                        return
                 await asyncio.sleep(poll_s)
         finally:
             await lk.aclose()
