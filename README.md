@@ -185,7 +185,7 @@ over SignalWire work end to end, and phone call-in was verified live on 2026-10-
 | — | Real-ECG model `real_v2` (13-class 5-fold ensemble) + ecg_sigma HDF5 reader | ✅ |
 | — | Held-out real-ECG curation (`cli.real_samples`, `PT9#####` pseudonyms) + `cli.ingest --dir` scoring | ✅ |
 | T1–T4 | Telephony split: `Config.telephony()`, `cli.sip_setup`, call paths → telephony LiveKit, phone worker (`make phone-up`) | ✅ |
-| T5 | SMS fallback on unanswered calls (a pickup with no PIN counts as unanswered; a PIN lockout is not texted): SignalWire (`--notifier signalwire`, same number as the calls; `make demo-phone-up` default); a simulated SMS is recorded as `sms_simulated`, never as delivered | ✅ test SMS delivered to +91 (2026-10-13) |
+| T5 | SMS fallback on unanswered calls (a pickup with no "yes" (or no PIN with `require_pin: true`) counts as unanswered; a PIN lockout is not texted): SignalWire (`--notifier signalwire`, same number as the calls; `make demo-phone-up` default); a simulated SMS is recorded as `sms_simulated`, never as delivered | ✅ test SMS delivered to +91 (2026-10-13) |
 | C1–C2 | SignalWire carrier: `TELEPHONY_CARRIER`, native SIP trunk via `cli.sip_setup` (`--swml`) | ✅ outbound (2026-10-12) and call-in (2026-10-13) verified live |
 | — | Call queue: app gets every event at once, calls one at a time in severity order, skip-if-acked, restart-safe (`orchestrator/call_queue.py`, `make demo-phone-up`) | ✅ |
 | — | Live-call hardening (2026-10-28/29): each redial in a fresh room, hang up and ring again after a LiveKit reconnect, keypad PIN, protocol answers verbatim (undocumented rhythm: "not known"), deteriorating-vitals and who-is-on-bed answers | ✅ unit-tested; fresh-room retry and keypad PIN not yet verified live |
@@ -194,7 +194,7 @@ over SignalWire work end to end, and phone call-in was verified live on 2026-10-
 | — | Voice on select: header toggle, muted by default in `app+call` so a clinician on the phone alert doesn't hear the event twice (`/select-silent`) | ✅ |
 | — | KB chunks cite their parent heading (`file#Parent › Child`); horizontal rules are not content | ✅ |
 | H1–H3 | Event history: one `pending` definition, `list_events` + `cli.events` (`--ask`), verifiable voice/chat listings that state their filter (or decline), app **Events** tab (`POST /events`, merges model performance), worklist backfill on login, chat → Events-tab link | ✅ |
-| D1 | Demo feedback (2026-11): outbound calls confirm with a spoken "yes" instead of the PIN (`outbound.require_pin`, default false; voicemail can't trigger it); "acknowledge it?" counts as an ack | ✅ verified live (2026-11-04) |
+| D1 | Demo feedback (2026-11): outbound calls confirm with a spoken "yes" instead of the PIN (`outbound.require_pin`, default false; voicemail words block it); "acknowledge it?" counts as an ack | ✅ verified live (2026-11-04) |
 | D2 | **Simulate** tab + `cli.simulate`: N (≤10) held-out ecg_sigma alarms, FP % NORMAL_SINUS, the rest call-worthy (AF/AFL/SVT/VT/VF); per-run results, run bars on Worklist/Events, run history with Wilson 95 % rates (`data/simulate/runs.jsonl`); h1's app is the console (`SIMULATE_CONSOLE`) | ✅ |
 | D3 | Second hospital stack **h2** (`infra/h2.env`, project `infra-h2`, app :8090): own stores/consumer/workers/number, shares h1's LiveKit; parallel calls; Simulate splits runs by patient; hospital badge + cross-links; `make phone-transcript HOSPITAL=h1\|h2\|all` | ✅ live (both stacks); two different phones not yet tested |
 | D4 | h2 speaks its alert in **Japanese** (`outbound.alert_language: ja`, ElevenLabs Sakura, fixed templates); the caller still answers in English | ✅ verified live (2026-11-04) |
@@ -263,7 +263,8 @@ The router's results vary a little between runs:
 - No PHI in logs (redacting logger; patients referenced by pseudonym only).
 - De-identification asserted on model inputs in tests; **fails closed** (no LLM call on de-id error).
 - Caller confirmation enforced before any PHI is voiced (outbound: a short spoken "yes" from a live
-  listener, so a voicemail never hears the alert; call-in and the app: the PIN); the graph is queried only through fixed,
+  listener: voicemail words block it and the agent hangs up, with one known limit, a greeting that
+  starts with a bare "Hello." (docs/project/queries.md); call-in and the app: the PIN); the graph is queried only through fixed,
   read-only, parameterized templates (the LLM router can only pick one), and raw Cypher in the
   `cli.graph lookup` dev path is refused unless read-only.
 - Append-only **JSONL audit log** from Phase 0: `{ts, actor, action, subject(pseudonym), outcome}`

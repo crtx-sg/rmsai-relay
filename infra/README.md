@@ -23,7 +23,7 @@ The source is **bind-mounted**, so a code edit needs `make docker-restart` (cons
 phone worker and gateway, of h1 and h2; refused while a call is in progress), not a rebuild. The image
 carries only the environment: the venv with every extra, the vendored `ecgtranscnn`, and the spaCy
 model Presidio needs. `external/ecgtranscnn/` is gitignored but required at **build** time — clone it
-before the first `docker-build` (pin: `bac4a01`).
+before the first `docker-build` (pin: `a843ccf`).
 
 Model **weights** are not baked into the image and are not needed to build it — `models/**/*.pt`
 is gitignored upstream, so the clone carries none. Because the repo is bind-mounted, running

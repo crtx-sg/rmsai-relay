@@ -4,8 +4,11 @@ Parses curated care protocols from external YAML/JSON into `CareProtocol`/`Proto
 and renders each to citable narrative text. The graph + vector **writes** are wired in Phase 2B;
 Phase 0 freezes the schema, the parser, and the matcher so the config format is stable.
 
-A protocol is matched on `event_type` + vital conditions + minimum severity (most-specific-wins,
-with a default fallback) — not event type alone.
+Matching today is by `event_type` only (`care_protocol_steps`), plus the RVR rule in
+`orchestrator.protocol_answer.steps_apply` (a "rapid ventricular response" protocol answers only
+questions naming it). `vital_conditions` and `min_severity` are parsed and stored but not yet applied:
+the most-specific-wins matcher (`find_default` is its fallback half) is the frozen design, not the
+running behaviour.
 """
 
 from __future__ import annotations

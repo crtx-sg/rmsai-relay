@@ -34,6 +34,11 @@ artifact links in inbox messages resolve here.
   listings): every stored event, filtered by status/patient/bed/type/criticality/time. **Labelled
   only** adds per-model tiles with 95 % intervals, the confusion matrix and the per-class table. Rendering is tested in Node against a stub DOM (`tests/test_app_render.py`).
 
+- **Simulate tab** — `POST /simulate` (h1's app with two hospitals): real held-out ECG alarms onto
+  the bus, live call progress (`/simulate/progress`), run history (`/simulate/history`), and a
+  step-by-step **What it did** log of each finished run. Inputs are checked before sending.
+- **Reconnect** — after a dropped connection comes back, the pending worklist is fetched again
+  (rows are push-only, so alerts sent during the drop would otherwise be missing).
 - **Theme toggle** — header button switches a black or white background (default follows the OS;
   the choice is kept in this browser's localStorage, best-effort).
 - **Trend evidence** — in the detail panel, each deteriorating vital shows its change, time span,

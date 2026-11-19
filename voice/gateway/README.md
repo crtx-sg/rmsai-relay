@@ -4,7 +4,7 @@ The telephony edge: how a phone call reaches a LiveKit room, where the agent
 (`voice/livekit_agent.py`) runs STT → handler → TTS. This file is the engineering summary.
 - Full call flows with sequence diagrams: [ARCHITECTURE.md § Telephony split](../../ARCHITECTURE.md#telephony-split--phone-calls-on-a-second-livekit).
 - SignalWire setup, step by step: [TELEPHONY_SETUP.md](../../TELEPHONY_SETUP.md).
-- Configuration reference: [README § Phone calls](../../README.md#phone-calls-livekit-cloud--signalwire).
+- Configuration reference: [TELEPHONY_SETUP § Phone calls](../../TELEPHONY_SETUP.md#phone-calls-livekit-cloud--signalwire).
 
 ## Architecture (telephony split)
 

@@ -14,5 +14,7 @@ same text into the graph, onto shared nodes. Kept deliberately small and determi
 and evaluation are reproducible.
 
 `samples/` holds documents that are **not** part of that corpus: synthetic reference material for
-exercising the `cli.kb_upload` path end-to-end. Because the glob is non-recursive they are only in
+exercising the `cli.kb_upload` path end-to-end, including the SVT/PVC protocols the demo uploads
+(`arrhythmia_combined_protocol.md`, `acute_emergency_care_protocol.md`,
+`long_term_management_protocol.md`; DEMO.md §2). Because the glob is non-recursive they are only in
 the KB if you upload them, which is the point — see TESTING.md §3a.

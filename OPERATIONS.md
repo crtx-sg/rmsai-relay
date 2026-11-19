@@ -113,66 +113,11 @@ or fails to load stops `cli.ingest` with an error instead of falling back.
 
 ##### Curating a held-out real-ECG demo set (`cli.real_samples`)
 
-> The full demo walkthrough, including every `pick` flag, lives in [`DEMO.md`](DEMO.md#3-curate-a-held-out-real-ecg-set-real-samples).
-
-A converted record is hundreds of windows, most of them in the split `real_v2` was **trained** on,
-and many carry no usable label. `cli.real_samples` picks a small, labelled, **held-out** set out of
-the ecg_sigma training package instead and writes it as reader-ready HDF5:
-
-```bash
-# which labels the package's test split can supply (default package: ECGPKG_DIR, else
-# ../ecg_sigma/packages/ecg_pkg_v2)
-uv run python -m cli.real_samples list
-
-# pick events by class; test split only; a new random seed each run, printed in the summary
-# (--seed N repeats a draw); writes data/real/<record>.h5, replacing earlier pick files there
-uv run python -m cli.real_samples pick \
-    --pick VENTRICULAR_TACHYCARDIA:3,VENTRICULAR_FIBRILLATION:2,ATRIAL_FIBRILLATION:3,PVC:2,NORMAL_SINUS:2
-
-# feed the whole set: --dir ingests every *.h5; add --emit bus to drive the consumer/app/call path
-uv run python -m cli.ingest --dir data/real
-```
-
-```
-{"patient": "PT992591", "event_type": "VENTRICULAR_TACHYCARDIA", "confidence": 0.497, "criticality": "Critical", "ground_truth": "VENTRICULAR_TACHYCARDIA", …}
-{"patient": "PT952625", "event_type": "SVT", "confidence": 0.538, "criticality": "High", "ground_truth": "ATRIAL_FIBRILLATION", …}
-{"summary": {"events": 12, "scored": 12, "correct": 9, "accuracy": 0.75, …, "model": "checkpoint"}}     # stderr
-```
-
-- **One output file per source record.** A file carries one `patient_id`, so subjects are never
-  merged. The patient is a stable `PT9#####` pseudonym derived from the subject, never the record
-  id, because the app inbox refuses non-pseudonyms. The source id is kept on `/metadata`.
-- **Ground truth is the manifest label**, written to each event's `condition` attr (ecg_sigma's own
-  raw annotation is kept as `source_condition`). `cli.ingest` prints the scored summary to stderr
-  whenever events carry a known class, simulator files included.
-- **Package ↔ model check.** "Held out" only means something relative to the package the checkpoint
-  was trained on, so `pick` compares the package manifest with the one recorded in
-  `ECG_CHECKPOINTS` (or `--checkpoint`) and refuses a mismatch unless `--allow-mismatch`.
-  `--split train|val` works but warns that the numbers are not a performance estimate.
-- **A 12-event set is a demo, not an evaluation.** For performance use upstream
-  `models/real_v2/reports/test.md`.
-- **Docker:** `tools` does not see `../ecg_sigma`, so use the `real-samples` service. It mounts
-  `ECGPKG_HOST_DIR` (default: the sibling `ecg_sigma/packages`) read-only at `/ecgpkg`, uses
-  `ECGPKG_NAME` (default `ecg_pkg_v2`) inside it, and fails loudly if the folder is missing. Both
-  are Compose settings: export them in the shell (an absolute path is safest), not in `.env`.
-  Output lands in the mounted `data/`:
-
-  ```bash
-  docker compose -f infra/docker-compose.yml run --rm real-samples list
-  docker compose -f infra/docker-compose.yml run --rm real-samples pick --pick VENTRICULAR_TACHYCARDIA:2,ATRIAL_FIBRILLATION:2
-  $RMSAI cli.ingest --dir data/real --emit bus
-  ```
-
-  Two things must hold:
-  1. `ECG_CHECKPOINTS` is set in `.env` (the containers read `.env`, not your shell); if it is
-     unset, every prediction comes from the **stub**, flagged by `"model": "stub"` plus a WARNING.
-  2. The image was built **after** the vendored pin moved to `bac4a01`. An older image lacks
-     `ecg_transcovnet.checkpoint`, so `cli.ingest` stops with `failed to load ECG checkpoint: …`. Fix it with
-     `make docker-build`, then `make docker-up` so running services pick up the new image.
-- **Only the ECG (and HR) is real.** Per ecg_sigma's README: PPG/RESP/RespRate are derived from the
-  ECG, and Pulse/SpO2/BP/Temp are invented, SpO2/BP from *condition-keyed* ranges. So MEWS and
-  vitals-driven criticality on these events partly echo the label rather than the patient. On
-  MIT-BIH only leads II and V1 are recorded; the other limb leads are computed from them.
+`cli.real_samples` picks a small, labelled, **held-out** set (the test split of the ecg_sigma
+training package the model was **not** trained on) and writes it as reader-ready HDF5 under
+`data/real/`. The Simulate tab uses the same picker. Every command and `pick` flag is in
+[`DEMO.md` §3](DEMO.md#3-curate-a-held-out-real-ecg-set-real-samples), and the full command reference
+is [`docs/project/commands.md`](docs/project/commands.md).
 
 ### 2. Build and start
 
@@ -385,7 +330,9 @@ Writing the document:
        - { order: 3, kind: medication, drug: "amiodarone per local policy", route: IV }
    ```
    `kind` is one of `test`, `vitals_check`, `medication`, `escalation`, `monitoring`; `event_type`
-   is one of the 16 model classes, or `*` for the fallback.
+   is one of the 16 model classes, or `*` for the fallback. Only `event_type` picks the protocol
+   today: `vital_conditions` and `min_severity` are stored but not applied, and a title containing
+   "rapid ventricular response" is read only when the question names RVR.
 2. Point the hospital at it in `config/hospitals/<id>.yaml`:
    ```yaml
    protocols:
@@ -600,7 +547,8 @@ phone stays connected, and a re-dispatched agent joins the room as an inbound KB
 
 ```bash
 docker compose -f infra/docker-compose.yml down -v      # ⚠️ ALSO deletes graph + vectors + model cache (shared with h2)
-docker compose -f infra/docker-compose.yml -p infra-h2 --profile telephony down -v   # h2's graph + vectors only
+docker compose -f infra/docker-compose.yml -p infra-h2 --profile telephony down   # h2 only; then, to wipe its stores:
+docker volume rm infra-h2_neo4j_data infra-h2_qdrant_data   # NOT `down -v`: that also deletes the shared model cache (infra_hf_cache)
 docker compose -f infra/docker-compose.yml stop consumer   # stop one service
 docker compose -f infra/docker-compose.yml restart voice-worker
 ```

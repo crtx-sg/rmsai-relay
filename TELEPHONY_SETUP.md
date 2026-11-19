@@ -300,7 +300,9 @@ What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-
 **Outbound alert (`cli.consume --transport sip`; the same dial for `cli.call --caller livekit`):**
 0. The consumer gates the event (`should_call`), pushes it to the app worklist straight away, and
    **queues the call** (Redis `rmsai:calls:*`, highest criticality first, then first-come). One
-   dispatcher places queued calls one at a time, each waiting for the previous hang-up. A queued
+   dispatcher places queued calls one at a time, each waiting for the previous hang-up plus 10 s;
+   between ring attempts a waiting higher-criticality call goes first (the retried one keeps its
+   place), and an event acknowledged meanwhile stops ringing. A queued
    call is skipped if the event was acknowledged (e.g. in the app) while it waited, and an unfinished
    call is re-queued after a consumer restart. Restart the consumer or phone worker only when no call
    is up: mid-call, the worker dies before it hangs up and the phone stays connected. Log lines: `[queued] … call N in queue`, `[calls]

@@ -30,7 +30,9 @@ protocols and the patient's record.
 
 **2. Alerting: the clinician is phoned automatically**
 - Real outbound calls over the public phone network.
-- The clinician says "yes" or "hello" to hear the alert; an answering machine never hears it.
+- The clinician says "yes" or "hello" to hear the alert. Voicemail words ("leave a message",
+  "forwarded", "beep") block it and the agent hangs up; known limit: a greeting that starts with a
+  bare "Hello." ([queries.md](docs/project/queries.md)).
 - A spoken summary: patient, bed, rhythm, severity and key vitals.
 - Calls queue by severity, most urgent first; an event already acknowledged is skipped.
 - Unanswered calls are retried, then an SMS goes out; dropped calls are redialled.
@@ -43,7 +45,7 @@ protocols and the patient's record.
   patients?" (full list: [queries.md](docs/project/queries.md)).
 - Answers cite their sources; if the system doesn't know, it says so instead of guessing.
 - The caller can interrupt; noise is ignored; it repeats on request ("sorry?", "pardon?") and
-  replays the alert if it was cut off.
+  replays the alert once per call if it was cut off.
 - Works from a phone call, a call-in line or text chat in the app.
 
 **4. Knowledge base**
@@ -201,10 +203,18 @@ Both stores start empty. `cli.kb_eval` (seeding) and the graph tests reset the g
 
 ```bash
 $RMSAI cli.graph migrate                                   # {"migrated": true}
-$RMSAI cli.graph protocols                                 # {"protocols_loaded": 2}
+$RMSAI cli.graph protocols                                 # {"protocols_loaded": 2, "file": "common/protocols/care_protocols.yaml"}
 $RMSAI cli.graph extract --dir docs                        # doc entities onto shared nodes
 $RMSAI cli.kb_vector --embedder bge index --dir docs       # clinical corpus -> Qdrant
 $RMSAI cli.kb_upload --file docs/samples/critical_alarm_sop.md   # optional: a sample SOP to cite
+```
+
+The shared `docs/` cover VT/VF, AFib with RVR and MEWS only. For **SVT and PVC** protocol answers
+(and the acute / long-term sections), upload the sample protocols into each hospital:
+
+```bash
+for f in arrhythmia_combined_protocol acute_emergency_care_protocol long_term_management_protocol; do
+  make kb-upload H=h1 FILE=docs/samples/$f.md; make kb-upload H=h2 FILE=docs/samples/$f.md; done
 ```
 
 With a second hospital, load **its** KB the same way once, before any h2 events: `make h2-kb`.
@@ -386,7 +396,10 @@ While a run is going, a progress bar and status line show two steps: **1** picki
 classifying the samples (seconds elapsed), then **2** the calls, read every 3 s from each
 hospital's call queue ("calls 1 of 3 over · on the phone now: h2 · 1 waiting"), with each
 event's **Call now** column: waiting in queue, on the phone, answered, or ended without a "yes"
-(redialled, then texted). **Refresh** next to *All runs* reloads the history. To follow the same
+(redialled, then texted). Once the run is published, **What it did (step by step)** under the
+table spells it out: the seed and class mix drawn, the package, which hospital got each file, and
+for each event its label, the model's call and confidence, the outcome, the gate and whether it
+rings. **Refresh** next to *All runs* reloads the history. To follow the same
 run from a terminal: `make phone-transcript HOSPITAL=all` (both conversations), and
 `docker compose -f infra/docker-compose.yml -p infra logs -f --tail=0 consumer` (h1's gate,
 queue and dial lines; `-p infra-h2` for h2).

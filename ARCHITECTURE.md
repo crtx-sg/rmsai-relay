@@ -201,7 +201,11 @@ Redis sorted set `rmsai:calls:queue` plus a job hash `rmsai:calls:jobs`, ordered
 first and first-come within a level. One `CallDispatcher` thread per consumer places calls, and only
 while it holds the single system-wide call slot (`rmsai:calls:active`), so there is one call at a
 time across every consumer process (`bus_consumer.run_queued_call`):
-- It skips an event that was acknowledged or resolved while it waited.
+- It skips an event that was acknowledged or resolved while it waited, and stops ringing (between
+  attempts) one acknowledged meanwhile.
+- Between ring attempts a waiting higher-criticality call goes first; the yielded call goes back to
+  its original place. After a call ends the next one waits 10 s.
+- Each call clears the event's answered/locked flags first, so only that call's answer counts.
 - It stages the spoken alert at dial time, so a call that waited never finds it expired.
 - A job leaves the hash only when its call has finished; an unfinished job is re-queued on consumer
   start and whenever the slot is claimed (`CallQueue.recover`), but never the job another process
@@ -282,7 +286,8 @@ LiveKit (LiveKit Cloud), reached through the carrier, a native SignalWire SIP tr
    joined to the next one, as is a piece whose answer was cut off before any of it was heard.
 5. **Confirmation gate**: no patient data is spoken until the caller confirms (fail-closed). An
    outbound call asks for a short spoken **"yes"** (`outbound.require_pin: false`, the default): at
-   most four words, not a question, so a voicemail greeting never plays the alert, and that "yes" is
+   most six words, not a question, no voicemail word (the agent hangs up on those, and after 90 s
+   with no yes; known limit: a greeting starting with a bare "Hello."), and that "yes" is
    what marks the call answered (no redial, no SMS). Call-in, the app and `require_pin: true` use the
    shared **PIN**; on phone rooms it can also be keyed: 4 digits or `#` submits, `*` starts over
    (`collect_dtmf`; the digits are never logged, and nothing said before the PIN is). Transcripts with no Latin letter or digit (background speech in another

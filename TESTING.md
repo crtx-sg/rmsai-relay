@@ -471,12 +471,12 @@ Prerequisites (details in [Phone calls](TELEPHONY_SETUP.md#phone-calls-livekit-c
 - In split mode, the phone worker is running (`make phone-up`), not the step-5A app worker.
 - `LIVEKIT_SIP_TRUNK_ID`: the SignalWire outbound trunk (`TELEPHONY_SETUP.md`).
 - `--notifier signalwire` texts the alert from the same number if the call goes unanswered: every attempt rang out, was
-  busy, or was picked up and hung up with no PIN entered (a PIN lockout is not texted).
+  busy, or was picked up and hung up with no "yes" (no PIN with `require_pin: true`; a PIN lockout is not texted).
 - The PIN can be spoken or keyed (4 digits or `#`).
-- A call whose LiveKit connection reconnects after the PIN is hung up and rung again (at most 2
+- A call whose LiveKit connection reconnects after the "yes"/PIN is hung up and rung again (at most 2
   redials, unless the event was acknowledged meanwhile).
 - To test the SMS: publish one event (`cli.ingest --file … --emit bus`), then decline every attempt
-  or hang up before the PIN. Expect `counted as missed` per pickup, then `SMS fallback: sms_delivered`.
+  or hang up before saying "yes". Expect `counted as missed` per pickup, then `SMS fallback: sms_delivered`.
 - Restart the consumer or phone worker only when no call is up; mid-call the call stays open.
 
 ### Recommended smoke test (clean, single pass)
@@ -524,7 +524,7 @@ uv run python -m cli.text_chat             # inbound query by text (PIN-gated, K
 uv run python -m cli.voice                 # offline typed-text voice demo (no audio hardware)
 uv run python -m cli.consume --help        # bus consumer: --channel/--caller/--transport/--notifier/--number
 uv run python -m cli.outbound --file <f>.h5  # single-file outbound loop (--no-answer, --fail-delivery, --notifier)
-uv run python -m cli.gateway               # companion-app gateway (serves app/, /session, /ack, /events, /event-info, /metrics, /simulate*, /artifact*)
+uv run python -m cli.gateway               # companion-app gateway (serves app/, /session, /ack, /events, /event-info, /simulate*, /artifact*)
 uv run python -m cli.inbox_publish --dry-run   # print a worklist message + token roundtrip (drop --dry-run to push it)
 uv run python -m cli.voice_worker dev      # agent worker; VOICE_WORKER_ROLE=phone for the phone worker
 uv run python -m cli.livekit_token --room <r>  # join token for a room (playground testing)

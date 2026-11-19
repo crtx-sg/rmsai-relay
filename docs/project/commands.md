@@ -143,7 +143,7 @@ above the counts asked for (the smallest is LBBB with 81), so expect no shortfal
 | Target | Consumer transport | Phone worker (`rmsai-agent-phone`) | Reportable events… |
 |---|---|---|---|
 | `make demo-up` | `--transport webrtc` (compose default) | not started | stage a WebRTC room and print a join token. **No phone rings.** The log still says `call answered`, because a simulated caller "answers". |
-| `make demo-phone-up` | `--transport sip --notifier signalwire` | started (`telephony` profile) | dial `OUTBOUND_CALL_NUMBER` through LiveKit Cloud + SignalWire, one call at a time; an unanswered call is texted from the same number (a pickup with no PIN is unanswered: retried, then texted; a PIN lockout is neither). |
+| `make demo-phone-up` | `--transport sip --notifier signalwire` | started (`telephony` profile) | dial `OUTBOUND_CALL_NUMBER` through LiveKit Cloud + SignalWire, one call at a time; an unanswered call is texted from the same number (a pickup with no "yes"/PIN is unanswered: retried, then texted; a PIN lockout is neither). |
 
 Both targets finish with `infra/demo-check.sh`. Running `make demo-up` after `demo-phone-up`
 recreates the consumer back on WebRTC. Vitals-driven alerts (rhythm below the confidence bar)
@@ -164,13 +164,13 @@ twice), highest
 criticality first and first-come within a level. A queued call is skipped if the event was
 acknowledged (in the app) or resolved while it waited. Calls still waiting survive a consumer
 restart. Console lines: `[queued] … call N in queue`, `[calls] dialling …`/`skip …`,
-`[call] … -> answered`, `[consume] call in … ended with no PIN entered: counted as missed`,
+`[call] … -> answered`, `[consume] call in … ended unconfirmed (no yes/PIN): counted as missed`,
 `[calls] call for … broke (connection lost or speech service failed); ringing again`, `[calls] … yields to a higher-priority call; back in the queue`.
 
 ### `make phone-transcript`
 
 Follows the phone worker and shows only the conversation: `stt: ->` (raw transcript), `heard:`,
-`reply:` (the KB-grounded answer, logged before TTS speaks it), the greeting, `[voice] PIN accepted`
+`reply:` (the KB-grounded answer, logged before TTS speaks it), the greeting, `[voice] spoken confirmation accepted` (or `[voice] PIN accepted` with `require_pin: true`)
 and `[voice] alert text:` (the event alert spoken after the PIN). It shows new lines only, so start
 it before the call. Ctrl-C stops it. `HOSPITAL=h2` follows the second hospital's phone worker (stack `infra-h2`);
 `HOSPITAL=all` follows both, each line prefixed `[h1]` / `[h2]`.
