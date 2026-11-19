@@ -387,3 +387,60 @@ def test_dropped_call_yields_without_a_stale_answer(patched, monkeypatch):  # no
     assert not q.reached("ns")  # the redial must earn its own answer
     q.done("ns")
     assert q.claim().event_id == "vt"
+
+
+# --- 2026-11-19 audit: a stale "answered" flag, and an app ack while the phone still rings ---------
+
+
+def _single_job(redis, event_id="e"):
+    q = CallQueue(redis)
+    q.push(CallJob(event_id=event_id, patient_ref="PT1", event_type="ATRIAL_FIBRILLATION",
+                   bed="ICU/3", criticality="High", reason="ok",
+                   payload=event_to_dict(_event(_Afib())), enqueued_ms=1000))
+    return q, q.claim()
+
+
+def test_an_earlier_calls_answer_does_not_count_for_this_call(patched, monkeypatch):  # noqa: F811
+    # Answered once, then reopened and ingested again: the new call's voicemail is not "answered".
+    redis = _FakeRedis()
+    q, job = _single_job(redis)
+    q.mark_answered("e")
+    monkeypatch.setattr(bus_consumer, "get_event_status", lambda d, uuid: "reported")
+    seen = []
+
+    def _place(*a, **k):
+        seen.append(q.reached("e"))
+        return bus_consumer.OutboundResult(called=True, decision_reason="ok", outcome="no_answer")
+
+    monkeypatch.setattr(bus_consumer, "_place_live_call", _place)
+    monkeypatch.setattr(bus_consumer, "finish_call", lambda *a, **k: None)
+    store = _FakeAlertStore()
+    store.redis = redis
+    bus_consumer.run_queued_call(job, driver=object(), orchestrator=object(), utterances=[],
+                                 caller_factory=lambda r: object(), alert_store=store)
+    assert seen == [False]
+
+
+def test_acknowledged_in_the_app_stops_the_redials(patched, monkeypatch):  # noqa: F811
+    from voice.outbound import CallPreempted  # noqa: PLC0415
+
+    redis = _FakeRedis()
+    q, job = _single_job(redis)
+    status = {"e": "reported"}
+    monkeypatch.setattr(bus_consumer, "get_event_status", lambda d, uuid: status[uuid])
+
+    def _place(*a, preempt, **k):  # first ring unanswered, then the clinician acks in the app
+        assert not preempt()
+        status["e"] = "acknowledged"
+        assert preempt()
+        raise CallPreempted
+
+    monkeypatch.setattr(bus_consumer, "_place_live_call", _place)
+    store = _FakeAlertStore()
+    store.redis = redis
+    kw = dict(driver=object(), orchestrator=object(), utterances=[],
+              caller_factory=lambda r: object(), alert_store=store)
+    assert bus_consumer.run_queued_call(job, **kw) is None
+    q.done("e")
+    again = q.claim()  # back in the queue, then skipped as acknowledged without dialling
+    assert again.event_id == "e" and bus_consumer.run_queued_call(again, **kw) is None

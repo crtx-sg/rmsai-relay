@@ -431,9 +431,23 @@ def run_queued_call(
     print(f"[calls] dialling for {job.patient_ref}/{job.event_type} @ {job.bed} "
           f"({job.criticality}, event {job.event_id})", flush=True)
     event = dict_to_event(job.payload)
-    _was_dropped(alert_store, job.event_id)  # a stale flag from an earlier call of this event
+    # Stale flags from an earlier call of this event (a reopen, a redelivery): this call's outcome
+    # must come from this call, or a voicemail counts as "answered" (no redial, no SMS). recover()
+    # has already dropped a job answered before a crash, so nothing here needs the old flag.
+    _was_dropped(alert_store, job.event_id)
+    try:
+        CallQueue(alert_store.redis).forget_answer(job.event_id)
+    except Exception:  # noqa: BLE001 - the call still rings; only the missed-call check is off
+        pass
 
     def _preempt() -> bool:  # between attempts only: a call in progress is never cut off
+        try:  # acknowledged in the app meanwhile: stop ringing (popped again, it is skipped)
+            if get_event_status(driver, job.event_id) in _SKIP_CALL_STATUSES:
+                print(f"[calls] {job.patient_ref}/{job.event_type} @ {job.bed} was closed while "
+                      f"ringing; no more attempts (event {job.event_id})", flush=True)
+                return True
+        except Exception:  # noqa: BLE001 - status unreadable: keep ringing (rule #8)
+            pass
         try:
             return CallQueue(alert_store.redis).outranked(job)
         except Exception:  # noqa: BLE001 - queue unreadable: keep ringing this one (rule #8)
