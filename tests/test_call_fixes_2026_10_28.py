@@ -56,8 +56,8 @@ def test_deteriorating_trends_come_from_the_events_verdicts():
         {"vital": "SpO2", "direction": "falling", "change": -3.4, "unit": "%", "span_s": 1903,
          "latest": 84}]}})
     assert _answer_event_summary({"patient": "PT1", "why_json": why}, "trends") == (
-        "Patient PT1: deteriorating: heart rate rising 35 beats per minute over 65 minutes, now 194;"
-        " oxygen saturation falling 3.4 percent over 32 minutes, now 84.")
+        "Patient PT1: deteriorating before this event: heart rate rising 35 beats per minute over"
+        " 65 minutes, to 194; oxygen saturation falling 3.4 percent over 32 minutes, to 84.")
     none = json.dumps({"vitals": {"deteriorating": []}})
     assert _answer_event_summary({"patient": "PT1", "why_json": none}, "trends") == (
         "Patient PT1: no vital is deteriorating.")

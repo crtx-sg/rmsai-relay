@@ -68,13 +68,15 @@ def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config 
     # Said, not read: "bed 2" and "ventricular fibrillation", not "bed Unit1/Unit1-Bed02" and
     # "VENTRICULAR FIBRILLATION" (the full label is on the worklist and in the chart).
     where = f" on {spoken_bed(bed)}" if bed else ""
-    guidance = a.care_guidance[0] if a.care_guidance else ""
+    # "Critical: VF detected — …" after "rated critical" said the severity twice (live 2026-11-19)
+    guidance = re.sub(r"^(?:Critical|Warning):\s*", "", a.care_guidance[0]) if a.care_guidance else ""
     guidance_txt = f" Recommended: {guidance}." if guidance else ""
     # A vitals-driven alert must not be spoken as a rhythm finding: the vitals are what we know, the
     # rhythm is either contradicted (a confident NORMAL_SINUS) or unconfirmed (below the confidence
     # gate). Lead accordingly and say which, so the clinician never hears an uncertain rhythm
     # asserted as fact.
     basis, why = alert_basis(event, config)
+    why = why.replace(">=", "at or above").replace("≥", "at or above")  # TTS can't say ">="
     detected = spoken_event(event.event_type)
     if basis == "vitals" and event.event_type == config.criticality_normal_event:
         lead, override_txt = f"Detected {detected}", (
@@ -85,12 +87,15 @@ def spoken_report(event: DeviceEvent, *, bed: str | None = None, config: Config 
         lead, override_txt = f"Possible {detected}", (
             f" Note: this alert is driven by the patient's vitals ({why}). The ECG suggests "
             f"{detected}, but at {event.confidence:.0%} confidence treat the rhythm as unconfirmed."
+            # the rhythm's guidance ("VF detected — initiate ACLS") holds only if it is confirmed
+            + (f" If it is confirmed: {guidance}." if guidance else "")
         )
+        guidance_txt = ""
     else:
         lead, override_txt = f"Detected {detected}", ""
     return (
         f"Alert for patient {w.patient_ref}{where}. {lead}, "
-        f"{crit} criticality, {_spoken_mews(a.mews)}, "
+        f"rated {crit.lower()}, {_spoken_mews(a.mews)}, "
         f"confidence {event.confidence:.0%}.{guidance_txt}{override_txt}"
     )
 

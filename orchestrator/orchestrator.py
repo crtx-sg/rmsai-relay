@@ -400,14 +400,17 @@ def _trends_from_explanation(why_json) -> str:
     for d in worse:
         text = f"{_TREND_VITAL_NAME.get(d.get('vital'), d.get('vital'))} {d.get('direction', 'changing')}"
         if d.get("change") is not None:
-            unit = str(d.get("unit") or "").replace("/min", "per minute").replace("mmHg", "")
+            unit = str(d.get("unit") or "").replace("/min", "breaths per minute").replace(
+                "mmHg", "points").replace("°F", "degrees")
             text += f" {abs(d['change']):g} {unit}".rstrip()
         if d.get("span_s"):
-            text += f" over {round(d['span_s'] / 60)} minutes"
-        if d.get("latest") is not None:
-            text += f", now {d['latest']:g}"
+            m = round(d["span_s"] / 60)
+            text += f" over {m} minutes" if m < 120 else f" over about {round(m / 60)} hours"
+        if d.get("latest") is not None:  # the trend's last reading, before the event: not "now"
+            text += f", to {d['latest']:g}"
         said.append(text)
-    return _speakable("deteriorating: " + "; ".join(said) + ".")
+    # "now 35" contradicted the event's own diastolic 30 (live 2026-11-19): the trend ends before it
+    return _speakable("deteriorating before this event: " + "; ".join(said) + ".")
 
 
 # --- spoken (phone) answers for one event record --------------------------------------------------

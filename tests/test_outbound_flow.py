@@ -173,7 +173,7 @@ def test_fp_override_spoken_report_explains_the_case():
     from orchestrator.report import spoken_report
 
     txt = spoken_report(_fp_event(deteriorating=True), bed="ICU/1", config=_CFG)
-    assert "High criticality" in txt and "driven by the patient's vitals" in txt
+    assert "rated high" in txt and "driven by the patient's vitals" in txt
 
 
 def test_japanese_alert_keeps_the_rhythm_vs_vitals_rule():
