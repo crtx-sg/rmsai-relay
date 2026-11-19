@@ -1245,20 +1245,13 @@ class Orchestrator:
         with tracer.span("retrieve") as sp:
             intent = match_intent(user_text, now=now, patient_ref=state.patient_ref,
                                   event_ref=state.event_ref)
-            # "Protocol for this event" / a bed's protocol with no structured steps: a document
-            # question about that event's rhythm, asked in those words.
+            # "Protocol for this event": a protocol question about that event's rhythm, asked in
+            # those words (a bed's protocol is rewritten the same way, below).
             kb_question = user_text
             if intent is None and asks_event_protocol(user_text, state.event_ref):
                 rows = run_template(self.driver, "event_summary", event_uuid=state.event_ref)
                 kb_question = _protocol_question(rows[0].get("event_type") if rows else None) \
                     or user_text
-            elif intent and intent[0] == "protocol_for_bed_last_event":
-                rows = run_template(self.driver, *intent[:1], **intent[1])
-                if not rows or not rows[0].get("steps"):
-                    last = run_template(self.driver, "bed_last_event", bed=intent[1]["bed"])
-                    question = _protocol_question(last[0].get("event_type") if last else None)
-                    if question:
-                        kb_question, intent = question, None
             rewritten = kb_question != user_text
             if rewritten:
                 print(f"[orchestrator] protocol question for the event's rhythm: {kb_question!r}",
@@ -1284,6 +1277,16 @@ class Orchestrator:
                 if intent is not None:
                     print(f"[orchestrator] llm-routed to template {intent[0]!r}", flush=True)
                     sp.attributes["llm_routed"] = intent[0]
+            if intent is not None and intent[0] == "protocol_for_bed_last_event":
+                # Asked as "protocol for <rhythm>" (regex or router), so the protocol answerer
+                # handles it: the template's steps were spoken as raw dicts, unordered, and plain
+                # AFib got the RVR protocol that the same question by rhythm is refused.
+                last = run_template(self.driver, "bed_last_event", bed=intent[1]["bed"])
+                question = _protocol_question(last[0].get("event_type") if last else None)
+                if question:
+                    kb_question, intent, rewritten = question, None, True
+                    print(f"[orchestrator] protocol question for the bed's rhythm: {question!r}",
+                          flush=True)
             proto = None if intent is not None or listing_declined or emergency \
                 else self._protocol_answer(kb_question, state, spoken)
             if proto is not None:

@@ -59,7 +59,7 @@ class CrossEncoderReranker:
             return hits
         scores = self._model.predict([(query, h.text) for h in hits])
         rescored = [
-            SearchHit(text=h.text, source=h.source, doc_id=h.doc_id, score=float(s))
+            SearchHit(text=h.text, source=h.source, doc_id=h.doc_id, score=float(s), idx=h.idx)
             for h, s in zip(hits, scores)
         ]
         rescored.sort(key=lambda h: h.score, reverse=True)

@@ -554,12 +554,13 @@ def match_intent(query: str, *, now: float, patient_ref: str | None = None,
         return _history(now=now, bed=bed_label, hours=hours)
 
     # T7 — care protocol for a bed's last event. (Before T4 for the same reason.)
-    if "protocol" in q and bed:
-        return "protocol_for_bed_last_event", {"bed": bed}
+    # bed_label, not bed: "protocol for bed sores" is not bed "sores" ("No matching records").
+    if "protocol" in q and bed_label:
+        return "protocol_for_bed_last_event", {"bed": bed_label}
 
     # T4 — event analysis report(s) for a bed (the noun "report"/"analysis").
-    if _REPORT.search(q) and bed:
-        return "reports_for_bed", {"bed": bed}
+    if _REPORT.search(q) and bed_label:
+        return "reports_for_bed", {"bed": bed_label}
 
     # Worklist — "which bed has the most severe alarm?" (pending, most severe first). Unscoped
     # "unacknowledged alarms" is the event-history rule above. Hours narrow it.

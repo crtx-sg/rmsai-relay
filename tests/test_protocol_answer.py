@@ -182,3 +182,52 @@ def test_afib_without_rvr_reads_the_documents_and_go_on_keeps_rvr():
         assert "4. Escalation" in r.answer
     finally:
         om.run_template = real
+
+
+def test_a_beds_protocol_is_answered_as_its_rhythms_not_as_raw_rows(monkeypatch):
+    # "Protocol for bed 1" read the template's steps as Python dicts, unordered, and gave plain AFib
+    # the RVR protocol; it is now "protocol for <the bed's last rhythm>".
+    import orchestrator.orchestrator as om  # noqa: PLC0415
+
+    afib = SearchHit(text="1. AFib › Acute\n*   **Unstable:** Synchronized cardioversion.",
+                     source="p.md#1. Atrial Fibrillation (AFib) Protocol › Acute", doc_id="p.md",
+                     score=0.9)
+
+    def _tpl(_driver, name, **_k):
+        return {"bed_last_event": [{"event_type": "ATRIAL_FIBRILLATION"}],
+                "care_protocol_steps": [_AFIB],
+                "protocol_for_bed_last_event": [{"protocol": _AFIB["protocol"],
+                                                 "steps": [{"order": 2}, {"order": 1}]}]}.get(name, [])
+
+    monkeypatch.setattr(om, "run_template", _tpl)
+    orch = _orch()
+    orch.hybrid.vector.search = lambda *_a, **_k: [afib]
+    orch.driver = object()
+    r = orch.handle_turn("s", "what is the care protocol for bed Unit1-Bed01?", now=1.0, spoken=True)
+    assert r.answer.startswith("Atrial fibrillation protocol. Acute: Unstable") and "{" not in r.answer
+
+
+def test_bed_sores_is_not_a_bed():
+    from kb.graph.lookup import match_intent  # noqa: PLC0415
+
+    for q in ("what is the protocol for bed sores?", "get the report for bed bath"):
+        intent = match_intent(q, now=1.0)
+        assert intent is None or intent[0] not in ("protocol_for_bed_last_event", "reports_for_bed")
+
+
+def test_sections_are_read_in_document_order_not_alphabetically():
+    # A site document writes "Unstable" (cardioversion) first; sorted by heading it fell after
+    # "Stable" and past the spoken 3-point cap.
+    from kb.vector.chunking import chunk_document  # noqa: PLC0415
+    from kb.vector.embeddings import HashingEmbedder  # noqa: PLC0415
+    from kb.vector.store import QdrantStore  # noqa: PLC0415
+
+    text = ("# Site VT SOP\n\n## Unstable ventricular tachycardia\n- Synchronized cardioversion.\n\n"
+            "## Stable ventricular tachycardia\n- 12-lead ECG.\n- Amiodarone IV.\n- Check K and Mg.\n")
+    store, emb = QdrantStore.in_memory(), HashingEmbedder()
+    chunks = chunk_document(text, "vt_site.md")
+    store.ensure(emb.dim)
+    store.index(chunks, emb.embed([c.text for c in chunks]))
+    hits = store.search(emb.embed(["stable ventricular tachycardia"])[0], k=10)  # Stable ranks first
+    a = pa.answer_from_sections(hits, "VENTRICULAR_TACHYCARDIA", spoken=True, question="VT protocol")
+    assert a.text.index("cardioversion") < a.text.index("12-lead")

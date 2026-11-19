@@ -155,8 +155,10 @@ def answer_from_sections(hits, etype: str, *, spoken: bool, question: str,
         if all(h.source != o.source for o in by_doc.get(h.doc_id, [])):
             by_doc.setdefault(h.doc_id, []).append(h)
     doc = max(by_doc, key=lambda d: (d in preferred, len(by_doc[d]), max(h.score for h in by_doc[d])))
-    # Document order (headings are numbered/titled), not relevance: "the rest" must follow on.
-    sections = sorted(by_doc[doc], key=lambda h: _heading(h.source))
+    # Document order, not relevance ("the rest" must follow on) and not alphabetical (an "Unstable"
+    # section written first fell after "Stable", past the spoken 3-point cap). Points indexed before
+    # `idx` was stored all read 0, so their headings decide, as before.
+    sections = sorted(by_doc[doc], key=lambda h: (h.idx, _heading(h.source)))
     points = [(_heading(h.source), p) for h in sections for p in section_points(h.text)]
     shown, rest = _cap(points, spoken, question)
     if spoken:  # the section headings, not the file name ("vt vf"), say where it comes from

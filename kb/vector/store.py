@@ -30,6 +30,7 @@ class SearchHit:
     source: str
     doc_id: str
     score: float
+    idx: int = 0  # the chunk's position in its document (0 for points indexed before it was stored)
 
 
 class QdrantStore:
@@ -97,7 +98,7 @@ class QdrantStore:
             PointStruct(
                 id=_stable_id(c),
                 vector=vec,
-                payload={"text": c.text, "source": c.source, "doc_id": c.doc_id},
+                payload={"text": c.text, "source": c.source, "doc_id": c.doc_id, "idx": c.idx},
             )
             for c, vec in zip(chunks, vectors)
         ]
@@ -135,6 +136,7 @@ class QdrantStore:
                 source=h.payload["source"],
                 doc_id=h.payload["doc_id"],
                 score=float(h.score),
+                idx=int(h.payload.get("idx", 0)),
             )
             for h in hits
         ]
