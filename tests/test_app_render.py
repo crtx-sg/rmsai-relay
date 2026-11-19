@@ -167,3 +167,9 @@ def test_simulate_history_bars_totals_and_intervals(rendered):
     assert "Run 5 · 11:02 · 4 samples · 50% FP" in h and "h1 1 · h2 3" in h
     assert "Arrhythmias rang: <b>100%</b> (2/2, 95% CI 34%–100%)" in h
     assert "False positives filtered: –" in h
+
+
+def test_simulate_refuses_an_empty_samples_box_before_posting(rendered):
+    f = rendered["simForm"]
+    assert not f["posted"] and f["status"].startswith("Samples must be 1–10")
+    assert f["disabled"] is False  # the button stays usable

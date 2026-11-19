@@ -58,15 +58,24 @@ ctx.renderSimHistory({ runs: [{ run: "r5-1102-n4-fp50", hospitals: { h1: 1, h2: 
   rates: { rang: { value: 1, low: 0.34, high: 1, k: 2, n: 2 }, fp_filtered: null } });
 const hist = mk("sim-rates").innerHTML + mk("sim-totals").innerHTML + mk("#sim-history tbody").innerHTML;
 
+// Simulate form: an empty Samples box is refused before any request (no "[object Object]")
+const simGuard = (async () => {
+  let posted = false;
+  vm.runInContext("sessionPost = async () => { throw new Error('posted'); }", ctx);
+  mk("sim-n").value = ""; mk("sim-fp").value = "20"; mk("sim-run").disabled = false;
+  try { await ctx.runSimulation(); } catch (e) { posted = true; }
+  return { posted, status: mk("sim-status").textContent, disabled: mk("sim-run").disabled };
+})();
+
 // Header: which hospital, with links to the others' apps
 ctx.renderHospitalBadge({ hospital_id: "h1",
   hospital_apps: { h1: "http://localhost:8080", h2: "http://localhost:8090" } });
 const badge = mk("hospital-badge").innerHTML;
 
 const all = models + rows + info + worklistRow + sim + badge + hist;
-process.stdout.write(JSON.stringify({
-  models, rows, info, worklistRow, runs, sim, simLog, badge, hist, title: ctx.document.title,
+simGuard.then((simForm) => process.stdout.write(JSON.stringify({
+  models, rows, info, worklistRow, runs, sim, simLog, simForm, badge, hist, title: ctx.document.title,
   datasetOptions: mk("f-dataset").options.map((o) => o.value),
   theme: { before, after, button: mk("theme-btn").textContent },
   leaks: all.includes("${") || all.includes("undefined"),
-}));
+})));

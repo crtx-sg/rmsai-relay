@@ -10,7 +10,7 @@
 // Bump on every client change. Printed on load so "is the browser running the current app.js?" is
 // answerable from the console instead of inferred from behaviour — a stale cached SPA looks exactly
 // like a broken backend.
-const APP_BUILD = "2026-11-13 sim-log";
+const APP_BUILD = "2026-11-19 reconnect-backfill";
 
 const LK = window.LivekitClient;
 
@@ -363,9 +363,10 @@ async function connect(sess) {
   room.on(LK.RoomEvent.TrackSubscribed, (track) => {
     if (track.kind === "audio") track.attach();
   });
-  room.on(LK.RoomEvent.Disconnected, () => setStatus("disconnected"));
+  room.on(LK.RoomEvent.Disconnected, () => setStatus("disconnected: reload the page to reconnect"));
   room.on(LK.RoomEvent.Reconnecting, () => setStatus("reconnecting…"));
-  room.on(LK.RoomEvent.Reconnected, () => setStatus("live"));
+  // Rows are push-only: an alert sent during the drop never arrived, so fetch the pending list again.
+  room.on(LK.RoomEvent.Reconnected, () => { setStatus("live"); backfillWorklist(); });
   // The chat worker (agent) joins a few seconds after we connect; if a row was already selected,
   // (re)send the selection so it isn't lost to the join race.
   // Only for the agent: anyone else joining (a second tab, `cli.inbox_probe`) must not make the
@@ -926,6 +927,11 @@ async function runSimulation() {
   const status = document.getElementById("sim-status");
   const samples = parseInt(document.getElementById("sim-n").value, 10);
   const fp = parseInt(document.getElementById("sim-fp").value, 10);
+  // An empty box was sent as null and came back as "Failed: [object Object]".
+  if (!(samples >= 1 && samples <= 10) || !(fp >= 0 && fp <= 100)) {
+    status.textContent = "Samples must be 1–10 and false positives 0–100%.";
+    return;
+  }
   btn.disabled = true;
   clearTimeout(simPoll);
   const bar = document.getElementById("sim-progress");
