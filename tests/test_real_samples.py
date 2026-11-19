@@ -210,3 +210,17 @@ def test_refused_pick_keeps_previous_set(pkg, tmp_path, monkeypatch):
     with pytest.raises(SampleError, match="collision"):
         write_samples(pkg, select_events(pkg, {"VENTRICULAR_TACHYCARDIA": 2}), out)
     assert all(f.exists() for f in files)
+
+
+def test_each_simulate_run_gets_its_own_event_ids(pkg, tmp_path):
+    """The same window drawn in two runs must not share an event id: the second copy of an
+    acknowledged event would be skipped as 'already acknowledged' and never ring."""
+    sel = select_events(pkg, {"VENTRICULAR_TACHYCARDIA": 1}, seed=7)
+    ids = {}
+    for run in ("r1-0900-n1-fp0", "r2-0905-n1-fp0", None):
+        files = write_samples(pkg, sel, tmp_path / str(run), run_id=run)
+        ids[run] = {w.event_id for f in files for w in read_hdf5_file(f)}
+    assert ids["r1-0900-n1-fp0"].isdisjoint(ids["r2-0905-n1-fp0"])
+    assert ids["r1-0900-n1-fp0"].isdisjoint(ids[None])  # no run (cli.real_samples): package id kept
+    again = write_samples(pkg, sel, tmp_path / "again", run_id="r1-0900-n1-fp0")
+    assert {w.event_id for f in again for w in read_hdf5_file(f)} == ids["r1-0900-n1-fp0"]

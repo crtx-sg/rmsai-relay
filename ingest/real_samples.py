@@ -26,6 +26,7 @@ import csv
 import hashlib
 import json
 import random
+import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -258,6 +259,14 @@ def write_samples(pkg: Package, selection: Selection, out_dir: str | Path,
                     # raw annotation (often OTHER); the manifest label is what the model is scored on.
                     grp.attrs["source_condition"] = grp.attrs.get("condition", "")
                     grp.attrs["condition"] = r["label"]
+                    if run_id and "uuid" in grp:
+                        # The package's uuid is fixed per window, so a window drawn again would reuse
+                        # an event id the clinician may already have acknowledged: never rung again.
+                        orig = grp["uuid"][()]
+                        orig = orig.decode("utf-8") if isinstance(orig, bytes) else str(orig)
+                        grp.attrs["source_uuid"] = orig
+                        del grp["uuid"]
+                        grp["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{run_id}/{orig}"))
                     n += 1
         if n:
             written.append(dst_path)
