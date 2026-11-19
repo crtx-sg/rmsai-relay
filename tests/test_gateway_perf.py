@@ -1,4 +1,5 @@
-"""E5 server side: `POST /metrics`, `POST /event-info`, and the worklist-row extras."""
+"""E5 server side: `POST /event-info` and the worklist-row extras (the performance view is
+`POST /events` with `labelled`, tested in test_gateway_events)."""
 
 from __future__ import annotations
 
@@ -39,10 +40,6 @@ def _row(eid, pred, truth, model="ecg_transconv:v2", gate=True, **kw):
 def graph(monkeypatch):
     seen = {}
 
-    def fake_eval(driver, **kw):
-        seen["filters"] = kw
-        return [_row("e1", VT, VT), _row("e2", NSR, NSR, gate=False, eval_outcome="TN")]
-
     def fake_info(driver, uuid):
         if uuid == "unknown":
             return None
@@ -51,7 +48,6 @@ def graph(monkeypatch):
                 "eval_unscorable_reason": None, "source_label_method": "rhythm_annotation",
                 "source_device": "RMSAI-SimDevice-v2.0", "delivered_call": "answered"}
 
-    monkeypatch.setattr(gateway, "eval_events", fake_eval)
     monkeypatch.setattr(gateway, "get_event_info", fake_info)
     return seen
 
@@ -63,34 +59,6 @@ def _client(tmp_path):
 
 def _token(room="rmsai-inbox-h1"):
     return access_token(identity="clinician-x", room=room, config=_CFG)
-
-
-def test_metrics_returns_per_model_summary_and_every_labelled_event(tmp_path, graph):
-    client, audit = _client(tmp_path)
-    res = client.post("/metrics", json={"session": _token(), "since": "24h", "dataset": "incart"})
-    assert res.status_code == 200
-    body = res.json()
-    assert [m["model_id"] for m in body["models"]] == ["ecg_transconv:v2"]
-    s = body["models"][0]["summary"]
-    assert s["counts"]["TP"] == 1 and s["counts"]["TN"] == 1
-    assert body["models"][0]["sources"] == ["incart"]
-    # not-alerted events are listed too (the TN never reached the worklist)
-    assert [(e["event_id"], e["alert"]) for e in body["events"]] == [("e1", True), ("e2", False)]
-    assert body["events"][0]["source"] == "INCART I05 @263874 (test split)"
-    assert graph["filters"]["dataset"] == "incart" and graph["filters"]["since"] is not None
-    assert audit.read_all()[-1]["action"] == "view_metrics"
-
-
-def test_metrics_requires_a_valid_session(tmp_path, graph):
-    client, audit = _client(tmp_path)
-    assert client.post("/metrics", json={"session": "bad"}).status_code == 401
-    assert client.post("/metrics", json={"session": _token("rmsai-inbox-other")}).status_code == 401
-    assert "filters" not in graph and audit.read_all()[-1]["outcome"] == "unauthorized"
-
-
-def test_metrics_rejects_a_bad_since(tmp_path, graph):
-    client, _ = _client(tmp_path)
-    assert client.post("/metrics", json={"session": _token(), "since": "soon"}).status_code == 400
 
 
 def test_event_info_explains_one_event(tmp_path, graph):

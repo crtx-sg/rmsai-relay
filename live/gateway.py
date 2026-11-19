@@ -27,7 +27,6 @@ from pydantic import BaseModel
 from common.audit import AuditLog
 from common.config import DEFAULT, Config
 from kb.graph.events import (
-    eval_events,
     get_event_artifacts,
     get_event_info,
     get_event_patient,
@@ -74,15 +73,6 @@ class ArtifactLinkRequest(BaseModel):
     event_id: str
     kind: str
     session: str
-
-
-class MetricsRequest(BaseModel):
-    """`POST /metrics` body: the inbox session (proof of PIN) + optional filters."""
-
-    session: str
-    since: str | None = None  # 30m / 24h / 7d / ISO date / epoch (on processing time)
-    model: str | None = None
-    dataset: str | None = None
 
 
 class EventsRequest(BaseModel):
@@ -347,30 +337,6 @@ def create_app(
             return FileResponse(str(target), media_type="text/markdown")
 
         raise HTTPException(status_code=404, detail="unknown artifact kind")
-
-    @api.post("/metrics")
-    def metrics(req: MetricsRequest) -> dict:
-        """Model performance over the labelled events in the graph, one summary per model, plus
-        every labelled event (alerted or not, so TNs and FNs are visible too).
-
-        Same fail-closed session gate as `/ack`. Pseudonyms only; read-only.
-        """
-        if not _session_ok(req.session):
-            audit.write(actor="app", action="view_metrics", subject="-", outcome="unauthorized")
-            raise HTTPException(status_code=401, detail="invalid session")
-        if driver is None:
-            raise HTTPException(status_code=503, detail="event store not configured")
-        from orchestrator.perf_view import build_perf_view, parse_since  # noqa: PLC0415
-
-        try:
-            since = parse_since(req.since)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
-        rows = eval_events(driver, since=since, model_id=req.model, dataset=req.dataset)
-        audit.write(actor="app", action="view_metrics", subject="-", outcome="served",
-                    events=len(rows))
-        return {**build_perf_view(rows),
-                "filters": {"since": req.since, "model": req.model, "dataset": req.dataset}}
 
     sim_lock = threading.Lock()
 

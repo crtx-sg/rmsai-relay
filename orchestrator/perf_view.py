@@ -1,5 +1,5 @@
 """The model-performance view, built from graph rows (`kb.graph.events.eval_events`), shared by
-`cli.model_perf` (text) and the gateway's `POST /metrics` (JSON), so both always agree.
+`cli.model_perf` (text) and the gateway's `POST /events` (JSON, `labelled`), so both always agree.
 
 One summary per model, because mixing two models' predictions describes neither. Pure: no I/O.
 """
