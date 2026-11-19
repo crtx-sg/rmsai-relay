@@ -174,9 +174,12 @@ def process_bus_event(
     # classifier could not stand behind.
     basis, basis_why = alert_basis(event, config)
     if basis == "vitals" and not event.is_false_positive:
-        print(f"[consume] VITALS-DRIVEN ALERT: {event.event_type} is only "
-              f"{event.confidence:.0%} confident (< "
-              f"{config.outbound_min_arrhythmia_confidence:.0%}), but {basis_why} — reporting on "
+        # a normal-sinus alert rests on the vitals at any confidence: "78% (< 60%)" was false
+        rhythm = (f"the ECG reads {event.event_type} ({event.confidence:.0%})"
+                  if event.event_type == config.criticality_normal_event else
+                  f"{event.event_type} is only {event.confidence:.0%} confident "
+                  f"(< {config.outbound_min_arrhythmia_confidence:.0%})")
+        print(f"[consume] VITALS-DRIVEN ALERT: {rhythm}, but {basis_why} — reporting on "
               f"the vitals, rhythm flagged unconfirmed.", flush=True)
     if reason.startswith("fp_override"):
         print(f"[consume] FALSE-POSITIVE OVERRIDE: ECG classified {event.event_type} "

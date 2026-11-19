@@ -252,3 +252,17 @@ def test_dispatch_does_not_delay_the_dial(patched, monkeypatch):
          caller_factory=lambda room: object(), dispatch_fn=_slow_dispatch,
          alert_store=_FakeAlertStore())
     assert order == ["dialled", "dispatched"] and time.monotonic() - t < 1.5
+
+
+class _UnsureNormal(ECGModel):
+    def predict(self, window):
+        return "NORMAL_SINUS", 0.78  # below fp_suppress_min_confidence: not a false positive
+
+
+def test_a_normal_sinus_vitals_alert_log_does_not_claim_a_failed_confidence_gate(patched, capsys):
+    # live 2026-11-19: "NORMAL_SINUS is only 78% confident (< 60%)" — false, and not why it alerted
+    cfg = replace(_CFG, fp_suppress_min_confidence=0.90)
+    _run(event_to_dict(_event(_UnsureNormal())), patched, channel="voice", config=cfg)
+    out = capsys.readouterr().out
+    assert "VITALS-DRIVEN ALERT: the ECG reads NORMAL_SINUS (78%), but MEWS" in out
+    assert "(< 60%)" not in out
