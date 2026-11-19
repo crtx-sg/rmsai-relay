@@ -1281,8 +1281,9 @@ def _start_auto_redispatch(config: Config) -> None:  # pragma: no cover - needs 
 
     A worker registered under a name does NOT auto-join rooms; the gateway only dispatches at
     `/session`. So a restarted worker leaves already-connected inbox rooms agent-less. This runs in a
-    daemon thread and, once the worker has registered, dispatches the agent into every live
-    `rmsai-inbox-*` room that lacks one. Retries a few times to ride out the registration race, with a
+    daemon thread and, once the worker has registered, dispatches the agent into its own hospital's
+    live `rmsai-inbox-<HOSPITAL_ID>` room if that lacks one. Retries a few times to ride out the
+    registration race, with a
     per-room cooldown longer than the agent's cold-start so a still-joining room isn't dispatched
     twice (which would put two agents in the room). Idempotent and best-effort.
     """

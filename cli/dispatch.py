@@ -7,7 +7,7 @@ the agent into them. (The worker also does this automatically on startup — see
 `LIVEKIT_REDISPATCH_ON_START` — this CLI is the on-demand equivalent.)
 
   uv run python -m cli.dispatch --room rmsai-inbox-h1     # one specific room
-  uv run python -m cli.dispatch --all-inbox               # every live rmsai-inbox-* room lacking an agent
+  uv run python -m cli.dispatch --all-inbox               # this hospital's live inbox room, if it lacks an agent
 
 Idempotent: a room that already has an agent is left alone.
 """
@@ -30,7 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--room", help="Dispatch the agent into this specific room.")
     target.add_argument("--all-inbox", action="store_true",
-                        help="Dispatch into every live rmsai-inbox-* room that lacks an agent.")
+                        help="Dispatch into this hospital's live inbox room (rmsai-inbox-<HOSPITAL_ID>) "
+                             "if it lacks an agent.")
     parser.add_argument("--include-empty", action="store_true",
                         help="With --all-inbox, also dispatch into rooms with no human participant "
                              "(default: skip empty/stale rooms).")
@@ -51,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[dispatch] {len(dispatched)} room(s) dispatched. "
                   "The agent joins in a few seconds (cold-start loads STT/TTS/orchestrator).")
         else:
-            print("[dispatch] nothing to do — every live rmsai-inbox-* room already has an agent "
+            print("[dispatch] nothing to do — this hospital's inbox room already has an agent "
                   "(or none are live).")
         return 0
 

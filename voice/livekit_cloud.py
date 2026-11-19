@@ -202,7 +202,7 @@ def _should_dispatch(
 def redispatch_existing_rooms(
     config: Config = DEFAULT,
     *,
-    prefix: str = "rmsai-inbox-",
+    prefix: str | None = None,
     require_human: bool = True,
     skip=frozenset(),
     agent_name: str | None = None,
@@ -215,8 +215,15 @@ def redispatch_existing_rooms(
 
     Best-effort: any failure (no server, SDK missing) yields `[]` rather than raising, so a worker
     start never fails on this.
+
+    `prefix` defaults to THIS hospital's inbox room: both stacks share one LiveKit, and h1's worker
+    must never join `rmsai-inbox-h2` (it would answer h2's clinician from h1's graph).
     """
     import asyncio  # noqa: PLC0415
+
+    from live.inbox import inbox_room  # noqa: PLC0415
+
+    prefix = inbox_room(config) if prefix is None else prefix
 
     try:
         from livekit import api  # noqa: PLC0415

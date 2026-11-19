@@ -152,3 +152,18 @@ def test_cli_requires_a_target(monkeypatch):
     monkeypatch.setattr(dispatch_cli, "is_configured", lambda cfg: True)
     with pytest.raises(SystemExit):  # mutually-exclusive group is required
         dispatch_cli.main([])
+
+
+def test_a_worker_redispatches_only_its_own_hospitals_inbox():
+    # Both stacks share one LiveKit: h1's worker must not claim rmsai-inbox-h2 (h1's graph would
+    # answer h2's clinician). The default prefix is this hospital's own inbox room.
+    import inspect  # noqa: PLC0415
+    from dataclasses import replace  # noqa: PLC0415
+
+    from common.config import DEFAULT  # noqa: PLC0415
+    from live.inbox import inbox_room  # noqa: PLC0415
+
+    assert inspect.signature(lkc.redispatch_existing_rooms).parameters["prefix"].default is None
+    own = inbox_room(replace(DEFAULT, hospital_id="h1"))
+    assert _should_dispatch("rmsai-inbox-h1", [HUMAN], prefix=own, require_human=True)
+    assert not _should_dispatch("rmsai-inbox-h2", [HUMAN], prefix=own, require_human=True)
