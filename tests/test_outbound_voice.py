@@ -353,3 +353,52 @@ def test_a_plain_no_keeps_the_alert_open_and_says_so(tmp_path, monkeypatch):
     assert recorded == [] and "not acknowledged" in out and "stays open" in out
     # A question containing a negation is still a question, not a "no".
     assert h.respond("why don't we check the vitals", session_id="room1").startswith("answer:")
+
+
+# --- 2026-11-19 audit: phone ack reaches the app; voicemail words never confirm -------------------
+
+
+def test_a_phone_ack_tells_the_open_apps(tmp_path, monkeypatch):
+    import threading  # noqa: PLC0415
+
+    import kb.graph.events as events  # noqa: PLC0415
+
+    monkeypatch.setattr(events, "set_event_status", lambda d, uuid, status: None)
+    told = threading.Event()
+    acked = []
+
+    def _on_acked(event_id):
+        acked.append(event_id)
+        told.set()
+
+    h, _ = _handler(tmp_path, _FakeWorking(), _FakeOrch(), driver=object(), on_acked=_on_acked)
+    h.respond("one two three four", session_id="room1")
+    h.respond("yes I acknowledge", session_id="room1")
+    assert told.wait(2) and acked == ["E1"]
+
+
+def test_push_ack_to_app_sends_a_status_message_and_never_raises():
+    from voice.handlers import push_ack_to_app  # noqa: PLC0415
+
+    sent = []
+
+    class _Pub:
+        def publish_status(self, event_id, status):
+            sent.append((event_id, status))
+
+    class _Down:
+        def publish_status(self, *_a):
+            raise ConnectionError("no LiveKit")
+
+    assert push_ack_to_app("E1", publisher=_Pub()) and sent == [("E1", "acknowledged")]
+    assert push_ack_to_app("E1", publisher=_Down()) is False
+
+
+def test_a_forwarded_voicemail_never_hears_the_alert_even_after_a_reprompt(tmp_path):
+    from voice.handlers import is_second_pickup_reply  # noqa: PLC0415
+
+    assert not is_second_pickup_reply("Your call has been forwarded.")
+    h, alert = _handler(tmp_path, _FakeWorking(), _FakeOrch(), require_pin=False)
+    h.respond("who is this", session_id="room1")  # one re-prompt
+    assert h.respond("Your call has been forwarded.", session_id="room1") != alert.spoken_alert
+    assert h.is_ended("room1")  # hung up as voicemail

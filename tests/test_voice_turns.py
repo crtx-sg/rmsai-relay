@@ -329,3 +329,28 @@ def test_a_livekit_blip_does_not_end_the_wait(monkeypatch):
     monkeypatch.setattr(lkapi, "LiveKitAPI", _API)
     livekit_cloud.wait_until_call_ends("rmsai-outbound-x", max_s=30, poll_s=0)
     assert len(polls) == 4 and not replies  # kept polling through both errors; ended on not_found
+
+
+# --- a pickup that never says "yes" is hung up (2026-11-19 audit) ----------------------------------
+
+def test_an_unconfirmed_call_is_hung_up_and_a_confirmed_one_is_not():
+    import asyncio  # noqa: PLC0415
+
+    from voice.livekit_agent import hang_up_if_unconfirmed  # noqa: PLC0415
+
+    async def _no_wait(_s):
+        pass
+
+    def _run(confirmed, ended):
+        deleted = []
+
+        async def _delete():
+            deleted.append(1)
+
+        hung = asyncio.run(hang_up_if_unconfirmed(lambda: confirmed, lambda: ended, _delete,
+                                                  sleep=_no_wait))
+        return hung, bool(deleted)
+
+    assert _run(confirmed=False, ended=False) == (True, True)    # silence: hung up
+    assert _run(confirmed=True, ended=False) == (False, False)   # said yes: left alone
+    assert _run(confirmed=False, ended=True) == (False, False)   # voicemail hang-up already ran

@@ -9,10 +9,12 @@ is unchanged.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from abc import ABC, abstractmethod
 
 from common.audit import AuditLog
+from common.config import DEFAULT
 from common.schemas import ChatTurn
 from voice.auth import PinAuthGate, parse_pin
 from voice.outbound import is_plain_no, is_question, parse_ack
@@ -43,6 +45,22 @@ _FILLER = re.compile(
     r"stop|wait|hold on|"
     # STT sound-event tags, not speech: "[phone beeping]", "[outro jingle]" (live 2026-10-17)
     r"\[[^\]]*\]|\([^)]*\))\W*)+$", re.IGNORECASE)
+
+
+def push_ack_to_app(event_id: str, publisher=None) -> bool:
+    """Tell the open apps the event was acknowledged on the phone, as `/ack` does for an app ack:
+    else they keep showing it as new with an Acknowledge button. The inbox room is on the app
+    LiveKit (`DEFAULT`), not the telephony one. Best effort: False if the push failed."""
+    try:
+        if publisher is None:
+            from live.inbox import InboxPublisher  # noqa: PLC0415
+
+            publisher = InboxPublisher.from_config(DEFAULT)
+        publisher.publish_status(event_id, "acknowledged")
+        return True
+    except Exception as exc:  # noqa: BLE001 - the ack is recorded; only the app's view lags
+        print(f"[voice] app not told of the ack for {event_id}: {type(exc).__name__}", flush=True)
+        return False
 
 
 def _voice(spoken: bool) -> dict:
@@ -76,6 +94,9 @@ _PICKUP_MAX_WORDS = 6
 # At the tone, please record your message… [beep]"): hang up instead of re-prompting the recorder.
 _VOICEMAIL = {"voicemail", "mailbox", "message", "tone", "beep", "record", "recording",
               "unavailable", "forwarded", "reached"}
+# A voicemail word never confirms a live listener, even after a re-prompt ("Your call has been
+# forwarded" passed is_second_pickup_reply and the recorder heard the alert).
+_PICKUP_VETO |= _VOICEMAIL
 # Unconfirmed replies after which the call is treated as missed (noise, a foreign-language greeting).
 _MAX_REPROMPTS = 3
 # After the alert, these alone are a "yes" to the pickup prompt, not an acknowledgment.
@@ -267,7 +288,7 @@ class OutboundHandler(OrchestratorHandler):
     """
 
     def __init__(self, orchestrator, working_memory, alert: OutboundAlert, *, driver=None,
-                 on_answered=None, on_locked=None, require_pin: bool = True,
+                 on_answered=None, on_locked=None, on_acked=None, require_pin: bool = True,
                  language: str = "en", **kwargs) -> None:
         super().__init__(orchestrator, working_memory, **kwargs)
         self.alert = alert
@@ -295,6 +316,8 @@ class OutboundHandler(OrchestratorHandler):
         self._on_answered = on_answered
         # Called with the event id on a PIN lockout: the call is not rung again and not texted.
         self._on_locked_cb = on_locked
+        # Called (in a thread) with the event id once the call acknowledges it: tells the open apps.
+        self._on_acked = on_acked
 
     def greeting(self) -> str:
         return super().greeting() if self.require_pin else self._intro + self._prompt
@@ -366,6 +389,9 @@ class OutboundHandler(OrchestratorHandler):
                          subject=self.alert.patient_ref, outcome="acknowledged")
         print(f"[voice] acknowledgment received -> MonitoredEvent {self.alert.event_id} "
               f"status=acknowledged (Neo4j updated)", flush=True)
+        if self._on_acked is not None:  # off the turn: a LiveKit round trip must not delay "Goodbye"
+            threading.Thread(target=self._on_acked, args=(self.alert.event_id,), daemon=True,
+                             name="rmsai-ack-push").start()
 
     def note_interrupted(self, session_id: str, reply: str) -> None:
         """The worker's speech of `reply` was cut off. If it was the alert, the next turn replays it:
@@ -585,7 +611,7 @@ def build_handler(
 
 def build_outbound_handler(
     alert: OutboundAlert, *, embedder: str = "hashing", llm: str = "echo", on_answered=None,
-    on_locked=None,
+    on_locked=None, on_acked=None,
 ) -> tuple[Handler, str | None, "callable | None"]:
     """Build the outbound (event-seeded) handler for the worker. Returns (handler, greeting, cleanup).
 
@@ -598,7 +624,7 @@ def build_outbound_handler(
 
     orch, driver = build_orchestrator(embedder=embedder, llm=llm)
     handler = OutboundHandler(orch, orch.working, alert, driver=driver, on_answered=on_answered,
-                              on_locked=on_locked, require_pin=DEFAULT.outbound_require_pin,
+                              on_locked=on_locked, on_acked=on_acked, require_pin=DEFAULT.outbound_require_pin,
                               language=DEFAULT.outbound_alert_language)
     return handler, handler.greeting(), driver.close
 

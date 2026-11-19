@@ -325,7 +325,11 @@ What happens on the wire. Diagrams: [ARCHITECTURE.md](ARCHITECTURE.md#telephony-
    (the count is per call). The consumer waits for the hang-up, then reads the worker's flags
    (`rmsai:calls:answered:<event_id>` / `rmsai:calls:locked:<event_id>`, 24 h TTL). Neither set (a
    decline after pickup, or voicemail) logs `ended unconfirmed (no yes/PIN): counted as missed` and goes to
-   step 6. A lockout is not retried and not texted.
+   step 6. A lockout is not retried and not texted. The agent hangs up by itself on voicemail words
+   or after 3 unanswered re-prompts (`[voice] no live answer …`), and on a pickup that gives no
+   "yes"/PIN within 90 s of the greeting (`[worker] no yes/PIN 90s after the greeting …`), so a
+   silent line never holds the queue. The flags are cleared before each new call of the event, so
+   only that call's answer counts. A spoken acknowledgement is also pushed to the open apps.
 6. **Not answered, or a SIP error** (any failure, including `408` or `603`, counts as no answer):
    the relay stages the alert in a fresh room, dispatches the agent there and retries `OUTBOUND_MAX_RETRIES` times,
    `OUTBOUND_RETRY_DELAY_S` apart. Then, with `--notifier signalwire` (the `make demo-phone-up`

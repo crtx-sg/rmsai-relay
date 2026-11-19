@@ -33,7 +33,7 @@ from functools import partial
 from common.config import DEFAULT, Config
 
 from .adapters import STTAdapter, TTSAdapter, build_stt, build_tts, speakable
-from .handlers import Handler, build_handler, build_outbound_handler
+from .handlers import Handler, build_handler, build_outbound_handler, push_ack_to_app
 from .livekit_cloud import is_configured
 from .outbound import is_ack_reply
 from .outbound_alert import OutboundAlertStore
@@ -219,6 +219,24 @@ def pre_auth_heard(text: str, *, require_pin: bool, deid_backend: str = "auto") 
         return repr(deidentify(get_deidentifier(deid_backend), re.sub(r"\d", "#", text)))
     except Exception:  # noqa: BLE001 - de-id failed: log nothing of the words (rule 5)
         return hidden
+
+
+# An alert call with no "yes"/PIN this long after the greeting is hung up (counted missed: redial,
+# then SMS). A pocket pickup or a greeting STT hears as nothing never makes a turn, so the voicemail
+# and re-prompt rules never fire, and the call held the line until LiveKit's 600 s cap.
+UNCONFIRMED_HANGUP_S = 90.0
+
+
+async def hang_up_if_unconfirmed(confirmed, ended, delete_room, *,
+                                 after_s: float = UNCONFIRMED_HANGUP_S, sleep=asyncio.sleep) -> bool:
+    """Wait `after_s`; then end the call unless it was confirmed or has already ended."""
+    await sleep(after_s)
+    if confirmed() or ended():
+        return False
+    print(f"[worker] no yes/PIN {after_s:.0f}s after the greeting; hanging up (counted missed)",
+          flush=True)
+    await delete_room()
+    return True
 
 
 def drop_and_redial(event_id: str, *, mark_dropped, delete_room, answered) -> None:
@@ -433,7 +451,7 @@ def resolve_handler(room_name: str, alert_store, *, mode: str = "orchestrator"):
         queue = CallQueue(alert_store.redis)
         handler, greeting, cleanup = build_outbound_handler(
             alert, embedder=embedder, llm=llm, on_answered=queue.mark_answered,
-            on_locked=queue.mark_locked)
+            on_locked=queue.mark_locked, on_acked=push_ack_to_app)
         try:
             alert_store.delete(room_name)
         except Exception:  # noqa: BLE001
@@ -597,6 +615,13 @@ def make_agent_class(wake_word: str = "hey vios", awake_window_s: float = 30.0,
                     return
                 print(f"[worker] caller answered after {waited:.1f}s", flush=True)
             print(f"[worker] speaking greeting: {self._greeting!r}", flush=True)
+            if getattr(self._handler, "alert", None) is not None:  # relay-placed alert calls only
+                from livekit.agents import get_job_context  # noqa: PLC0415
+
+                sid, h = self._session_id, self._handler
+                self._unconfirmed_timer = asyncio.ensure_future(hang_up_if_unconfirmed(
+                    lambda: h.is_authenticated(sid), lambda: h.is_ended(sid),
+                    get_job_context().delete_room))
             # Interruptible on purpose: while uninterruptible speech is active LiveKit feeds STT
             # silence; on the 2026-10-27 phone call STT then never ran after the greeting.
             # Pickup noise that cuts the prompt off just gets the PIN prompt again (handler).
