@@ -391,7 +391,7 @@ uv run python -m cli.consume --channel text --once
 ```
 
 > Run a **single** consumer per patient — concurrent consumers on the same patient cause Neo4j
-> write-lock timeouts (each failure is retried after `--retry-idle-ms`, default 10 min, and after
+> write-lock timeouts (each failure is retried after `--retry-idle-ms`, default 15 s, and after
 > `--max-attempts`, default 3, it is moved to `rmsai.events.dead`). Partitioning the bus by
 > `patient_id` keeps ordering while patients run in parallel.
 

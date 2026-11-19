@@ -57,7 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--number", default=None,
                         help="destination (E.164); default OUTBOUND_CALL_NUMBER. A placeholder is used "
                              "only for simulated runs with neither set")
-    parser.add_argument("--min-criticality", default="High")
+    parser.add_argument("--min-criticality", default=None,
+                        choices=["Low", "Medium", "High", "Critical"],
+                        help="Override the hospital's outbound.min_criticality (default: the file's).")
     parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
                         help="Must match the embedder the KB collections were built with "
                              f"(default from EMBEDDER: {DEFAULT.embedder}).")
@@ -77,10 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    config = replace(
-        Config.from_env(), outbound_enabled=True, outbound_call_number=destination,
-        outbound_min_criticality=args.min_criticality,
-    )
+    config = replace(Config.from_env(), outbound_enabled=True, outbound_call_number=destination)
+    if args.min_criticality:
+        config = replace(config, outbound_min_criticality=args.min_criticality)
     utterances = [*args.follow_ups, args.ack, "yes"]  # follow-ups, then ack + confirm-back
 
     # `--checkpoint` with no values means "stub, ignore the env"; omitting it falls back to config.

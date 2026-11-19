@@ -100,7 +100,7 @@ or fails to load stops `cli.ingest` with an error instead of falling back.
 > **Only for `--emit stdout`.** A raw ecg_sigma file keeps the dataset's record id as the patient
 > (`"105"` above). Published with `--emit bus` while the hospital's `dispatch_mode` includes `app`, the consumer
 > persists it, then fails on the worklist push (`[retry] … refusing to publish non-pseudonym patient
-> ref: '105'`); it retries every `--retry-idle-ms` (10 min) and after `--max-attempts` (3) moves the
+> ref: '105'`); it retries every `--retry-idle-ms` (15 s) and after `--max-attempts` (3) moves the
 > message to `rmsai.events.dead`. The event is persisted but never dispatched. For anything that goes on the bus, curate with `cli.real_samples` below,
 > which assigns `PT9#####` pseudonyms.
 

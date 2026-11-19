@@ -137,7 +137,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--number", default=None,
                         help="destination (E.164); default OUTBOUND_CALL_NUMBER. A placeholder is used "
                              "only for simulated runs with neither set")
-    parser.add_argument("--min-criticality", default="High")
+    parser.add_argument("--min-criticality", default=None,
+                        choices=["Low", "Medium", "High", "Critical"],
+                        help="Override the hospital's outbound.min_criticality (default: the "
+                             "hospital file's, so the phone agrees with Simulate and 'why').")
     parser.add_argument("--embedder", default=DEFAULT.embedder, choices=["auto", "bge", "hashing"],
                         help="Must match the embedder the KB collections were built with "
                              f"(default from EMBEDDER: {DEFAULT.embedder}).")
@@ -153,10 +156,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-events", type=int, default=None, help="Exit after N messages.")
     parser.add_argument("--max-attempts", type=int, default=3,
                         help="Tries per message before it is dead-lettered to <stream>.dead.")
-    parser.add_argument("--retry-idle-ms", type=int, default=600_000,
+    parser.add_argument("--retry-idle-ms", type=int, default=15_000,
                         help="A failed (or orphaned) message is retried after it sat this long. "
-                             "Longer than any call: a message still being worked on (a blocking "
-                             "call) must not be taken over by a second consumer.")
+                             "Short: no path blocks a message on a call any more (SIP calls go "
+                             "through the call queue), and one store blip must not delay an alarm "
+                             "by minutes. Raise it only if several consumers share one group.")
     args = parser.parse_args(argv)
 
     from voice.outbound import resolve_destination  # noqa: PLC0415
@@ -170,10 +174,9 @@ def main(argv: list[str] | None = None) -> int:
 
     import redis  # noqa: PLC0415
 
-    config = replace(
-        Config.from_env(), outbound_enabled=True, outbound_call_number=destination,
-        outbound_min_criticality=args.min_criticality,
-    )
+    config = replace(Config.from_env(), outbound_enabled=True, outbound_call_number=destination)
+    if args.min_criticality:
+        config = replace(config, outbound_min_criticality=args.min_criticality)
     utterances = [*args.follow_ups, args.ack, "yes"]
     audit = AuditLog(DEFAULT.audit_log_path)
     beds = BedAssignmentStub()

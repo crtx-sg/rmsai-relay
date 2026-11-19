@@ -34,7 +34,7 @@ adds **asynchronous / cross-process** decoupling at three specific seams:
   (`cli.ingest --emit bus`, `XADD`) is fully decoupled from the consumer (`bus_consumer`, which
   drains, persists, and dispatches). Producer and consumer run independently. A message is acked
   only once it is handled; a failed one stays pending and is retried (`XAUTOCLAIM` after
-  `--retry-idle-ms`, default 10 min, which also takes over a crashed consumer's messages), and after
+  `--retry-idle-ms`, default 15 s, which also takes over a crashed consumer's messages), and after
   `--max-attempts` (default 3) it moves to `rmsai.events.dead`. The stream is capped at ~100k
   entries (`MAXLEN`).
 - **Call queue** (sorted set `rmsai:calls:queue` + hash `rmsai:calls:jobs`, plus the system-wide
