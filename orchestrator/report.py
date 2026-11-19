@@ -20,8 +20,18 @@ def spoken_bed(label) -> str:
     return f"bed {m.group(1)}" if m else (f"bed {label}" if label else "an unknown bed")
 
 
+# Classes whose lowercased name is not what a clinician says ("av block 1", live 2026-11-19).
+_SPOKEN_NAMES = {"AV_BLOCK_1": "first-degree AV block",
+                 "AV_BLOCK_2_TYPE1": "second-degree AV block, Mobitz type 1",
+                 "AV_BLOCK_2_TYPE2": "second-degree AV block, Mobitz type 2",
+                 "LBBB": "left bundle branch block", "RBBB": "right bundle branch block",
+                 "ST_ELEVATION": "ST elevation"}
+
+
 def spoken_event(event) -> str:
     """'VENTRICULAR_TACHYCARDIA' -> 'ventricular tachycardia'; short codes (SVT, PVC) stay as-is."""
+    if event in _SPOKEN_NAMES:
+        return _SPOKEN_NAMES[event]
     text = str(event or "an event").replace("_", " ")
     return text if len(text) <= 4 else text.lower()
 

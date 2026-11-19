@@ -31,3 +31,13 @@ def test_an_unconfirmed_vf_alert_says_its_guidance_only_holds_if_confirmed():
     assert "Recommended" not in text and "Critical:" not in text
     assert text.endswith("treat the rhythm as unconfirmed. If it is confirmed: VF detected — "
                          "initiate ACLS protocol.")
+
+
+def test_block_and_bundle_rhythms_are_spoken_as_clinicians_say_them():
+    from orchestrator.report import spoken_event  # noqa: PLC0415
+
+    assert spoken_event("AV_BLOCK_1") == "first-degree AV block"  # was "av block 1"
+    assert spoken_event("AV_BLOCK_2_TYPE2") == "second-degree AV block, Mobitz type 2"
+    assert spoken_event("LBBB") == "left bundle branch block"
+    assert spoken_event("VENTRICULAR_FIBRILLATION") == "ventricular fibrillation"
+    assert spoken_event("PVC") == "PVC" and spoken_event(None) == "an event"
