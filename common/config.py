@@ -323,7 +323,12 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        from .hospital_config import SETTINGS, hospital_settings, load_hospital_config  # noqa: PLC0415
+        from .hospital_config import (  # noqa: PLC0415
+            SETTINGS,
+            hospital_settings,
+            load_hospital_config,
+            validate_settings,
+        )
 
         # Hospital files supply the defaults for the escalation/outbound fields; an env var (shell
         # or .env) still wins, and each such override is logged by name (values can be numbers).
@@ -331,16 +336,16 @@ class Config:
         hospital_dir = os.environ.get("HOSPITAL_CONFIG_DIR", "config/hospitals")
         raw, hospital_source = load_hospital_config(hospital_id, hospital_dir)
         H = hospital_settings(raw)
-        overridden = [env for _f_, (_s, _k, env) in SETTINGS.items() if env in os.environ]
+        # A blank `X=` is not an override: it would silently clear e.g. DISPATCH_MODE (no alerts).
+        overridden = [env for _f_, (_s, _k, env) in SETTINGS.items() if _env(env) is not None]
         if overridden:
             print(f"[config] environment overrides hospital config ({hospital_source}): "
                   f"{', '.join(overridden)}", file=sys.stderr, flush=True)
-        return cls(
+        config = cls(
             fp_suppress_min_confidence=_f("FP_SUPPRESS_MIN_CONFIDENCE", H["fp_suppress_min_confidence"]),
             low_confidence_caveat=_f("LOW_CONFIDENCE_CAVEAT", H["low_confidence_caveat"]),
             inbound_auth_pin=os.environ.get("INBOUND_AUTH_PIN", "1234"),
-            criticality_normal_event=os.environ.get("CRITICALITY_NORMAL_EVENT",
-                                                    H["criticality_normal_event"]),
+            criticality_normal_event=_env("CRITICALITY_NORMAL_EVENT") or H["criticality_normal_event"],
             criticality_mews_threshold=_i("CRITICALITY_MEWS_THRESHOLD", H["criticality_mews_threshold"]),
             criticality_escalate_on_deteriorating=_b("CRITICALITY_ESCALATE_ON_DETERIORATING",
                                                      H["criticality_escalate_on_deteriorating"]),
@@ -348,12 +353,11 @@ class Config:
                                                  H["criticality_fp_override_on_vitals"]),
             hospital_config_dir=hospital_dir,
             hospital_config_source=hospital_source,
-            protocols_file=os.environ.get("PROTOCOLS_FILE", H["protocols_file"]),
+            protocols_file=_env("PROTOCOLS_FILE") or H["protocols_file"],
             outbound_enabled=_b("OUTBOUND_ENABLED", H["outbound_enabled"]),
-            outbound_call_number=os.environ.get("OUTBOUND_CALL_NUMBER", H["outbound_call_number"] or ""),
-            outbound_from=os.environ.get("OUTBOUND_FROM", H["outbound_from"] or ""),
-            outbound_min_criticality=os.environ.get("OUTBOUND_MIN_CRITICALITY",
-                                                    H["outbound_min_criticality"]),
+            outbound_call_number=_env("OUTBOUND_CALL_NUMBER") or H["outbound_call_number"] or "",
+            outbound_from=_env("OUTBOUND_FROM") or H["outbound_from"] or "",
+            outbound_min_criticality=_env("OUTBOUND_MIN_CRITICALITY") or H["outbound_min_criticality"],
             outbound_min_arrhythmia_confidence=_f("OUTBOUND_MIN_ARRHYTHMIA_CONFIDENCE",
                                                   H["outbound_min_arrhythmia_confidence"]),
             outbound_call_vitals_alerts=_b("OUTBOUND_CALL_VITALS_ALERTS",
@@ -361,9 +365,8 @@ class Config:
             outbound_max_retries=_i("OUTBOUND_MAX_RETRIES", H["outbound_max_retries"]),
             outbound_retry_delay_s=_i("OUTBOUND_RETRY_DELAY_S", H["outbound_retry_delay_s"]),
             outbound_require_pin=_b("OUTBOUND_REQUIRE_PIN", H["outbound_require_pin"]),
-            outbound_alert_language=os.environ.get("OUTBOUND_ALERT_LANGUAGE",
-                                                   H["outbound_alert_language"]),
-            dispatch_mode=os.environ.get("DISPATCH_MODE", H["dispatch_mode"]),
+            outbound_alert_language=_env("OUTBOUND_ALERT_LANGUAGE") or H["outbound_alert_language"],
+            dispatch_mode=_env("DISPATCH_MODE") or H["dispatch_mode"],
             hospital_id=hospital_id,
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             neo4j_uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
@@ -441,6 +444,10 @@ class Config:
             ingest_time_anchor=os.environ.get("INGEST_TIME_ANCHOR", "source").strip().lower(),
             plot_dir=os.environ.get("PLOT_DIR", "data/plots"),
         )
+        if overridden:  # the file was validated; the values that replaced it must pass the same checks
+            validate_settings(raw, {f: getattr(config, f) for f in SETTINGS},
+                              f"{hospital_source} + environment")
+        return config
 
     @property
     def telephony_split(self) -> bool:

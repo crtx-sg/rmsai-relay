@@ -105,6 +105,15 @@ def hospital_settings(raw: dict) -> dict:
     return out
 
 
+def validate_settings(raw: dict, values: dict, source: str) -> None:
+    """`_validate` the file's settings with `values` ({Config field: value}) put in their place:
+    the final values after environment overrides get the same checks as the file."""
+    merged = {k: dict(v) if isinstance(v, dict) else v for k, v in raw.items()}
+    for field_name, (section, key, _env) in SETTINGS.items():
+        merged.setdefault(section, {})[key] = values[field_name]
+    _validate(merged, source)
+
+
 def _validate(raw: dict, source: str) -> None:
     def bad(msg):
         raise ValueError(f"hospital config ({source}): {msg}")

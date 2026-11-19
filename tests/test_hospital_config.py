@@ -116,3 +116,23 @@ def test_protocols_file_is_per_hospital(hospitals, monkeypatch):
     (hospitals / "h1.yaml").write_text(_SITE + "protocols:\n  file: config/hospitals/h1.protocols.yaml\n",
                                        encoding="utf-8")
     assert Config.from_env().protocols_file == "config/hospitals/h1.protocols.yaml"
+
+
+def test_a_blank_env_line_is_not_an_override(hospitals, monkeypatch):
+    # `.env` with `DISPATCH_MODE=` used to clear it: no worklist push and no calls, silently.
+    monkeypatch.setenv("HOSPITAL_ID", "h1")
+    monkeypatch.setenv("DISPATCH_MODE", "")
+    monkeypatch.setenv("OUTBOUND_CALL_NUMBER", "  ")
+    c = Config.from_env()
+    assert c.dispatch_mode == "app" and c.outbound_call_number == "+15551234567"  # h1.yaml values
+
+
+def test_an_env_override_gets_the_files_checks(hospitals, monkeypatch):
+    monkeypatch.setenv("HOSPITAL_ID", "h1")
+    monkeypatch.setenv("OUTBOUND_MIN_CRITICALITY", "high")  # the file would reject this spelling
+    with pytest.raises(ValueError, match="min_criticality"):
+        Config.from_env()
+    monkeypatch.setenv("OUTBOUND_MIN_CRITICALITY", "Critical")
+    monkeypatch.setenv("OUTBOUND_CALL_NUMBER", "5551234567")  # not E.164
+    with pytest.raises(ValueError, match="E.164"):
+        Config.from_env()
