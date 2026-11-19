@@ -37,3 +37,15 @@ def test_iter_payloads(hdf5_window):
     windows = list(iter_packet_payloads([payload, payload.encode()]))
     assert len(windows) == 2
     assert windows[0] == hdf5_window
+
+
+def test_a_nan_vital_is_not_measured_like_the_hdf5_reader(hdf5_window):
+    """MEWS scored a NaN vital as its worst band; the HDF5 reader drops it, so must this one."""
+    import copy  # noqa: PLC0415
+
+    packet = window_to_packet(hdf5_window)
+    bad = copy.deepcopy(packet)
+    name = next(iter(bad["vitals"]))
+    bad["vitals"][name]["value"] = float("nan")
+    w = packet_to_window(bad)
+    assert name not in w.vitals and set(w.vitals) == set(packet["vitals"]) - {name}

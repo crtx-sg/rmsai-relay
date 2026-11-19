@@ -35,6 +35,8 @@ def window_to_lead_matrix(window: SignalWindow):
     """Stack the 7 ECG leads into a `(num_leads, SIGNAL_LENGTH)` float32 array (torch-free).
 
     Missing leads are zero-filled; over/under-length leads are truncated/padded to SIGNAL_LENGTH.
+    Non-finite samples (a lead-off dropout) become 0: one NaN made every class score NaN, and the
+    argmax then read NORMAL_SINUS with NaN confidence, past both confidence gates (no call for a VT).
     """
     import numpy as np  # local: numpy is light but keep module import torch-free in spirit
 
@@ -44,7 +46,8 @@ def window_to_lead_matrix(window: SignalWindow):
         row = np.zeros(SIGNAL_LENGTH, dtype=np.float32)
         n = min(len(samples), SIGNAL_LENGTH)
         if n:
-            row[:n] = np.asarray(samples[:n], dtype=np.float32)
+            row[:n] = np.nan_to_num(np.asarray(samples[:n], dtype=np.float32),
+                                    nan=0.0, posinf=0.0, neginf=0.0)
         rows.append(row)
     return np.stack(rows, axis=0)
 

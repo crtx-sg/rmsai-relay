@@ -161,3 +161,21 @@ def test_correlation_notes_use_prediction():
     w.vitals["HR"].value = 145.0
     analysis = MewsVitalsAnalysis().analyze(w, event_type="ATRIAL_FIBRILLATION")
     assert any("AFib" in note or "rate control" in note for note in analysis.correlations)
+
+
+def test_a_non_finite_ecg_sample_becomes_zero():
+    """One NaN (a lead-off dropout) made every class score NaN: NORMAL_SINUS with NaN confidence,
+    past both confidence gates, so a VT did not ring."""
+    import math  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    from ingest.hdf5_reader import read_hdf5_file  # noqa: PLC0415
+    from inference.ecg_model import ECG_LEADS, window_to_lead_matrix  # noqa: PLC0415
+
+    fixture = next((Path(__file__).resolve().parents[1] / "data" / "fixtures").glob("*.h5"))
+    w = next(read_hdf5_file(fixture))
+    lead = next(name for name in ECG_LEADS if name in w.signals)  # a lead the model reads
+    w.signals[lead] = [math.nan, math.inf, -math.inf, *w.signals[lead][3:]]
+    m = window_to_lead_matrix(w)
+    assert np.isfinite(m).all()

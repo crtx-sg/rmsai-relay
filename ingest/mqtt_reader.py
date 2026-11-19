@@ -26,6 +26,7 @@ from common.schemas import (
     VitalSample,
     WindowGeometry,
 )
+from ingest.hdf5_reader import _finite  # one NaN rule for both readers
 
 
 def _rate_to_str(rate: Fraction) -> str:
@@ -103,14 +104,17 @@ def packet_to_window(packet: dict[str, Any]) -> SignalWindow:
             after_s=float(md["seconds_after_event"]),
             sample_counts=md.get("sample_counts", {}),
         ),
+        # Same rule as the HDF5 reader: a NaN/null vital is "not measured" (MEWS scored NaN as its
+        # worst band), and an unusable history reading is dropped on its own.
         vitals={
-            name: Vital(value=float(v["value"]), units=v.get("units", ""),
-                        timestamp=float(v.get("timestamp", event_ts)))
-            for name, v in packet.get("vitals", {}).items()
+            name: Vital(value=_finite(v.get("value")), units=v.get("units", ""),
+                        timestamp=_finite(v.get("timestamp")) or event_ts)
+            for name, v in packet.get("vitals", {}).items() if _finite(v.get("value")) is not None
         },
         vitals_history={
-            name: [VitalSample(value=float(s["value"]), timestamp=float(s["timestamp"]))
-                   for s in samples]
+            name: [VitalSample(value=_finite(s.get("value")), timestamp=_finite(s.get("timestamp")))
+                   for s in samples
+                   if _finite(s.get("value")) is not None and _finite(s.get("timestamp")) is not None]
             for name, samples in packet.get("vitals_history", {}).items()
         },
         signal_quality={g: float(q) for g, q in packet.get("signal_quality", {}).items()},
